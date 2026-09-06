@@ -4,12 +4,12 @@
     "dockerfile": "../Dockerfile",
     "context": ".."
   },
-  "workspaceFolder": "/workspace/kit",
+  "workspaceFolder": "/workspace",
   "remoteUser": "adminuser",
   "forwardPorts": [8000],
   "mounts": [
-    "source=${localWorkspaceFolder}/kit,target=/workspace/kit,type=bind",
-    "source=${localWorkspaceFolder}/volume/logs,target=/workspace/kit/logs,type=bind"
+    "source=${localWorkspaceFolder}/kit,target=/workspace,type=bind",
+    "source=${localWorkspaceFolder}/volume/logs,target=/workspace/logs,type=bind"
   ],
   "customizations": {
     "vscode": {

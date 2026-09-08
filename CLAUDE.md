@@ -1,3 +1,4 @@
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -28,7 +29,7 @@ GreenITESO Backend is a Django-based REST API project using Python 3.14. Current
 
 ### Local Development (Docker + Devcontainer)
 
-```bash
+```sh
 # Run dev server via Make (builds Docker image and runs container)
 make -C . runDev
 
@@ -40,7 +41,7 @@ make -C app start     # Runs: python GreenITESO/main.py runserver 0.0.0.0:8000
 
 ### Code Quality
 
-```bash
+```sh
 # Run Ruff linter (static analysis, import sorting, type hints validation)
 ruff check app/
 
@@ -56,7 +57,7 @@ pytest app/
 The project uses in-memory Django configuration (no `manage.py` or `settings.py` files). All Django setup is in [app/GreenITESO/main.py](app/GreenITESO/main.py). To add Django management commands, wrap them via the same `execute_from_command_line()` pattern.
 
 Example:
-```bash
+```sh
 python GreenITESO/main.py createsuperuser
 python GreenITESO/main.py migrate
 ```
@@ -109,7 +110,7 @@ As the project grows, plan for:
 ## Development Setup
 
 ### Initial Setup
-```bash
+```sh
 # Clone and enter container
 docker build -t greeniteso-backend .
 docker run --rm -it -p 8000:8000 -v $(PWD)/app:/workspace greeniteso-backend
@@ -180,3 +181,4 @@ Project deploys to Google Cloud Run. CI/CD pipeline:
 - No error handling middleware
 - No gunicorn/production WSGI server configured yet
 - CI/CD for Cloud Run not yet configured
+

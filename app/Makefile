@@ -1,2 +1,2 @@
 start:
-	python GreenITESO/main.py runserver 0.0.0.0:8000
+	python green_iteso/main.py runserver 0.0.0.0:8000

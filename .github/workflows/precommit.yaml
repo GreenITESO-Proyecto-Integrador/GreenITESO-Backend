@@ -47,6 +47,6 @@ jobs:
         run: pip install --upgrade ruff
 
       - name: Execute Ruff Check
-        # Si mantiene pyproject.toml dentro de kit/, Ruff lo detectará si analiza kit/,
+        # Si mantiene pyproject.toml dentro de app/, Ruff lo detectará si analiza app/,
         # o bien puede pasar la ruta explícita si se ubica en la raíz.
-        run: ruff check kit/
+        run: ruff check app/

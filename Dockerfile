@@ -29,15 +29,15 @@ RUN python -m venv $VIRTUAL_ENV \
 WORKDIR /workspace
 
 # Copia de requerimientos e instalación de dependencias
-COPY kit/requirements.txt /workspace/requirements.txt
+COPY app/requirements.txt /workspace/app/requirements.txt
 
 USER $USERNAME
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /workspace/requirements.txt
+    pip install --no-cache-dir -r /workspace/app/requirements.txt
 
-# Copia el contenido de kit directamente en la raíz de /workspace
-COPY kit/ /workspace/
+# Copia todo el workspace
+COPY . /workspace/
 
 EXPOSE 8000
 

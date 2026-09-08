@@ -8,9 +8,11 @@
   "remoteUser": "adminuser",
   "forwardPorts": [8000],
   "mounts": [
-    "source=${localWorkspaceFolder}/kit,target=/workspace,type=bind",
-    "source=${localWorkspaceFolder}/volume/logs,target=/workspace/logs,type=bind"
+    "source=${localWorkspaceFolder},target=/workspace,type=bind"
   ],
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "/run/host-services/ssh.sock"
+  },
   "customizations": {
     "vscode": {
       "settings": {
@@ -26,6 +28,7 @@
         }
       },
       "extensions": [
+        
         "ms-python.python",
         "charliermarsh.ruff",
         "batisteo.vscode-django"

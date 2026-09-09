@@ -14,12 +14,12 @@ on:
 
 jobs:
   promote:
-    name: Promote to ${{ inputs.promote_to }}
+    name: Fast-forward ${{ inputs.promote_to }}
+    if: inputs.promote_to != 'prod'
     runs-on: ubuntu-latest
     environment: ${{ inputs.promote_to }}
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,7 +31,6 @@ jobs:
           case "${{ inputs.promote_to }}" in
             test) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
             preprod) echo "branch=test" >> "$GITHUB_OUTPUT" ;;
-            prod) echo "branch=preprod" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Fetch source and target branches
@@ -39,18 +38,28 @@ jobs:
           git fetch origin "${{ steps.source.outputs.branch }}" "${{ inputs.promote_to }}"
 
       - name: Fast-forward promote
-        if: inputs.promote_to != 'prod'
         run: |
           git push origin "origin/${{ steps.source.outputs.branch }}:${{ inputs.promote_to }}"
 
+  promote-prod:
+    name: Open promotion PR to prod
+    if: inputs.promote_to == 'prod'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Open promotion PR
-        if: inputs.promote_to == 'prod'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh pr create \
-            --base "${{ inputs.promote_to }}" \
-            --head "${{ steps.source.outputs.branch }}" \
-            --title "promote: ${{ steps.source.outputs.branch }} -> ${{ inputs.promote_to }}" \
+            --base prod \
+            --head preprod \
+            --title "promote: preprod -> prod" \
             --body "Automated promotion opened by @${{ github.actor }} via the Promote workflow." \
-          || echo "::notice::A promotion PR from ${{ steps.source.outputs.branch }} to ${{ inputs.promote_to }} may already be open."
+          || echo "::notice::A promotion PR from preprod to prod may already be open."

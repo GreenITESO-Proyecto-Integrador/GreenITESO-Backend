@@ -1,0 +1,41 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      promote_to:
+        description: "Environment branch to fast-forward and promote into"
+        required: true
+        type: choice
+        options:
+          - test
+          - preprod
+          - prod
+
+jobs:
+  promote:
+    name: Fast-forward ${{ inputs.promote_to }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine source branch
+        id: source
+        run: |
+          case "${{ inputs.promote_to }}" in
+            test) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
+            preprod) echo "branch=test" >> "$GITHUB_OUTPUT" ;;
+            prod) echo "branch=preprod" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Fetch source and target branches
+        run: |
+          git fetch origin "${{ steps.source.outputs.branch }}" "${{ inputs.promote_to }}"
+
+      - name: Fast-forward promote
+        run: |
+          git push origin "origin/${{ steps.source.outputs.branch }}:${{ inputs.promote_to }}"

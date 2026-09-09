@@ -1,0 +1,13 @@
+name: Deploy - prod
+
+on:
+  push:
+    branches: [prod]
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: prod
+      build: false
+    secrets: inherit

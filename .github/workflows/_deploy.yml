@@ -1,0 +1,79 @@
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target GitHub Environment / Cloud Run environment (dev, test, preprod, prod)"
+        required: true
+        type: string
+      build:
+        description: "Whether to build and push a new image (true only for dev)"
+        required: true
+        type: boolean
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GCP configuration
+        id: check
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GCP secrets for the '${{ inputs.environment }}' environment are not configured yet - skipping deploy. See docs/deployment.md."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set short SHA
+        if: steps.check.outputs.ready == 'true'
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        if: steps.check.outputs.ready == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        if: steps.check.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Compute image reference
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          echo "IMAGE=${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.DEV_GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REGISTRY_REPO }}/greeniteso:sha-${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Configure Docker for Artifact Registry
+        if: steps.check.outputs.ready == 'true' && inputs.build
+        run: gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        if: steps.check.outputs.ready == 'true' && inputs.build
+        run: docker build -t "$IMAGE" -f Dockerfile .
+
+      - name: Push image
+        if: steps.check.outputs.ready == 'true' && inputs.build
+        run: docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        if: steps.check.outputs.ready == 'true'
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ secrets.CLOUD_RUN_SERVICE }}
+          region: ${{ secrets.GCP_REGION }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          image: ${{ env.IMAGE }}

@@ -1,0 +1,13 @@
+name: Deploy - preprod
+
+on:
+  push:
+    branches: [preprod]
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: preprod
+      build: false
+    secrets: inherit

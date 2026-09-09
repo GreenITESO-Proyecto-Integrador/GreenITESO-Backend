@@ -1,0 +1,13 @@
+name: Deploy - test
+
+on:
+  push:
+    branches: [test]
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: test
+      build: false
+    secrets: inherit

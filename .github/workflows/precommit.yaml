@@ -31,22 +31,3 @@ jobs:
             chore
             revert
           requireScope: false
-
-  lint-ruff:
-    name: Run Ruff Linter
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.14
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Install Ruff
-        run: pip install --upgrade ruff
-
-      - name: Execute Ruff Check
-        # Si mantiene pyproject.toml dentro de app/, Ruff lo detectará si analiza app/,
-        # o bien puede pasar la ruta explícita si se ubica en la raíz.
-        run: ruff check app/

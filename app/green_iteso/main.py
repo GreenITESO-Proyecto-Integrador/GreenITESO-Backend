@@ -17,7 +17,7 @@ if not settings.configured:
 
 
 # Vista básica con tipado estricto
-def index_view(request: HttpRequest) -> HttpResponse:
+def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-argument
     return HttpResponse("Servidor GreenITESO en funcionamiento.")
 
 

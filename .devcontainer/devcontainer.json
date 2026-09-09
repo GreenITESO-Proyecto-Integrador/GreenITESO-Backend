@@ -4,12 +4,10 @@
     "dockerfile": "../Dockerfile",
     "context": ".."
   },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
   "workspaceFolder": "/workspace",
   "remoteUser": "adminuser",
   "forwardPorts": [8000],
-  "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace,type=bind"
-  ],
   "remoteEnv": {
     "SSH_AUTH_SOCK": "/run/host-services/ssh.sock"
   },
@@ -28,7 +26,6 @@
         }
       },
       "extensions": [
-        
         "ms-python.python",
         "charliermarsh.ruff",
         "batisteo.vscode-django"

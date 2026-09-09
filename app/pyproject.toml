@@ -22,3 +22,26 @@ ignore = [
     "BLE001", # PERMITIDO: Do not catch blind exception (permite except Exception:)
     "E722",   # PERMITIDO: Do not use bare 'except' (permite except: genérico)
 ]
+
+[tool.pylint.basic]
+# Convenciones de nombres (PascalCase en clases, snake_case en funciones/variables, UPPER_CASE en constantes)
+class-naming-style = "PascalCase"
+function-naming-style = "snake_case"
+variable-naming-style = "snake_case"
+argument-naming-style = "snake_case"
+attr-naming-style = "snake_case"
+method-naming-style = "snake_case"
+module-naming-style = "snake_case"
+const-naming-style = "UPPER_CASE"
+
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "broad-exception-caught",   # Coherente con BLE001 permitido en Ruff
+]
+
+[tool.pylint.format]
+max-line-length = 120

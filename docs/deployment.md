@@ -7,9 +7,7 @@ feature branch --PR--> dev --(promote)--> staging --(promote)--> main [productio
 ```
 
 The Git branch names are `dev`, `staging`, and `main`, following Notion diagram 5. The corresponding GitHub Environments and Neon branches are `dev`, `staging`, and `production`. This repository change
-does not create or rename remote branches. The existing GitHub setup currently
-has `dev` as its only application Environment (`copilot` is tooling), so the staging and production Environments,
-branch protections, and production reviewers remain setup work.
+does not create or rename remote branches. GitHub now has application Environments `dev`, `staging`, and `production` (`copilot` is tooling). Staging allows only Git `staging`; production allows only Git `main` and requires review by Fernando (`luci-efe`). The `staging` Git branch, branch protections, GCP configuration and secrets remain setup work.
 
 Before enabling promotion, create the `staging` Git branch at the reviewed release commit and verify `main` can advance by fast-forward. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
 
@@ -68,9 +66,7 @@ Secret Manager reference. Secret values are never placed in workflow files.
 
 ## Required GitHub Environment configuration
 
-Create the `dev`, `staging`, and `production` GitHub Environments after the
-project and region choices are confirmed. Add these values to each Environment
-as secrets:
+The three GitHub Environments exist. After the project and region choices are confirmed, add these values to each Environment as secrets:
 
 - `GCP_PROJECT_ID`
 - `GCP_REGION`

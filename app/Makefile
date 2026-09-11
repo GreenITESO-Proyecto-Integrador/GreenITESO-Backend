@@ -1,4 +1,4 @@
-.PHONY: start migrate migrate-direct makemigrations-check test lint gunicorn
+.PHONY: start migrate migrate-direct load-catalog seed-reference bootstrap-dev seed-demo makemigrations-check test lint gunicorn
 
 ENV_FILE ?= ../.env
 ENV_PATH := $(abspath $(ENV_FILE))
@@ -16,6 +16,12 @@ migrate:
 
 migrate-direct:
 	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; DATABASE_URL="$${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}" DJANGO_CONNECTION_ROLE=direct python manage.py migrate
+
+load-catalog seed-reference:
+	@$(DJANGO) load_catalog
+
+bootstrap-dev seed-demo:
+	@$(DJANGO) bootstrap_dev
 
 makemigrations-check:
 	@$(DJANGO) makemigrations --check --dry-run

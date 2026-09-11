@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: "Target GitHub Environment / Cloud Run environment (dev, test, preprod, prod)"
+        description: "Target GitHub Environment / Cloud Run environment (dev, staging, production)"
         required: true
         type: string
       build:

@@ -49,6 +49,14 @@ class Campaign(models.Model):
                 condition=(Q(scope="GLOBAL", target_clan__isnull=True) | Q(scope="PRIVATE", target_clan__isnull=False)),
                 name="campaign_scope_target_clan_consistent",
             ),
+            models.CheckConstraint(
+                condition=Q(scope__in=["GLOBAL", "PRIVATE"]),
+                name="campaign_scope_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["PROMOTION", "IN_PROGRESS", "FINISHED"]),
+                name="campaign_status_valid",
+            ),
         ]
         indexes = [models.Index(fields=["status", "start_date", "end_date"], name="campaign_window_idx")]
 

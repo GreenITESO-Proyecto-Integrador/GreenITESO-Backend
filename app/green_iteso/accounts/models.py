@@ -51,6 +51,14 @@ class User(AbstractUser):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(role__in=["STUDENT", "STAFF", "ADMIN"]),
+                name="user_role_valid",
+            ),
+        ]
+
 
 class Clan(models.Model):
     """Institutional or private clan; deletion is represented by ``deleted_at``."""
@@ -85,6 +93,14 @@ class Clan(models.Model):
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
                 name="clan_total_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(type__in=["INSTITUTIONAL", "PRIVATE"]),
+                name="clan_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(privacy__in=["PUBLIC", "PRIVATE_INVITE"]),
+                name="clan_privacy_valid",
             ),
         ]
         indexes = [models.Index(fields=["type", "total_points"], name="clan_type_points_idx")]
@@ -143,6 +159,10 @@ class ClanMembership(models.Model):
                 fields=["user"],
                 condition=Q(is_active_private=True),
                 name="membership_one_active_private_per_user",
+            ),
+            models.CheckConstraint(
+                condition=Q(role__in=["LEADER", "MEMBER"]),
+                name="membership_role_valid",
             ),
         ]
 

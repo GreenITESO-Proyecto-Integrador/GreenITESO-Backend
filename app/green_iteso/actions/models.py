@@ -42,6 +42,10 @@ class ActionMaster(models.Model):
         constraints = [
             models.CheckConstraint(condition=Q(points__gt=0), name="action_points_positive"),
             models.CheckConstraint(condition=Q(daily_limit__gt=0), name="action_daily_limit_positive"),
+            models.CheckConstraint(
+                condition=Q(validation_mode__in=["DECLARATIVE_BUTTON", "PHOTO"]),
+                name="action_validation_mode_valid",
+            ),
             models.CheckConstraint(condition=Q(co2_kg_factor__gte=0), name="action_co2_factor_nonnegative"),
             models.CheckConstraint(condition=Q(water_liters_factor__gte=0), name="action_water_factor_nonnegative"),
             models.CheckConstraint(condition=Q(plastic_kg_factor__gte=0), name="action_plastic_factor_nonnegative"),
@@ -114,6 +118,10 @@ class ActionLog(models.Model):
             models.CheckConstraint(
                 condition=Q(plastic_kg_factor_snapshot__gte=0),
                 name="action_log_plastic_snapshot_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["APPROVED", "PENDING_AUDIT", "REJECTED"]),
+                name="action_log_status_valid",
             ),
         ]
         indexes = [

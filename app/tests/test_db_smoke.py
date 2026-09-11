@@ -10,9 +10,13 @@ from typing import Any
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import connection
+from django.db import connection, transaction
 
-from green_iteso.accounts.management.commands.db_smoke import _is_missing_schema
+from green_iteso.accounts.management.commands.db_smoke import (
+    _is_missing_schema,
+    _set_bounded_options,
+    _set_transaction_bounds,
+)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -52,6 +56,49 @@ def test_db_smoke_emits_no_dml() -> None:
         statement.lstrip().split(maxsplit=1)[0].upper() in {"SELECT", "SET"}
         for statement in statements
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_transaction_bounds_are_local_and_startup_options_only_connect() -> None:
+    options = connection.settings_dict.setdefault("OPTIONS", {})
+    original_options = dict(options)
+    bounded_options, saved_options = _set_bounded_options(2)
+    assert bounded_options["connect_timeout"] == 2
+    assert bounded_options.get("options") == original_options.get("options")
+    assert "statement_timeout" not in str(bounded_options.get("options", ""))
+    assert "lock_timeout" not in str(bounded_options.get("options", ""))
+
+    try:
+        connection.close()
+        connection.ensure_connection()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT current_setting('statement_timeout'), "
+                "current_setting('lock_timeout')"
+            )
+            baseline = cursor.fetchone()
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                cursor.execute("SET TRANSACTION READ ONLY")
+                _set_transaction_bounds(cursor, 2)
+                cursor.execute(
+                    "SELECT current_setting('statement_timeout')::interval = interval '2 seconds', "
+                    "current_setting('lock_timeout')::interval = interval '2 seconds', "
+                    "current_setting('transaction_isolation'), "
+                    "current_setting('transaction_read_only')"
+                )
+                assert cursor.fetchone() == (True, True, "repeatable read", "on")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT current_setting('statement_timeout'), "
+                "current_setting('lock_timeout')"
+            )
+            assert cursor.fetchone() == baseline
+    finally:
+        connection.close()
+        options.clear()
+        options.update(saved_options)
 
 
 def test_missing_schema_sqlstates_are_diagnosed_as_unapplied_migrations() -> None:

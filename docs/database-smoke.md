@@ -1,8 +1,8 @@
 # Smoke de PostgreSQL
 
 `db_smoke` comprueba el acceso de Django al PostgreSQL configurado para el
-proceso. Tiene un límite de tiempo finito y ejecuta una transacción marcada
-como `READ ONLY` con estas lecturas mínimas:
+proceso. Tiene un límite de tiempo finito y ejecuta una transacción
+`REPEATABLE READ` marcada como `READ ONLY` con estas lecturas mínimas:
 
 1. `SELECT 1` para comprobar la conexión.
 2. `User.objects.count()` y `ActionLog.objects.count()` para comprobar las
@@ -26,9 +26,13 @@ docker compose exec -T app python app/manage.py db_smoke --timeout 5
 ```
 
 `--timeout` acepta de `0.1` a `30` segundos y por defecto usa 5 segundos.
-Ese valor limita la conexión, el `statement_timeout`/`lock_timeout` de
-PostgreSQL y el tiempo total del proceso, incluyendo resolución y fallback de
-direcciones. Un tiempo agotado se reporta como `CONNECTION_FAILURE`.
+Ese valor limita la conexión mediante `connect_timeout`, y dentro de la
+transacción de lectura fija temporalmente `statement_timeout` y `lock_timeout`.
+Los dos últimos se aplican con `set_config(..., true)` después de abrir la
+conexión, por lo que no dependen de opciones de arranque que un pooler
+transaccional pueda rechazar o descartar. El tiempo total del proceso también
+incluye resolución y fallback de direcciones. Un tiempo agotado se reporta como
+`CONNECTION_FAILURE`.
 El límite total usa `SIGALRM`, por lo que la ejecución directa requiere Linux
 o macOS; en Windows se debe usar el contenedor Docker documentado abajo.
 

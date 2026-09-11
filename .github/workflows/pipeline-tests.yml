@@ -24,6 +24,6 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
       - name: Shell syntax check
-        run: bash -n scripts/release.sh
+        run: bash -n scripts/release.sh scripts/verify-source-release.sh
       - name: Run mocked release tests
-        run: python -m pytest -q tests/test_release_pipeline.py
+        run: python -m pytest -c /dev/null -p no:cacheprovider -p no:django -q tests/test_release_pipeline.py

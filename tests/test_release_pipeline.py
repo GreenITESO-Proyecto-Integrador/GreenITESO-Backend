@@ -8,6 +8,7 @@ Google Cloud or GitHub; the shell release script is exercised with fake
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -152,6 +153,58 @@ def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
     assert not output.exists()
 
 
+def _fake_provenance_gh(tmp_path: Path, record: str) -> Path:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    gh = fake_bin / "gh"
+    quoted_record = shlex.quote(record)
+    gh.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$2\" = list ]; then echo 123; exit 0; fi\n"
+        "if [ \"$2\" = download ]; then\n"
+        "  mkdir -p \"$7\"\n"
+        f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n"
+    )
+    gh.chmod(0o755)
+    return fake_bin
+
+
+def _run_provenance(tmp_path: Path, record: str) -> subprocess.CompletedProcess[str]:
+    fake_bin = _fake_provenance_gh(tmp_path, record)
+    output = tmp_path / "github-output"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RELEASE_ENVIRONMENT": "staging",
+        "RELEASE_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(output),
+    }
+    return subprocess.run([str(PROVENANCE)], cwd=ROOT, env=env, text=True, capture_output=True)
+
+
+def test_source_provenance_accepts_matching_success_record(tmp_path: Path) -> None:
+    digest = "sha256:" + "a" * 64
+    result = _run_provenance(tmp_path, f"environment=dev\nrelease_sha={'a' * 40}\nimage_digest={digest}\n")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "github-output").read_text() == f"image_digest={digest}\n"
+
+
+def test_source_provenance_rejects_mismatched_artifact(tmp_path: Path) -> None:
+    digest = "sha256:" + "a" * 64
+    result = _run_provenance(tmp_path, f"environment=production\nrelease_sha={'a' * 40}\nimage_digest={digest}\n")
+    assert result.returncode != 0
+    assert "does not match" in result.stderr
+
+
+def test_source_provenance_rejects_empty_digest(tmp_path: Path) -> None:
+    result = _run_provenance(tmp_path, f"environment=dev\nrelease_sha={'a' * 40}\nimage_digest=\n")
+    assert result.returncode != 0
+    assert "does not match" in result.stderr
+
+
 def test_multiple_hosts_are_encoded_as_one_env_value(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["DJANGO_ALLOWED_HOSTS"] = "greeniteso.example,admin.greeniteso.example"
@@ -171,6 +224,8 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "verify-source-release.sh" in workflow
     assert workflow.index("Verify successful source release provenance") < workflow.index("Authenticate to Google Cloud")
+    assert "actions: read" in workflow
+    assert "actions: read" in (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
     assert "--service-account=${MIGRATION_SERVICE_ACCOUNT}" in (ROOT / "scripts" / "release.sh").read_text()
     assert "--service-account=\"$RUNTIME_SERVICE_ACCOUNT\"" in (ROOT / "scripts" / "release.sh").read_text()
     assert "staging" in promote and "production" in promote

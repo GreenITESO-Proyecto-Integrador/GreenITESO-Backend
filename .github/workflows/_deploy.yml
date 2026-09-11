@@ -35,6 +35,7 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
+      actions: read
       id-token: write
 
     steps:

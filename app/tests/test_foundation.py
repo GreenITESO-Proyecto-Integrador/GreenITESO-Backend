@@ -38,6 +38,32 @@ def test_local_database_host_is_not_bound_to_neon_catalog() -> None:
     assert "OPTIONS" not in config
 
 
+def test_local_verify_full_uses_platform_ca_and_preserves_explicit_ca() -> None:
+    """Operator recovery can use TLS locally without a deployed host binding."""
+    default_ca = (
+        "/etc/ssl/certs/ca-certificates.crt"
+        if Path("/etc/ssl/certs/ca-certificates.crt").is_file()
+        else "system"
+    )
+    temporary_neon_host = "ep-temporary-check.c-4.us-east-2.aws.neon.tech"
+    config = database_from_url(
+        f"postgresql://alice:secret@{temporary_neon_host}:5432/db?sslmode=verify-full"
+    )
+    assert config["OPTIONS"] == {
+        "sslmode": "verify-full",
+        "sslrootcert": default_ca,
+    }
+
+    explicit = database_from_url(
+        f"postgresql://alice:secret@{temporary_neon_host}:5432/db?"
+        "sslmode=verify-full&sslrootcert=%2Fetc%2Foperator-ca.pem"
+    )
+    assert explicit["OPTIONS"] == {
+        "sslmode": "verify-full",
+        "sslrootcert": "/etc/operator-ca.pem",
+    }
+
+
 @pytest.mark.django_db(transaction=True)
 def test_real_postgresql_transaction() -> None:
     """Exercise an actual database transaction and verify the server major version."""

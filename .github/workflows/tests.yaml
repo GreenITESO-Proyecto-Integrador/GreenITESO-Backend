@@ -1,6 +1,11 @@
 name: Django tests
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
   push:
   pull_request:
 
@@ -31,6 +36,8 @@ jobs:
       DATABASE_URL_UNPOOLED: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"

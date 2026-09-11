@@ -38,15 +38,18 @@ An empty or user-supplied digest cannot bypass the successful source-release
 check. Non-dev invocations of `scripts/release.sh` also fail closed without a
 verified expected digest.
 
-Each release runs `scripts/release.sh` in this order:
+Every release first runs the PostgreSQL 18 migration/test workflow against the exact approved SHA. The release job depends on that successful check before accessing GCP.
+
+Each release then runs `scripts/release.sh` in this order:
 
 1. Resolve the commit image tag and verify any source release digest.
 2. Create or update a Cloud Run Job using that digest and run
    `make -C app migrate-direct` with one task and zero retries.
 3. Wait for the migration job to succeed.
-4. Deploy the same digest to the Cloud Run service.
+4. Create/update `${MIGRATION_JOB_NAME}-smoke` with the same digest, the runtime service account and only pooled app credentials; execute read-only `db_smoke` and wait for success.
+5. Deploy the same digest to the Cloud Run service.
 
-If migration fails, the script exits before the Cloud Run service deploy, so the
+If migration or the app-role smoke check fails, the script exits before the Cloud Run service deploy, so the
 previous serving revision remains active. There is no automatic reverse
 migration, `makemigrations`, or startup migration. Schema changes must follow
 the expand/contract pattern because the previous application revision remains
@@ -111,3 +114,9 @@ Useful primary references:
 - [Cloud Run traffic migration and rollback](https://cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
 - [GitHub workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
 - [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+
+## Release dependency and rollback
+
+This draft now depends on Backend PR32 (and its schema foundation) because the release image must contain `db_smoke`. Do not enable it before the schema decisions and initial role credentials are approved. The smoke job checks database access using the runtime identity before deployment; it is not an HTTP check of the serving revision. An HTTP acceptance check remains part of the first Cloud Run integration.
+
+If the new service revision fails application acceptance after deployment, select the last known-good revision in the same service and route traffic back with `gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS_REVISION=100 --region=REGION --project=PROJECT`. Confirm its image digest against the last successful release record before selecting it. Verify the service and app-role smoke check afterward. Do not automatically reverse database migrations: the old revision must remain compatible through expand/contract. If schema compatibility is uncertain, stop promotion and use a forward fix or the approved recovery procedure. A failed release must not be promoted as successful.

@@ -27,6 +27,9 @@ def _deadline(seconds: float) -> Iterator[None]:
     # Management commands run in the main process/thread.  SIGALRM covers DNS
     # and address-family fallback too, which libpq's per-host timeout does not
     # necessarily bound.
+    if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+        raise RuntimeError("El límite total requiere un entorno Unix; use Docker en Windows.")
+
     previous_handler = signal.getsignal(signal.SIGALRM)
 
     def raise_deadline(signum: int, frame: object) -> None:
@@ -68,8 +71,15 @@ def _client_ssl_status() -> str:
     raw_connection = connection.connection
     if raw_connection is None:
         return "desconocido"
-    info = getattr(raw_connection, "info", None)
-    ssl_in_use = getattr(info, "ssl_in_use", None)
+    # psycopg 3 exposes libpq's client TLS state on PGconn.  ``pg_stat_ssl``
+    # describes the server-side leg and is misleading behind a Neon proxy.
+    pgconn = getattr(raw_connection, "pgconn", None)
+    ssl_in_use = getattr(pgconn, "ssl_in_use", None)
+    if ssl_in_use is None:
+        # Keep a compatibility fallback for adapters exposing only ``info``;
+        # the installed psycopg 3 driver takes the PGconn path above.
+        info = getattr(raw_connection, "info", None)
+        ssl_in_use = getattr(info, "ssl_in_use", None)
     if ssl_in_use is True:
         return "activo"
     if ssl_in_use is False:
@@ -127,12 +137,12 @@ class Command(BaseCommand):
                     user_count = User.objects.count()
                     action_log_count = ActionLog.objects.count()
                     ssl_status = _client_ssl_status()
-        except SmokeDeadlineExceededError as error:
+        except SmokeDeadlineExceededError:
             raise CommandError(
                 "DB_SMOKE ERROR\n"
                 "diagnostico: CONNECTION_FAILURE\n"
                 "detalle: PostgreSQL no respondió dentro del límite configurado."
-            ) from error
+            ) from None
         except DatabaseError as error:
             if _is_missing_schema(error):
                 raise CommandError(
@@ -140,19 +150,19 @@ class Command(BaseCommand):
                     "diagnostico: MISSING_MIGRATIONS\n"
                     "detalle: La conexión funciona, pero falta una tabla o columna de las migraciones. "
                     "Aplique las migraciones revisadas con el rol migrator; este comando no las ejecuta."
-                ) from error
+                ) from None
             if phase == "connection" or isinstance(error, OperationalError):
                 raise CommandError(
                     "DB_SMOKE ERROR\n"
                     "diagnostico: CONNECTION_FAILURE\n"
                     "detalle: No se pudo abrir o mantener la conexión PostgreSQL dentro del límite configurado."
-                ) from error
+                ) from None
             raise CommandError(
                 "DB_SMOKE ERROR\n"
                 "diagnostico: READ_FAILURE\n"
                 "detalle: La conexión funciona, pero una consulta de solo lectura falló."
-            ) from error
-        except Exception as error:  # noqa: BLE001 - redact every unexpected driver error
+            ) from None
+        except Exception:  # noqa: BLE001 - redact every unexpected driver error
             # Driver/configuration errors do not always inherit Django's
             # DatabaseError (for example, a failed psycopg connection setup).
             # Never relay their text because it may contain a URL or username.
@@ -162,7 +172,7 @@ class Command(BaseCommand):
                 if phase == "connection"
                 else "La conexión funciona, pero una consulta de solo lectura falló."
             )
-            raise CommandError(f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}") from error
+            raise CommandError(f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}") from None
         finally:
             connection.close()
             bounded_options.clear()

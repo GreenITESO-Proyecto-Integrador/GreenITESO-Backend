@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable
 from io import StringIO
 from typing import Any
@@ -74,9 +75,18 @@ def test_connection_failure_does_not_echo_connection_details(monkeypatch: pytest
     monkeypatch.setattr(connection, "ensure_connection", fail)
 
     with pytest.raises(CommandError) as raised:
-        call_command("db_smoke", "--timeout", "1", stdout=StringIO(), stderr=StringIO())
+        call_command(
+            "db_smoke",
+            "--timeout",
+            "1",
+            stdout=StringIO(),
+            stderr=StringIO(),
+            traceback=True,
+        )
 
     message = str(raised.value)
     assert "CONNECTION_FAILURE" in message
     assert secret_url not in message
     assert "super-secret" not in message
+    assert raised.value.__cause__ is None
+    assert secret_url not in "".join(traceback.format_exception(raised.value))

@@ -29,6 +29,8 @@ docker compose exec -T app python app/manage.py db_smoke --timeout 5
 Ese valor limita la conexión, el `statement_timeout`/`lock_timeout` de
 PostgreSQL y el tiempo total del proceso, incluyendo resolución y fallback de
 direcciones. Un tiempo agotado se reporta como `CONNECTION_FAILURE`.
+El límite total usa `SIGALRM`, por lo que la ejecución directa requiere Linux
+o macOS; en Windows se debe usar el contenedor Docker documentado abajo.
 
 La configuración debe seleccionar explícitamente `DJANGO_ENV`,
 `DJANGO_SECRET_KEY`, `DJANGO_DEPLOYED`, `DJANGO_CONNECTION_ROLE`,
@@ -51,7 +53,7 @@ conteos agregados y `ssl_cliente`. Los conteos no contienen PII.
 - `READ_FAILURE`: la conexión funcionó, pero una consulta de lectura falló.
 
 El estado TLS se obtiene del cliente libpq mediante
-`connection.info.ssl_in_use`. En Neon, `pg_stat_ssl` puede mostrar `false`
+`connection.connection.pgconn.ssl_in_use` (psycopg 3). En Neon, `pg_stat_ssl` puede mostrar `false`
 para una conexión que sí usa TLS entre el cliente y el proxy; por eso esa vista
 del servidor no se usa como evidencia de TLS del cliente.
 

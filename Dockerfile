@@ -41,4 +41,4 @@ COPY . /workspace/
 
 EXPOSE 8000
 
-CMD ["make", "start"]
+CMD ["make", "-C", "app", "gunicorn"]

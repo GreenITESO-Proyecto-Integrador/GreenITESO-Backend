@@ -1,0 +1,44 @@
+name: Django tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: greeniteso
+          POSTGRES_USER: greeniteso
+          POSTGRES_PASSWORD: greeniteso-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U greeniteso -d greeniteso"
+          --health-interval=3s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DJANGO_ENV: dev
+      DJANGO_DEPLOYED: "false"
+      DJANGO_CONNECTION_ROLE: app
+      DJANGO_SECRET_KEY: ci-only-secret
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
+      DATABASE_URL_UNPOOLED: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r app/requirements.txt
+      - name: Apply migrations
+        run: python app/manage.py migrate --no-input
+      - name: Check migration state
+        run: python app/manage.py makemigrations --check --dry-run
+      - name: Run tests
+        run: pytest app/tests

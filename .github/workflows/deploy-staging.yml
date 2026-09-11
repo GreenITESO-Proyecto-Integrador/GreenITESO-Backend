@@ -9,6 +9,10 @@ on:
         description: "Full approved commit SHA"
         required: true
         type: string
+      image_digest:
+        description: "Digest from a successful dev release"
+        required: true
+        type: string
 
 jobs:
   release:
@@ -20,5 +24,6 @@ jobs:
       environment: staging
       release_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
       source_ref: staging
+      image_digest: ${{ github.event_name == 'workflow_dispatch' && inputs.image_digest || '' }}
       build: false
     secrets: inherit

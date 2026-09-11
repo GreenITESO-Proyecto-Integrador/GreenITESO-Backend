@@ -37,6 +37,11 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "DATABASE_URL_UNPOOLED_SECRET": "database-direct",
         "DJANGO_ALLOWED_HOSTS": "greeniteso.example",
         "MIGRATION_JOB_NAME": "greeniteso-migrate-staging",
+        "RUNTIME_SERVICE_ACCOUNT": "runtime@project.iam.gserviceaccount.com",
+        "MIGRATION_SERVICE_ACCOUNT": "migrator@project.iam.gserviceaccount.com",
+        "CLOUD_RUN_MAX_INSTANCES": "3",
+        "CLOUD_RUN_CONCURRENCY": "40",
+        "RELEASE_RECORD_PATH": str(tmp_path / "release-record.txt"),
         "BUILD_IMAGE": "false",
     }
 
@@ -50,7 +55,7 @@ def _fake_commands(tmp_path: Path, *, migrate_status: int = 0) -> Path:
         f"echo gcloud \"$@\" >> {log}\n"
         "case \"$*\" in\n"
         "  *'artifacts docker images describe'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
-        "  *'run jobs describe'*) exit 1 ;;\n"
+        "  *'run jobs describe'*) echo 'NOT_FOUND' >&2; exit 1 ;;\n"
         f"  *'run jobs execute'*) exit {migrate_status} ;;\n"
         "esac\n"
     )
@@ -64,14 +69,14 @@ def _fake_commands(tmp_path: Path, *, migrate_status: int = 0) -> Path:
 def _run_release(tmp_path: Path, *, migrate_status: int = 0) -> tuple[subprocess.CompletedProcess[str], str]:
     env = _base_env(tmp_path)
     log = _fake_commands(tmp_path, migrate_status=migrate_status)
-    result = subprocess.run(["sh", str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
     return result, log.read_text()
 
 
 def test_release_requires_configuration() -> None:
     env = os.environ.copy()
     env.pop("GCP_PROJECT_ID", None)
-    result = subprocess.run(["sh", str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
     assert result.returncode != 0
     assert "GCP_PROJECT_ID is required" in result.stderr
 
@@ -92,6 +97,27 @@ def test_success_uses_digest_and_deploys_after_migration(tmp_path: Path) -> None
     assert migration < deploy
     assert "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in log
     assert "DATABASE_URL_UNPOOLED_SECRET" not in log
+    assert "DJANGO_ALLOWED_HOSTS=greeniteso.example" in log
+
+
+def test_promotion_digest_mismatch_stops_before_migration(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["EXPECTED_IMAGE_DIGEST"] = "sha256:" + "b" * 64
+    log = _fake_commands(tmp_path)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "does not match registry digest" in result.stderr
+    assert "run jobs" not in log.read_text()
+
+
+def test_multiple_hosts_are_encoded_as_one_env_value(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["DJANGO_ALLOWED_HOSTS"] = "greeniteso.example,admin.greeniteso.example"
+    _fake_commands(tmp_path)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    command_log = (tmp_path / "commands.log").read_text()
+    assert "^@^DJANGO_ENV=staging@DJANGO_DEPLOYED=true@DJANGO_CONNECTION_ROLE=app@DJANGO_ALLOWED_HOSTS=greeniteso.example,admin.greeniteso.example" in command_log
 
 
 def test_workflows_use_three_environments_and_no_token_push() -> None:
@@ -100,5 +126,10 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "workflow_call" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "migration" in workflow.lower()
+    assert "actions/upload-artifact@v4" in workflow
+    assert "--service-account=${MIGRATION_SERVICE_ACCOUNT}" in (ROOT / "scripts" / "release.sh").read_text()
+    assert "--service-account=\"$RUNTIME_SERVICE_ACCOUNT\"" in (ROOT / "scripts" / "release.sh").read_text()
     assert "staging" in promote and "production" in promote
+    assert "gh run list" in promote and "gh run download" in promote
+    assert "image_digest" in promote
     assert "git push" not in promote

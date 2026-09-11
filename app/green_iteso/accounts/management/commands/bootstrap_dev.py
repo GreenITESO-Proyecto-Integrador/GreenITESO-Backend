@@ -71,12 +71,11 @@ def get_or_create_demo_user(index: int, role: str) -> tuple[User, bool]:
     """Create a synthetic account without a password or Firebase identity."""
     email = f"demo-{index:02d}@example.invalid"
     identifier = demo_id("user", str(index))
-    user = (
-        User.objects.filter(pk=identifier).first()
-        or User.objects.filter(email=email).first()
-    )
+    user = User.objects.filter(pk=identifier).first()
     if user is not None:
         return user, False
+    if User.objects.filter(email=email).exists():
+        raise CommandError("Demo user identity collision; existing user was preserved.")
     user = User.objects.create(
         id=identifier,
         email=email,
@@ -99,12 +98,11 @@ def get_or_create_demo_clan(
     created_by: User | None,
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
-    clan = (
-        Clan.objects.filter(pk=demo_id("clan", key)).first()
-        or Clan.objects.filter(name=name).first()
-    )
+    clan = Clan.objects.filter(pk=demo_id("clan", key)).first()
     if clan is not None:
         return clan, False
+    if Clan.objects.filter(name=name).exists():
+        raise CommandError("Demo clan identity collision; existing clan was preserved.")
     return (
         Clan.objects.create(
             id=demo_id("clan", key),
@@ -339,5 +337,4 @@ class Command(BaseCommand):
             f"{len(private_clans)} private clans, {len(created_logs)} action logs, "
             f"{len(missions)} missions, campaign_created={campaign_created}."
         )
-        self.stdout.write(self.style.SUCCESS(message))
         return message

@@ -305,5 +305,4 @@ class Command(BaseCommand):
             f"{len(catalog.actions)} actions, {len(catalog.clans)} institutional clans "
             f"({created} created, {preserved} preserved)."
         )
-        self.stdout.write(self.style.SUCCESS(message))
         return message

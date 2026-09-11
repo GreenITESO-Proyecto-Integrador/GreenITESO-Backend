@@ -182,3 +182,18 @@ def test_demo_guard_rejects_non_local_database(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(CommandError, match="local PostgreSQL host"):
         call_command("bootstrap_dev", verbosity=0)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("collision", ["user", "clan"])
+def test_bootstrap_rejects_unrelated_identity_collisions(collision: str) -> None:
+    if collision == "user":
+        User.objects.create_user(email="demo-01@example.invalid")
+    else:
+        Clan.objects.create(name="Demo private clan 01", type=Clan.ClanType.PRIVATE)
+    before = (User.objects.count(), Clan.objects.count())
+    with pytest.raises(CommandError, match="collision"):
+        call_command("bootstrap_dev", verbosity=0)
+    assert (User.objects.count(), Clan.objects.count()) == before
+    assert ActionCategory.objects.count() == 0
+    assert ActionLog.objects.count() == 0

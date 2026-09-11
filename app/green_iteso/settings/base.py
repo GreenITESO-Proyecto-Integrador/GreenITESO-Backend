@@ -68,6 +68,12 @@ def database_from_url(
         raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
     if sslmode:
         options["sslmode"] = sslmode
+    if require_ssl:
+        # libpq 17+ understands ``system`` and uses the platform CA store.
+        # An explicit reviewed CA path in the URL remains authoritative.
+        options["sslrootcert"] = query.get("sslrootcert", ["system"])[0] or "system"
+    if query.get("channel_binding", [""])[0]:
+        options["channel_binding"] = query["channel_binding"][0]
 
     database: dict[str, object] = {
         "ENGINE": "django.db.backends.postgresql",

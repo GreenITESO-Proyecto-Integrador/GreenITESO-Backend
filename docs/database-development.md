@@ -100,6 +100,14 @@ neon databases list --project-id "$NEON_PROJECT_ID" --branch dev --output json
 La URL de conexión se obtiene por el mecanismo de secretos del ambiente; no
 se imprime en la terminal ni se pega en un archivo de onboarding.
 
+En ambientes desplegados, el parser exige `sslmode=verify-full` y configura
+`sslrootcert=system` para que libpq 17+ use el almacén de CA del sistema. Una
+ruta `sslrootcert` explícita solo se conserva cuando proviene de la URL
+revisada del ambiente. Si la URL incluye `channel_binding=require`, el valor
+se conserva. `verify-full` valida tanto la cadena de confianza como el nombre
+del servidor; consulta la [documentación de SSL de PostgreSQL 18](https://www.postgresql.org/docs/18/libpq-ssl.html)
+y la guía de [prevención de suplantación](https://www.postgresql.org/docs/18/preventing-server-spoofing.html).
+
 No se ejecuta `neon env pull` durante el onboarding. Si una tarea de Infra necesita consultar el ambiente, conserva el `.env` local y usa `--no-env-pull`; no reemplaces accidentalmente las credenciales locales ni apuntes a `production`. Los roles de la aplicación y los roles de PostgreSQL son conceptos distintos.
 
 ## Simulacro reproducible de conflicto (T10)

@@ -69,11 +69,25 @@ def test_deployed_database_roles_are_explicit() -> None:
             expected_pooled=True,
         )
     direct = database_from_url(
-        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full",
+        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full&channel_binding=require",
         require_ssl=True,
         expected_pooled=False,
     )
     assert direct["HOST"] == "example.test"
+    assert direct["OPTIONS"] == {
+        "sslmode": "verify-full",
+        "sslrootcert": "system",
+        "channel_binding": "require",
+    }
+
+    custom_ca = database_from_url(
+        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full&sslrootcert=%2Fetc%2Fgreeniteso-ca.pem",
+        require_ssl=True,
+    )
+    assert custom_ca["OPTIONS"] == {
+        "sslmode": "verify-full",
+        "sslrootcert": "/etc/greeniteso-ca.pem",
+    }
 
 
 def test_missing_environment_fails_fast() -> None:

@@ -15,7 +15,7 @@ migrate:
 	@$(DJANGO) migrate
 
 migrate-direct:
-	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; DATABASE_URL="$${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}" DJANGO_CONNECTION_ROLE=direct python manage.py migrate
+	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; DATABASE_URL="$${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}" DJANGO_CONNECTION_ROLE=direct python manage.py migrate --no-input
 
 makemigrations-check:
 	@$(DJANGO) makemigrations --check --dry-run

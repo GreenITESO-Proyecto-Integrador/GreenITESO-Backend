@@ -4,62 +4,78 @@ on:
   workflow_dispatch:
     inputs:
       promote_to:
-        description: "Environment branch to fast-forward and promote into"
+        description: "Environment branch to advance and release"
         required: true
         type: choice
         options:
-          - test
-          - preprod
-          - prod
+          - staging
+          - production
+
+concurrency:
+  group: promotion-${{ inputs.promote_to }}
+  cancel-in-progress: false
 
 jobs:
   promote:
-    name: Fast-forward ${{ inputs.promote_to }}
-    if: inputs.promote_to != 'prod'
+    name: Advance and release ${{ inputs.promote_to }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.promote_to }}
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Determine source branch
+      - name: Resolve approved source commit
         id: source
-        run: |
-          case "${{ inputs.promote_to }}" in
-            test) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
-            preprod) echo "branch=test" >> "$GITHUB_OUTPUT" ;;
-          esac
-
-      - name: Fetch source and target branches
-        run: |
-          git fetch origin "${{ steps.source.outputs.branch }}" "${{ inputs.promote_to }}"
-
-      - name: Fast-forward promote
-        run: |
-          git push origin "origin/${{ steps.source.outputs.branch }}:${{ inputs.promote_to }}"
-
-  promote-prod:
-    name: Open promotion PR to prod
-    if: inputs.promote_to == 'prod'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Open promotion PR
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.promote_to }}
         run: |
-          gh pr create \
-            --base prod \
-            --head preprod \
-            --title "promote: preprod -> prod" \
-            --body "Automated promotion opened by @${{ github.actor }} via the Promote workflow." \
-          || echo "::notice::A promotion PR from preprod to prod may already be open."
+          set -euo pipefail
+          case "$TARGET" in
+            staging) source_ref=dev; target_ref=staging; workflow=deploy-staging.yml ;;
+            production) source_ref=staging; target_ref=main; workflow=deploy-production.yml ;;
+            *) echo "Unsupported promotion target: $TARGET" >&2; exit 2 ;;
+          esac
+          source_sha="$(git ls-remote origin "refs/heads/${source_ref}" | awk '{print $1}')"
+          if [ -z "$source_sha" ]; then
+            echo "Source branch '${source_ref}' does not exist; refusing promotion." >&2
+            exit 1
+          fi
+          provenance_output="$(mktemp)"
+          trap 'rm -f "$provenance_output"' EXIT
+          RELEASE_ENVIRONMENT="$TARGET" RELEASE_SHA="$source_sha" GITHUB_OUTPUT="$provenance_output" scripts/verify-source-release.sh
+          source_digest="$(awk -F= '$1 == "image_digest" {print $2}' "$provenance_output")"
+          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+          echo "target_ref=${target_ref}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "source_digest=${source_digest}" >> "$GITHUB_OUTPUT"
+          echo "workflow=${workflow}" >> "$GITHUB_OUTPUT"
+
+      - name: Advance target branch without relying on push triggers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          TARGET_REF: ${{ steps.source.outputs.target_ref }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/${TARGET_REF}" \
+            -f sha="$SOURCE_SHA" \
+            -F force=false
+
+      - name: Dispatch target release with the approved SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ steps.source.outputs.workflow }}
+          TARGET_REF: ${{ steps.source.outputs.target_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_DIGEST: ${{ steps.source.outputs.source_digest }}
+        run: |
+          set -euo pipefail
+          gh workflow run "$WORKFLOW" \
+            --ref "$TARGET_REF" \
+            -f release_sha="$SOURCE_SHA" \
+            -f image_digest="$SOURCE_DIGEST"

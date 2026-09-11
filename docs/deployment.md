@@ -17,6 +17,11 @@ outside the reusable workflow; setting the variable to `true` still runs all
 release validation, source provenance checks, migration checks, and the
 fail-closed GCP configuration check.
 
+The GCP owner should set `CLOUD_DEPLOYMENT_ENABLED=true` only after reviewed
+replacement [PR30](https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Backend/pull/30)
+or its successor is ready for deployment. PR30 remains proposed alignment;
+GCP runtime configuration and secrets are still setup work.
+
 Before enabling promotion, create the `staging` Git branch at the reviewed release commit and verify `main` can advance by fast-forward. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
 
 ## Release behavior

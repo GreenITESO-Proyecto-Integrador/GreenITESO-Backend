@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release.sh"
+PROVENANCE = ROOT / "scripts" / "verify-source-release.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "_deploy.yml"
 PROMOTE = ROOT / ".github" / "workflows" / "promote.yml"
 
@@ -41,6 +42,7 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "MIGRATION_SERVICE_ACCOUNT": "migrator@project.iam.gserviceaccount.com",
         "CLOUD_RUN_MAX_INSTANCES": "3",
         "CLOUD_RUN_CONCURRENCY": "40",
+        "EXPECTED_IMAGE_DIGEST": "sha256:" + "a" * 64,
         "RELEASE_RECORD_PATH": str(tmp_path / "release-record.txt"),
         "BUILD_IMAGE": "false",
     }
@@ -110,6 +112,46 @@ def test_promotion_digest_mismatch_stops_before_migration(tmp_path: Path) -> Non
     assert "run jobs" not in log.read_text()
 
 
+def test_non_dev_missing_digest_stops_before_gcloud(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env.pop("EXPECTED_IMAGE_DIGEST")
+    log = _fake_commands(tmp_path)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "EXPECTED_IMAGE_DIGEST is required" in result.stderr
+    assert not log.exists()
+
+
+def test_non_dev_build_is_rejected_before_gcloud(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["BUILD_IMAGE"] = "true"
+    log = _fake_commands(tmp_path)
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "only allowed for dev" in result.stderr
+    assert not log.exists()
+
+
+def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("#!/bin/sh\nexit 0\n")
+    gh.chmod(0o755)
+    output = tmp_path / "github-output"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RELEASE_ENVIRONMENT": "staging",
+        "RELEASE_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(output),
+    }
+    result = subprocess.run([str(PROVENANCE)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "No successful" in result.stderr
+    assert not output.exists()
+
+
 def test_multiple_hosts_are_encoded_as_one_env_value(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["DJANGO_ALLOWED_HOSTS"] = "greeniteso.example,admin.greeniteso.example"
@@ -127,9 +169,11 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "cancel-in-progress: false" in workflow
     assert "migration" in workflow.lower()
     assert "actions/upload-artifact@v4" in workflow
+    assert "verify-source-release.sh" in workflow
+    assert workflow.index("Verify successful source release provenance") < workflow.index("Authenticate to Google Cloud")
     assert "--service-account=${MIGRATION_SERVICE_ACCOUNT}" in (ROOT / "scripts" / "release.sh").read_text()
     assert "--service-account=\"$RUNTIME_SERVICE_ACCOUNT\"" in (ROOT / "scripts" / "release.sh").read_text()
     assert "staging" in promote and "production" in promote
-    assert "gh run list" in promote and "gh run download" in promote
     assert "image_digest" in promote
+    assert "verify-source-release.sh" in promote
     assert "git push" not in promote

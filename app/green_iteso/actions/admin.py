@@ -21,10 +21,10 @@ class ActionMasterAdmin(admin.ModelAdmin):
         "name",
         "points",
         "daily_limit",
-        "validation_mode",
+        "validation_type",
         "is_active",
     )
-    list_filter = ("validation_mode", "is_active")
+    list_filter = ("validation_type", "is_active")
     search_fields = ("code", "name")
 
 

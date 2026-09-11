@@ -82,7 +82,10 @@ class Mission(models.Model):
         Campaign, on_delete=models.PROTECT, related_name="missions"
     )
     action = models.ForeignKey(
-        "actions.ActionMaster", on_delete=models.PROTECT, related_name="missions"
+        "actions.ActionMaster",
+        on_delete=models.PROTECT,
+        related_name="missions",
+        db_column="action_master_id",
     )
     target_count = models.PositiveIntegerField()
 

@@ -282,3 +282,14 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "image_digest" in promote
     assert "verify-source-release.sh" in promote
     assert "git push" not in promote
+
+
+def test_production_environment_uses_architecture_main_branch() -> None:
+    production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
+    promote = PROMOTE.read_text()
+    assert "branches: [main]" in production
+    assert "source_ref: main" in production
+    assert "environment: production" in production
+    assert "production) source_ref=staging; target_ref=main;" in promote
+    assert "git/refs/heads/${TARGET_REF}" in promote
+    assert '--ref "$TARGET_REF"' in promote

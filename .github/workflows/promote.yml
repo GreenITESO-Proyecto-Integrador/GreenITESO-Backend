@@ -35,8 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$TARGET" in
-            staging) source_ref=dev; workflow=deploy-staging.yml ;;
-            production) source_ref=staging; workflow=deploy-production.yml ;;
+            staging) source_ref=dev; target_ref=staging; workflow=deploy-staging.yml ;;
+            production) source_ref=staging; target_ref=main; workflow=deploy-production.yml ;;
             *) echo "Unsupported promotion target: $TARGET" >&2; exit 2 ;;
           esac
           source_sha="$(git ls-remote origin "refs/heads/${source_ref}" | awk '{print $1}')"
@@ -49,6 +49,7 @@ jobs:
           RELEASE_ENVIRONMENT="$TARGET" RELEASE_SHA="$source_sha" GITHUB_OUTPUT="$provenance_output" scripts/verify-source-release.sh
           source_digest="$(awk -F= '$1 == "image_digest" {print $2}' "$provenance_output")"
           echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+          echo "target_ref=${target_ref}" >> "$GITHUB_OUTPUT"
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
           echo "source_digest=${source_digest}" >> "$GITHUB_OUTPUT"
           echo "workflow=${workflow}" >> "$GITHUB_OUTPUT"
@@ -57,11 +58,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
-          TARGET: ${{ inputs.promote_to }}
+          TARGET_REF: ${{ steps.source.outputs.target_ref }}
         run: |
           set -euo pipefail
           gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/git/refs/heads/${TARGET}" \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/${TARGET_REF}" \
             -f sha="$SOURCE_SHA" \
             -F force=false
 
@@ -69,12 +70,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW: ${{ steps.source.outputs.workflow }}
-          TARGET: ${{ inputs.promote_to }}
+          TARGET_REF: ${{ steps.source.outputs.target_ref }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           SOURCE_DIGEST: ${{ steps.source.outputs.source_digest }}
         run: |
           set -euo pipefail
           gh workflow run "$WORKFLOW" \
-            --ref "$TARGET" \
+            --ref "$TARGET_REF" \
             -f release_sha="$SOURCE_SHA" \
             -f image_digest="$SOURCE_DIGEST"

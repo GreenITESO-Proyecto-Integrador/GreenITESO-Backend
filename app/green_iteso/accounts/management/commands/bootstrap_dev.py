@@ -327,7 +327,7 @@ def create_action_logs(context: LogSeedContext) -> int:
                 "plastic_kg_factor_snapshot": action.plastic_kg_factor,
                 "status": status,
                 "evidence_object_key": f"demo-only/action-{index:02d}.jpg"
-                if action.validation_mode == ActionMaster.ValidationMode.PHOTO
+                if action.validation_type == ActionMaster.ValidationType.PHOTO
                 else "",
                 "reviewed_by": users[1]
                 if status == ActionLog.Status.REJECTED

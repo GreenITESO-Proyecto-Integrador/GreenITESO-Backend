@@ -66,7 +66,9 @@ def test_missing_schema_sqlstates_are_diagnosed_as_unapplied_migrations() -> Non
     assert _is_missing_schema(Exception('relation "accounts_user" does not exist'))
 
 
-def test_connection_failure_does_not_echo_connection_details(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connection_failure_does_not_echo_connection_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     secret_url = "postgresql://user:super-secret@example.test:5432/greeniteso"
 
     def fail() -> None:

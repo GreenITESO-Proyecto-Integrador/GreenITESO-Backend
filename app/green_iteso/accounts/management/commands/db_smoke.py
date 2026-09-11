@@ -28,7 +28,9 @@ def _deadline(seconds: float) -> Iterator[None]:
     # and address-family fallback too, which libpq's per-host timeout does not
     # necessarily bound.
     if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
-        raise RuntimeError("El límite total requiere un entorno Unix; use Docker en Windows.")
+        raise RuntimeError(
+            "El límite total requiere un entorno Unix; use Docker en Windows."
+        )
 
     previous_handler = signal.getsignal(signal.SIGALRM)
 
@@ -49,7 +51,9 @@ def _sqlstate(error: BaseException) -> str | None:
     """Return a psycopg SQLSTATE without exposing the exception text."""
     for candidate in (error, error.__cause__):
         if candidate is not None:
-            value = getattr(candidate, "sqlstate", None) or getattr(candidate, "pgcode", None)
+            value = getattr(candidate, "sqlstate", None) or getattr(
+                candidate, "pgcode", None
+            )
             if isinstance(value, str):
                 return value
     return None
@@ -133,7 +137,9 @@ class Command(BaseCommand):
                         cursor.execute("SET TRANSACTION READ ONLY")
                         cursor.execute("SELECT 1")
                         if cursor.fetchone() != (1,):
-                            raise DatabaseError("read probe returned an unexpected value")
+                            raise DatabaseError(
+                                "read probe returned an unexpected value"
+                            )
                     user_count = User.objects.count()
                     action_log_count = ActionLog.objects.count()
                     ssl_status = _client_ssl_status()
@@ -166,13 +172,17 @@ class Command(BaseCommand):
             # Driver/configuration errors do not always inherit Django's
             # DatabaseError (for example, a failed psycopg connection setup).
             # Never relay their text because it may contain a URL or username.
-            diagnosis = "CONNECTION_FAILURE" if phase == "connection" else "READ_FAILURE"
+            diagnosis = (
+                "CONNECTION_FAILURE" if phase == "connection" else "READ_FAILURE"
+            )
             detail = (
                 "No se pudo abrir o mantener la conexión PostgreSQL dentro del límite configurado."
                 if phase == "connection"
                 else "La conexión funciona, pero una consulta de solo lectura falló."
             )
-            raise CommandError(f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}") from None
+            raise CommandError(
+                f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}"
+            ) from None
         finally:
             connection.close()
             bounded_options.clear()
@@ -180,5 +190,7 @@ class Command(BaseCommand):
 
         self.stdout.write("DB_SMOKE OK")
         self.stdout.write("conexion: OK; SELECT 1: OK")
-        self.stdout.write(f"orm: User count={user_count}; ActionLog count={action_log_count}")
+        self.stdout.write(
+            f"orm: User count={user_count}; ActionLog count={action_log_count}"
+        )
         self.stdout.write(f"ssl_cliente: {ssl_status}")

@@ -13,6 +13,7 @@ from django.db import connection
 
 from green_iteso.security import redact_database_url
 from green_iteso.settings.base import database_from_url
+from green_iteso.settings.neon_endpoints import CANONICAL_NEON_ENDPOINTS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,6 +27,15 @@ def test_timezone_contract() -> None:
 def test_database_is_postgresql() -> None:
     """The foundation cannot silently fall back to SQLite."""
     assert settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql"
+
+
+def test_local_database_host_is_not_bound_to_neon_catalog() -> None:
+    """Local development keeps accepting its disposable PostgreSQL host."""
+    config = database_from_url(
+        "postgresql://greeniteso:local@127.0.0.1:5432/greeniteso"
+    )
+    assert config["HOST"] == "127.0.0.1"
+    assert "OPTIONS" not in config
 
 
 @pytest.mark.django_db(transaction=True)
@@ -69,11 +79,11 @@ def test_deployed_database_roles_are_explicit() -> None:
             expected_pooled=True,
         )
     direct = database_from_url(
-        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full&channel_binding=require",
+        "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=verify-full&channel_binding=require",
         require_ssl=True,
         expected_pooled=False,
     )
-    assert direct["HOST"] == "example.test"
+    assert direct["HOST"] == CANONICAL_NEON_ENDPOINTS["dev"]["direct"]
     assert direct["OPTIONS"] == {
         "sslmode": "verify-full",
         "sslrootcert": (
@@ -85,13 +95,50 @@ def test_deployed_database_roles_are_explicit() -> None:
     }
 
     custom_ca = database_from_url(
-        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full&sslrootcert=%2Fetc%2Fgreeniteso-ca.pem",
+        "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=verify-full&sslrootcert=%2Fetc%2Fgreeniteso-ca.pem",
         require_ssl=True,
     )
     assert custom_ca["OPTIONS"] == {
         "sslmode": "verify-full",
         "sslrootcert": "/etc/greeniteso-ca.pem",
     }
+
+
+@pytest.mark.parametrize("environment", ["dev", "staging", "production"])
+def test_all_reviewed_environment_hosts_are_accepted(
+    environment: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both deployed roles bind to the reviewed environment endpoint."""
+    monkeypatch.setenv("DJANGO_ENV", environment)
+    for connection_kind, pooled in (("direct", False), ("pooled", True)):
+        host = CANONICAL_NEON_ENDPOINTS[environment][connection_kind]
+        config = database_from_url(
+            f"postgresql://alice:secret@{host}:5432/db?sslmode=verify-full&"
+            "sslrootcert=/etc/greeniteso-ca.pem&channel_binding=require",
+            require_ssl=True,
+            expected_pooled=pooled,
+        )
+        assert config["HOST"] == host
+        assert config["OPTIONS"] == {
+            "sslmode": "verify-full",
+            "sslrootcert": "/etc/greeniteso-ca.pem",
+            "channel_binding": "require",
+        }
+
+
+@pytest.mark.parametrize("pooled", [False, True])
+def test_wrong_environment_host_is_rejected_for_both_roles(
+    pooled: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staging secret cannot silently target production, even with valid TLS."""
+    monkeypatch.setenv("DJANGO_ENV", "staging")
+    host = CANONICAL_NEON_ENDPOINTS["production"]["pooled" if pooled else "direct"]
+    with pytest.raises(RuntimeError, match="canonical staging"):
+        database_from_url(
+            f"postgresql://alice:secret@{host}:5432/db?sslmode=verify-full",
+            require_ssl=True,
+            expected_pooled=pooled,
+        )
 
 
 def test_missing_environment_fails_fast() -> None:

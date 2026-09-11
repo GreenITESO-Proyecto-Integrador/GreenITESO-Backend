@@ -32,7 +32,7 @@ def _create_history() -> ActionLog:
         description="Synthetic recovery check action",
         points=7,
         daily_limit=1,
-        validation_mode=ActionMaster.ValidationMode.DECLARATIVE_BUTTON,
+        validation_type=ActionMaster.ValidationType.NONE,
     )
     return ActionLog.objects.create(
         user=user,

@@ -25,13 +25,13 @@ comando de baseline exige que `pre` exista y que `post` todavía no exista. Los
 dos argumentos deben ser UUIDs de los registros sintéticos; no se imprimen
 otros campos del registro.
 
-Captura el baseline antes de la operación de recuperación:
+Define `PRE_MARKER_ID` con el UUID de un ActionLog sintético existente y `POST_MARKER_ID` con un UUID reservado que todavía no existe. Captura el baseline antes de la operación de recuperación:
 
 ```sh
 python app/manage.py db_recovery_verify \
   --write-baseline /tmp/recovery-baseline.json \
-  --pre-marker-id <uuid-pre-t> \
-  --post-marker-id <uuid-post-t> \
+  --pre-marker-id "$PRE_MARKER_ID" \
+  --post-marker-id "$POST_MARKER_ID" \
   --timeout 10
 ```
 
@@ -80,3 +80,9 @@ POSTGRES_PORT=55462 docker-compose -p recovery-verifier down -v
 La limpieza final elimina únicamente los contenedores y volumenes del proyecto
 `recovery-verifier`. No uses la base compartida `test_greeniteso` para este
 ejercicio.
+
+## Selección de una rama temporal
+
+El guard de ambientes desplegados solo permite los endpoints canónicos de dev/staging/production. Una rama de recuperación temporal debe verificarse desde un proceso operador local separado (`DJANGO_DEPLOYED=false`, `DJANGO_ENV=dev`), con una credencial de solo lectura y `DATABASE_URL` del destino explícitamente revisado, incluyendo `sslmode=verify-full`. Carga los valores desde un archivo privado fuera del repositorio o un gestor de secretos; no pegues la URL en el comando ni cambies la configuración del servicio desplegado. Ejecuta únicamente este verificador, que impone transacción de solo lectura.
+
+Coordina una ventana sin otras escrituras entre la captura del baseline y el punto T elegido; después crea el marcador posterior y restaura a T. Conserva junto al baseline el ID de rama, el timestamp UTC y la duración del ensayo. El timestamp del JSON describe la captura y no sustituye la evidencia del punto de restauración de Neon. Cambiar tráfico a un endpoint restaurado requiere actualizar y revisar el inventario canónico de Backend e Infra; este comando no realiza ese cambio.

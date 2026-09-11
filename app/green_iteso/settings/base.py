@@ -69,9 +69,11 @@ def database_from_url(
     if sslmode:
         options["sslmode"] = sslmode
     if require_ssl:
-        # libpq 17+ understands ``system`` and uses the platform CA store.
-        # An explicit reviewed CA path in the URL remains authoritative.
-        options["sslrootcert"] = query.get("sslrootcert", ["system"])[0] or "system"
+        # The psycopg binary wheel's OpenSSL paths may not match Debian's
+        # system store. Use the installed bundle explicitly in our image.
+        bundle = Path("/etc/ssl/certs/ca-certificates.crt")
+        default_ca = str(bundle) if bundle.is_file() else "system"
+        options["sslrootcert"] = query.get("sslrootcert", [default_ca])[0] or default_ca
     if query.get("channel_binding", [""])[0]:
         options["channel_binding"] = query["channel_binding"][0]
 

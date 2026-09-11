@@ -76,7 +76,11 @@ def test_deployed_database_roles_are_explicit() -> None:
     assert direct["HOST"] == "example.test"
     assert direct["OPTIONS"] == {
         "sslmode": "verify-full",
-        "sslrootcert": "system",
+        "sslrootcert": (
+            "/etc/ssl/certs/ca-certificates.crt"
+            if Path("/etc/ssl/certs/ca-certificates.crt").is_file()
+            else "system"
+        ),
         "channel_binding": "require",
     }
 

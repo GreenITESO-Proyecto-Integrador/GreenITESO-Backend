@@ -51,6 +51,11 @@ if [[ ! "$CLOUD_RUN_MAX_INSTANCES" =~ ^[1-9][0-9]*$ ]] ||
   echo "CLOUD_RUN_MAX_INSTANCES and CLOUD_RUN_CONCURRENCY must be positive integers" >&2
   exit 2
 fi
+# Cloud Run permits up to 49 characters; reserve six for the smoke suffix.
+if [[ ! "$MIGRATION_JOB_NAME" =~ ^[a-z]([a-z0-9-]*[a-z0-9])?$ ]] || (( ${#MIGRATION_JOB_NAME} > 43 )); then
+  echo "MIGRATION_JOB_NAME must be a lowercase Cloud Run name of at most 43 characters" >&2
+  exit 2
+fi
 if [[ "$RUNTIME_SERVICE_ACCOUNT" == "$MIGRATION_SERVICE_ACCOUNT" ]]; then
   echo "RUNTIME_SERVICE_ACCOUNT and MIGRATION_SERVICE_ACCOUNT must be distinct" >&2
   exit 2

@@ -325,3 +325,15 @@ def test_release_waits_for_tests_of_approved_sha() -> None:
     assert "uses: ./.github/workflows/tests.yaml" in workflow
     assert "ref: ${{ inputs.release_sha }}" in workflow
     assert "needs: validate" in workflow
+
+
+def test_invalid_job_name_stops_before_migration(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["MIGRATION_JOB_NAME"] = "a" * 44
+    log = _fake_commands(tmp_path)
+    result = subprocess.run(
+        [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode != 0
+    assert "MIGRATION_JOB_NAME" in result.stderr
+    assert not log.exists()

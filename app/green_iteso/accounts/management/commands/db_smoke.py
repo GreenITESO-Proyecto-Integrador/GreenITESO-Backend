@@ -142,7 +142,9 @@ class Command(BaseCommand):
                     # This makes accidental future writes fail at the database
                     # boundary, in addition to this command containing no DML.
                     with connection.cursor() as cursor:
-                        cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                        cursor.execute(
+                            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+                        )
                         cursor.execute("SET TRANSACTION READ ONLY")
                         _set_transaction_bounds(cursor, raw_timeout)
                         cursor.execute("SELECT 1")

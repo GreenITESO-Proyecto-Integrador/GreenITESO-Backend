@@ -45,3 +45,14 @@ disable = [
 
 [tool.pylint.format]
 max-line-length = 120
+[tool.pylint.main]
+load-plugins = ["pylint_django"]
+# Generated migration state is checked by Django/PG integration, not style inference.
+ignore-paths = [".*/migrations/.*"]
+
+[tool.pylint.django]
+django-settings-module = "green_iteso.settings"
+
+[tool.pylint.design]
+# Django TextChoices intentionally composes Enum, str and Choices hierarchies.
+ignored-parents = ["django.db.models.enums.TextChoices"]

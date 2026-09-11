@@ -9,6 +9,7 @@ El entorno soportado es Python 3.14 dentro del Dev Container o Docker Compose. P
 ```sh
 cp .env.example .env
 make compose-up
+# en otra terminal:
 make migrate
 make makemigrations-check
 make test
@@ -22,7 +23,7 @@ El esquema lo declaran los modelos y las migraciones de Django. Antes de la prim
 
 No edites ni renombres migraciones aplicadas, no uses `--fake` para ocultar drift y no ejecutes `makemigrations` ni `migrate` desde el arranque de Gunicorn. El job de release aplica una vez las migraciones con la conexión directa antes de cambiar el tráfico.
 
-Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P10/P11 son decisiones de producto pendientes y no deben asumirse en código.
+Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P10/P11 siguen pendientes; el código que explore sus propuestas permanece en borrador y no se aplica a ambientes compartidos.
 
 ## Servicios externos
 
@@ -38,3 +39,5 @@ make test
 ```
 
 No pongas credenciales, tokens, URLs completas de conexión, fotos ni payloads personales en el repositorio o en los logs. Antes de abrir un PR, revisa también `.gitignore`, la migración generada y el diff de SQL cuando una restricción o `on_delete` sea relevante.
+
+Usa Conventional Commits para commits y títulos de PR (`feat:`, `fix:`, `docs:`). Conserva las reglas de `app/pyproject.toml`: firmas tipadas, nombres PEP 8, imports ordenados y checks de Django/Bugbear.

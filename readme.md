@@ -5,7 +5,7 @@ API Django REST de GreenITESO. El desarrollo diario usa PostgreSQL 18 local en D
 ## Primer arranque
 
 ```sh
-git clone <URL_DEL_REPO>
+git clone https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Backend.git
 cd GreenITESO-Backend
 cp .env.example .env             # obligatorio; no lo comitees
 make compose-up

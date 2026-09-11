@@ -24,7 +24,7 @@ CONTAINER_DATABASE = "rehearsal"
 
 
 def write_fixture(root: Path) -> None:
-    """Create an isolated Django project with two incompatible migration leaves."""
+    """Create an isolated Django project with two conflicting, compatible migration leaves."""
     files = {
         "manage.py": '''#!/usr/bin/env python3
 import os
@@ -159,6 +159,8 @@ def run_manage(root: Path, database_url: str, *arguments: str) -> subprocess.Com
     """Run one management command and return its captured result."""
     environment = os.environ.copy()
     environment["MIGRATION_REHEARSAL_DATABASE_URL"] = database_url
+    environment["DJANGO_SETTINGS_MODULE"] = "fixture_project.settings"
+    environment["PYTHONPATH"] = str(root)
     return subprocess.run(
         [sys.executable, "manage.py", *arguments],
         cwd=root,
@@ -181,6 +183,8 @@ def assert_failed(label: str, result: subprocess.CompletedProcess[str]) -> None:
     """Require a command intended to expose the conflict to fail."""
     if result.returncode == 0:
         raise AssertionError(f"{label} unexpectedly succeeded")
+    if "Conflicting migrations detected" not in result.stdout + result.stderr:
+        raise AssertionError(f"{label} failed for a reason other than a migration conflict")
 
 
 def add_merge_migration(root: Path) -> None:
@@ -286,11 +290,6 @@ def start_postgres() -> tuple[str, str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--database-url",
-        default=os.environ.get("MIGRATION_REHEARSAL_DATABASE_URL"),
-        help="Disposable PostgreSQL URL; omit it to start postgres:18 with Docker.",
-    )
-    parser.add_argument(
         "--keep-container",
         action="store_true",
         help="Keep the auto-started container for inspection (for debugging only).",
@@ -300,11 +299,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    database_url = args.database_url
     container: str | None = None
     try:
-        if database_url is None:
-            database_url, container = start_postgres()
+        database_url, container = start_postgres()
         wait_for_postgres(database_url)
         version = postgres_version(database_url)
         print(f"[database] PostgreSQL server_version_num={version}")

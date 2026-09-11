@@ -42,16 +42,21 @@ def test_database_url_redacts_credentials() -> None:
     redacted = redact_database_url("postgresql://alice:secret@example.test:5432/db")
     assert redacted == "postgresql://alice:***@example.test:5432/db"
     assert "secret" not in redacted
-    assert redact_database_url("postgresql://alice@example.test:5432/db?password=secret&sslmode=require") == (
-        "postgresql://alice@example.test:5432/db?password=%2A%2A%2A&sslmode=require"
+    assert redact_database_url(
+        "postgresql://alice@example.test:5432/db?password=secret&sslmode=require"
+    ) == ("postgresql://alice@example.test:5432/db?password=%2A%2A%2A&sslmode=require")
+    assert (
+        redact_database_url("not-a-database-url?password=secret")
+        == "<redacted database URL>"
     )
-    assert redact_database_url("not-a-database-url?password=secret") == "<redacted database URL>"
 
 
 def test_deployed_database_roles_are_explicit() -> None:
     """SSL and pooler role checks prevent swapping app and migration URLs."""
     with pytest.raises(RuntimeError, match="sslmode"):
-        database_from_url("postgresql://alice:secret@example.test:5432/db", require_ssl=True)
+        database_from_url(
+            "postgresql://alice:secret@example.test:5432/db", require_ssl=True
+        )
     with pytest.raises(RuntimeError, match="pooler"):
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db?sslmode=require",
@@ -69,7 +74,12 @@ def test_deployed_database_roles_are_explicit() -> None:
 def test_missing_environment_fails_fast() -> None:
     """A fresh checkout does not pick an environment or cloud settings implicitly."""
     environment = os.environ.copy()
-    for key in ("DJANGO_ENV", "DJANGO_SECRET_KEY", "DATABASE_URL", "DATABASE_URL_UNPOOLED"):
+    for key in (
+        "DJANGO_ENV",
+        "DJANGO_SECRET_KEY",
+        "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
+    ):
         environment.pop(key, None)
     # An empty process value deliberately wins over the local dotenv example.
     environment["DJANGO_ENV"] = ""

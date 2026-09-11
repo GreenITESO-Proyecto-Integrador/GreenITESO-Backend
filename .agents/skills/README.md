@@ -8,6 +8,6 @@ Estas guías son copias seleccionadas de neondatabase/agent-skills, commit
 
 Las referencias incluidas pertenecen solo a esas guías. El material está
 redistribuido bajo Apache-2.0; la copia de la licencia está en
-[.agents/licenses/Apache-2.0.txt](.agents/licenses/Apache-2.0.txt). Para actualizarlo hay que
+[.agents/licenses/Apache-2.0.txt](../licenses/Apache-2.0.txt). Para actualizarlo hay que
 revisar primero el commit upstream y cambiar este inventario junto con el
 overlay de AGENTS.md.

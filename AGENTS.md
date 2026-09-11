@@ -7,8 +7,8 @@ generales de las skills vendorizadas:
   credenciales de Neon.
 - Neon solo tiene las ramas cloud dev, staging y production. No se crean
   ramas por PR ni se usa Neon para bases de cada desarrollador.
-- Un comando que consulte Neon identifica siempre --project-id y --branch de
-  forma explícita. No se hace neon env pull durante el onboarding; cuando
+- Todo comando identifica --project-id; las operaciones sobre una rama
+  identifican también su destino explícito (nombre/ID o --branch según el comando). No se hace neon env pull durante el onboarding; cuando
   corresponda, se usa --no-env-pull.
 - Los modelos y migraciones de Django son la única fuente del esquema. No se
   agrega neon.ts ni se usa Neon Auth: la autenticación acordada es Firebase y
@@ -17,5 +17,5 @@ generales de las skills vendorizadas:
   ejecutan una vez por ambiente con la conexión directa; la aplicación usa la
   URL pooled.
 
-P3/P8/P9/P10/P11 siguen pendientes de ratificación. No conviertas sus
-propuestas en reglas de código sin actualizar el contrato del proyecto.
+P3/P8/P9/P10/P11 siguen pendientes de ratificación. Se permiten implementaciones en borradores identificados; no se fusionan ni se
+aplican a ambientes compartidos hasta registrar la ratificación.

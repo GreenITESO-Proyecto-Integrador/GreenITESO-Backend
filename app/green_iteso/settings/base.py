@@ -57,7 +57,9 @@ def database_from_url(
     if expected_pooled is True and not is_pooled:
         raise RuntimeError("Deployed app DATABASE_URL must use the Neon pooler host.")
     if expected_pooled is False and is_pooled:
-        raise RuntimeError("Direct migration DATABASE_URL must not use the Neon pooler host.")
+        raise RuntimeError(
+            "Direct migration DATABASE_URL must not use the Neon pooler host."
+        )
 
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}

@@ -23,20 +23,10 @@ uv run --python 3.14 \
   scripts/rehearse-migration-conflict.py
 ```
 
-El comando requiere Docker disponible para iniciar `postgres:18`. También se
-puede apuntar a una base desechable ya iniciada:
-
-```sh
-MIGRATION_REHEARSAL_DATABASE_URL='postgresql://user:password@127.0.0.1:5432/db' \
-uv run --python 3.14 \
-  --with 'Django==5.2.17' \
-  --with 'psycopg[binary]==3.3.5' \
-  scripts/rehearse-migration-conflict.py
-```
-
-La URL del ejemplo debe pertenecer a una base desechable y no se debe pegar en
-logs ni en documentación. El script exige `server_version_num` 18; SQLite no
-es un sustituto válido para este ejercicio.
+El comando requiere Docker y uv en el host. Siempre crea su propio PostgreSQL
+18 desechable: no acepta URLs de una base existente. `--keep-container` permite
+conservar únicamente ese contenedor para inspección. SQLite no es un sustituto
+válido para este ejercicio.
 
 ## Evidencia observada
 

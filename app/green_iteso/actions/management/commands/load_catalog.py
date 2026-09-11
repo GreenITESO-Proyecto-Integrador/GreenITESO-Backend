@@ -138,7 +138,7 @@ def _validate_actions(
     """Validate action rows and category references."""
     action_codes: set[str] = set()
     actions: list[dict[str, Any]] = []
-    valid_modes = {choice for choice, _label in ActionMaster.ValidationMode.choices}
+    valid_types = {choice for choice, _label in ActionMaster.ValidationType.choices}
     for index, item in enumerate(raw_actions):
         if not isinstance(item, dict):
             raise CommandError(f"actions[{index}] must be an object.")
@@ -153,10 +153,10 @@ def _validate_actions(
             raise CommandError(
                 f"actions[{index}] references unknown category code {category_code!r}."
             )
-        mode = item.get("validation_mode")
-        if mode not in valid_modes:
+        validation_type = item.get("validation_type")
+        if validation_type not in valid_types:
             raise CommandError(
-                f"actions[{index}].validation_mode must be one of {sorted(valid_modes)}."
+                f"actions[{index}].validation_type must be one of {sorted(valid_types)}."
             )
         is_active = item.get("is_active", True)
         if not isinstance(is_active, bool):
@@ -175,7 +175,7 @@ def _validate_actions(
                 "daily_limit": _positive_int(
                     item.get("daily_limit"), f"actions[{index}].daily_limit"
                 ),
-                "validation_mode": mode,
+                "validation_type": validation_type,
                 "co2_kg_factor": _factor(
                     item.get("co2_kg_factor", 0), f"actions[{index}].co2_kg_factor"
                 ),
@@ -304,7 +304,7 @@ class Command(BaseCommand):
                         "description": item["description"],
                         "points": item["points"],
                         "daily_limit": item["daily_limit"],
-                        "validation_mode": item["validation_mode"],
+                        "validation_type": item["validation_type"],
                         "co2_kg_factor": item["co2_kg_factor"],
                         "water_liters_factor": item["water_liters_factor"],
                         "plastic_kg_factor": item["plastic_kg_factor"],

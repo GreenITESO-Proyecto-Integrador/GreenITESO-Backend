@@ -66,7 +66,7 @@ def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> No
         description="Must not be appropriated by the demo fixture.",
         points=99,
         daily_limit=1,
-        validation_mode=ActionMaster.ValidationMode.DECLARATIVE_BUTTON,
+        validation_type=ActionMaster.ValidationType.NONE,
     )
     options = {"as_of": "2030-01-15T12:00:00+00:00", "verbosity": 0}
     call_command("bootstrap_dev", **options)
@@ -129,7 +129,7 @@ def test_invalid_catalog_input_is_atomic(tmp_path: Path) -> None:
                 "description": "Invalid fixture",
                 "points": 0,
                 "daily_limit": 1,
-                "validation_mode": "DECLARATIVE_BUTTON",
+                "validation_type": "NONE",
             }
         ],
         "institutional_clans": [],

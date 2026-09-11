@@ -16,6 +16,7 @@ on:
 
 jobs:
   release:
+    if: vars.CLOUD_DEPLOYMENT_ENABLED == 'true'
     permissions:
       contents: read
       actions: read

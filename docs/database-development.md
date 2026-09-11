@@ -100,6 +100,14 @@ neon databases list --project-id "$NEON_PROJECT_ID" --branch dev --output json
 La URL de conexión se obtiene por el mecanismo de secretos del ambiente; no
 se imprime en la terminal ni se pega en un archivo de onboarding.
 
+En ambientes desplegados, el parser exige `sslmode=verify-full` y configura
+`sslrootcert=/etc/ssl/certs/ca-certificates.crt` cuando existe ese bundle (incluido explícitamente en Docker); en otras plataformas usa `system`. Esto evita que las rutas OpenSSL del wheel binario de psycopg ignoren el bundle de Debian. Una
+ruta `sslrootcert` explícita solo se conserva cuando proviene de la URL
+revisada del ambiente. Si la URL incluye `channel_binding=require`, el valor
+se conserva. `verify-full` valida tanto la cadena de confianza como el nombre
+del servidor; consulta la [documentación de SSL de PostgreSQL 18](https://www.postgresql.org/docs/18/libpq-ssl.html)
+y la guía de [prevención de suplantación](https://www.postgresql.org/docs/18/preventing-server-spoofing.html).
+
 No se ejecuta `neon env pull` durante el onboarding. Si una tarea de Infra necesita consultar el ambiente, conserva el `.env` local y usa `--no-env-pull`; no reemplaces accidentalmente las credenciales locales ni apuntes a `production`. Los roles de la aplicación y los roles de PostgreSQL son conceptos distintos.
 
 ## Simulacro reproducible de conflicto (T10)
@@ -108,3 +116,5 @@ El [ensayo con PostgreSQL 18](migration-conflict-rehearsal.md) reproduce dos
 hojas incompatibles para el grafo, conserva ambas operaciones mediante un
 merge compatible y verifica columnas y datos. Se ejecuta en una base desechable
 propia, sin tocar las migraciones del proyecto.
+
+Verificación 2026-09-11: conexión de diagnóstico desde la imagen Linux, psycopg3.3.5/libpq18.6, `verify-full` + bundle Debian: TLS activo y SELECT1 correcto en Neon dev. No sustituye pruebas desde Cloud Run.

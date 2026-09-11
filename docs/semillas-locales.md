@@ -33,8 +33,8 @@ checkouts. Si un código ya existe, sus datos actuales se conservan para no
 pisar una edición hecha desde Admin; por ello una actualización de catálogo
 requiere una decisión y una migración/importación versionada explícita.
 El campo `validation_type` usa únicamente `NONE` o `PHOTO` según el ERD
-aprobado; estos valores siguen siendo DRAFT y no constituyen una decisión de
-Producto.
+aprobado. La asignación de un tipo a cada acción de esta semilla sigue siendo
+DRAFT, igual que sus puntos, límites y factores ambientales.
 
 La semilla provisional se rechaza cuando `DJANGO_DEPLOYED=true`, así que no
 puede cargar accidentalmente valores DRAFT en staging o producción. También

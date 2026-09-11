@@ -35,8 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$TARGET" in
-            staging) source_ref=dev; workflow=deploy-staging.yml ;;
-            production) source_ref=staging; workflow=deploy-production.yml ;;
+            staging) source_ref=dev; source_workflow=deploy-dev.yml; workflow=deploy-staging.yml ;;
+            production) source_ref=staging; source_workflow=deploy-staging.yml; workflow=deploy-production.yml ;;
             *) echo "Unsupported promotion target: $TARGET" >&2; exit 2 ;;
           esac
           source_sha="$(git ls-remote origin "refs/heads/${source_ref}" | awk '{print $1}')"
@@ -44,8 +44,32 @@ jobs:
             echo "Source branch '${source_ref}' does not exist; refusing promotion." >&2
             exit 1
           fi
+          source_run_id="$(gh run list --workflow "$source_workflow" \
+            --branch "$source_ref" --commit "$source_sha" --status completed \
+            --limit 50 --json databaseId,conclusion \
+            --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty')"
+          if [ -z "$source_run_id" ]; then
+            echo "No successful ${source_workflow} run exists for ${source_sha}; refusing promotion." >&2
+            exit 1
+          fi
+          artifact_name="release-digest-${source_ref}-${source_sha}"
+          record_dir="$(mktemp -d)"
+          trap 'rm -rf "$record_dir"' EXIT
+          gh run download "$source_run_id" --name "$artifact_name" --dir "$record_dir"
+          record_file="$record_dir/release-record.txt"
+          if [ ! -f "$record_file" ]; then
+            echo "Successful source run has no release record artifact; refusing promotion." >&2
+            exit 1
+          fi
+          record_sha="$(awk -F= '$1 == "release_sha" {print $2}' "$record_file")"
+          source_digest="$(awk -F= '$1 == "image_digest" {print $2}' "$record_file")"
+          if [ "$record_sha" != "$source_sha" ] || [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Source release record does not match ${source_sha} or has no valid digest." >&2
+            exit 1
+          fi
           echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "source_digest=${source_digest}" >> "$GITHUB_OUTPUT"
           echo "workflow=${workflow}" >> "$GITHUB_OUTPUT"
 
       - name: Advance target branch without relying on push triggers
@@ -66,8 +90,10 @@ jobs:
           WORKFLOW: ${{ steps.source.outputs.workflow }}
           TARGET: ${{ inputs.promote_to }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_DIGEST: ${{ steps.source.outputs.source_digest }}
         run: |
           set -euo pipefail
           gh workflow run "$WORKFLOW" \
             --ref "$TARGET" \
-            -f release_sha="$SOURCE_SHA"
+            -f release_sha="$SOURCE_SHA" \
+            -f image_digest="$SOURCE_DIGEST"

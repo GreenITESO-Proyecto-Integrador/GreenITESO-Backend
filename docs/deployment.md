@@ -14,21 +14,25 @@ branch protections, and production reviewers remain setup work.
 ## Release behavior
 
 `.github/workflows/deploy-dev.yml` builds and pushes an image tagged with the
-full approved commit SHA. The reusable `.github/workflows/_deploy.yml` then
-resolves that tag to an Artifact Registry digest. Staging and production reuse
-the same digest; they do not rebuild the image.
+full approved commit SHA. The reusable `.github/workflows/_deploy.yml` resolves
+that tag to an Artifact Registry digest and writes a release record only after
+the service deploy succeeds. Staging and production reuse the recorded digest;
+they do not rebuild the image.
 
 `.github/workflows/promote.yml` advances the target branch through the GitHub
 API and explicitly dispatches the target release workflow with the approved
 commit SHA. It does not rely on a `GITHUB_TOKEN` branch push to trigger another
 workflow. The target release checks that its branch still points to the
-approved SHA immediately before migration. Per-environment releases are
-serialized with `cancel-in-progress: false`; a stale queued release fails
-before it can run a migration.
+approved SHA immediately before migration. A promotion also looks up a
+successful source release run for that exact SHA, downloads its post-deploy
+digest record, and passes that digest to the target. The target verifies the
+recorded digest still matches Artifact Registry before migration. Per-environment
+releases are serialized with `cancel-in-progress: false`; a stale queued
+release fails before it can run a migration.
 
 Each release runs `scripts/release.sh` in this order:
 
-1. Resolve the immutable image digest.
+1. Resolve the commit image tag and verify any source release digest.
 2. Create or update a Cloud Run Job using that digest and run
    `make -C app migrate-direct` with one task and zero retries.
 3. Wait for the migration job to succeed.
@@ -66,6 +70,10 @@ as secrets:
 - `IMAGE_PROJECT_ID` (the project hosting the shared Artifact Registry image)
 - `CLOUD_RUN_SERVICE`
 - `MIGRATION_JOB_NAME`
+- `RUNTIME_SERVICE_ACCOUNT` (pooled runtime credential)
+- `MIGRATION_SERVICE_ACCOUNT` (direct migration credential)
+- `CLOUD_RUN_MAX_INSTANCES` (small positive bound, for example `3`)
+- `CLOUD_RUN_CONCURRENCY` (bounded Gunicorn-aligned concurrency, for example `40`)
 - `DJANGO_SECRET_KEY_SECRET` (Secret Manager secret ID or reference)
 - `DATABASE_URL_SECRET` (pooled runtime connection)
 - `DATABASE_URL_UNPOOLED_SECRET` (direct migration connection)
@@ -78,11 +86,14 @@ deployment. Local tests mock `gcloud` and verify migration failure prevents a
 service deploy. They are preparation evidence and do not claim Cloud Run
 execution.
 
-The service account used by each release needs permission to run and update
-Cloud Run Jobs and deploy Cloud Run services, plus permission to read the
-referenced Secret Manager secrets and pull the shared image. The dev release
-also needs Artifact Registry write permission. Configure the exact IAM policy
-after the GCP project is selected.
+The GitHub deploy identity needs permission to update jobs and services and to
+act as the two runtime identities. The migration service account should have
+only direct database secret access and image pull access. The runtime service
+account should have only pooled database secret access and image pull access.
+The dev release identity also needs Artifact Registry write permission. The
+service is deployed with explicit max instances and concurrency, and the
+Gunicorn command uses the foundation defaults of two workers and two threads.
+Configure the exact IAM policy after the GCP project is selected.
 
 Useful primary references:
 

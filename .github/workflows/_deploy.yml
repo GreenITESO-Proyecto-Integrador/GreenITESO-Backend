@@ -19,6 +19,10 @@ on:
         description: "Build and push the immutable commit image (dev only)"
         required: true
         type: boolean
+      image_digest:
+        description: "Digest recorded by a successful source-environment release"
+        required: false
+        type: string
 
 concurrency:
   group: release-${{ inputs.environment }}
@@ -42,12 +46,13 @@ jobs:
 
       - name: Reject stale release before migration
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ inputs.release_sha }}
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
-          current_sha="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          # checkout persists the authenticated origin credential helper; keep
+          # the token out of command arguments and process listings.
+          current_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
           if [ -z "$current_sha" ]; then
             echo "Source ref '${SOURCE_REF}' does not exist; refusing release." >&2
             exit 1
@@ -72,9 +77,13 @@ jobs:
           DATABASE_URL_UNPOOLED_SECRET: ${{ secrets.DATABASE_URL_UNPOOLED_SECRET }}
           DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
           MIGRATION_JOB_NAME: ${{ secrets.MIGRATION_JOB_NAME }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ secrets.RUNTIME_SERVICE_ACCOUNT }}
+          MIGRATION_SERVICE_ACCOUNT: ${{ secrets.MIGRATION_SERVICE_ACCOUNT }}
+          CLOUD_RUN_MAX_INSTANCES: ${{ secrets.CLOUD_RUN_MAX_INSTANCES }}
+          CLOUD_RUN_CONCURRENCY: ${{ secrets.CLOUD_RUN_CONCURRENCY }}
         run: |
           set -euo pipefail
-          for name in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT ARTIFACT_REGISTRY_LOCATION ARTIFACT_REGISTRY_REPO IMAGE_PROJECT_ID CLOUD_RUN_SERVICE DJANGO_SECRET_KEY_SECRET DATABASE_URL_SECRET DATABASE_URL_UNPOOLED_SECRET DJANGO_ALLOWED_HOSTS MIGRATION_JOB_NAME; do
+          for name in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT ARTIFACT_REGISTRY_LOCATION ARTIFACT_REGISTRY_REPO IMAGE_PROJECT_ID CLOUD_RUN_SERVICE DJANGO_SECRET_KEY_SECRET DATABASE_URL_SECRET DATABASE_URL_UNPOOLED_SECRET DJANGO_ALLOWED_HOSTS MIGRATION_JOB_NAME RUNTIME_SERVICE_ACCOUNT MIGRATION_SERVICE_ACCOUNT CLOUD_RUN_MAX_INSTANCES CLOUD_RUN_CONCURRENCY; do
             if [ -z "${!name:-}" ]; then
               echo "${name} is required in the '${{ inputs.environment }}' GitHub Environment." >&2
               exit 2
@@ -101,10 +110,24 @@ jobs:
           CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ inputs.release_sha }}
+          EXPECTED_IMAGE_DIGEST: ${{ inputs.image_digest }}
           BUILD_IMAGE: ${{ inputs.build }}
           DJANGO_SECRET_KEY_SECRET: ${{ secrets.DJANGO_SECRET_KEY_SECRET }}
           DATABASE_URL_SECRET: ${{ secrets.DATABASE_URL_SECRET }}
           DATABASE_URL_UNPOOLED_SECRET: ${{ secrets.DATABASE_URL_UNPOOLED_SECRET }}
           DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
           MIGRATION_JOB_NAME: ${{ secrets.MIGRATION_JOB_NAME }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ secrets.RUNTIME_SERVICE_ACCOUNT }}
+          MIGRATION_SERVICE_ACCOUNT: ${{ secrets.MIGRATION_SERVICE_ACCOUNT }}
+          CLOUD_RUN_MAX_INSTANCES: ${{ secrets.CLOUD_RUN_MAX_INSTANCES }}
+          CLOUD_RUN_CONCURRENCY: ${{ secrets.CLOUD_RUN_CONCURRENCY }}
         run: scripts/release.sh
+
+      - name: Record successful release digest
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-digest-${{ inputs.environment }}-${{ inputs.release_sha }}
+          path: release-record.txt
+          if-no-files-found: error
+          retention-days: 90

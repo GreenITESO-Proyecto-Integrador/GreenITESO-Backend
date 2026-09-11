@@ -9,6 +9,14 @@ feature branch --PR--> dev --(promote)--> staging --(promote)--> main [productio
 The Git branch names are `dev`, `staging`, and `main`, following Notion diagram 5. The corresponding GitHub Environments and Neon branches are `dev`, `staging`, and `production`. This repository change
 does not create or rename remote branches. GitHub now has application Environments `dev`, `staging`, and `production` (`copilot` is tooling). Staging allows only Git `staging`; production allows only Git `main` and requires review by Fernando (`luci-efe`). The `staging` Git branch, branch protections, GCP configuration and secrets remain setup work.
 
+The three replacement release callers are opt-in through the repository
+variable `CLOUD_DEPLOYMENT_ENABLED`. It is currently unset, so pushes and
+manual dispatches skip the release job before a runner, GitHub Environment,
+or deployment secret is made available. The caller guard is intentionally
+outside the reusable workflow; setting the variable to `true` still runs all
+release validation, source provenance checks, migration checks, and the
+fail-closed GCP configuration check.
+
 Before enabling promotion, create the `staging` Git branch at the reviewed release commit and verify `main` can advance by fast-forward. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
 
 ## Release behavior

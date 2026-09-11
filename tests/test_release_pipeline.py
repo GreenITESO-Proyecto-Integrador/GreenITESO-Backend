@@ -298,6 +298,27 @@ def test_production_environment_uses_architecture_main_branch() -> None:
     assert '--ref "$TARGET_REF"' in promote
 
 
+def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
+    for filename in ("deploy-dev.yml", "deploy-staging.yml", "deploy-production.yml"):
+        caller = (ROOT / ".github" / "workflows" / filename).read_text()
+        assert (
+            "jobs:\n  release:\n    if: vars.CLOUD_DEPLOYMENT_ENABLED == 'true'\n"
+            in caller
+        )
+        assert "uses: ./.github/workflows/_deploy.yml" in caller
+        assert "secrets: inherit" in caller
+
+    for filename in ("deploy-staging.yml", "deploy-production.yml"):
+        caller = (ROOT / ".github" / "workflows" / filename).read_text()
+        assert "workflow_dispatch:" in caller
+        assert "release_sha:" in caller
+        assert "image_digest:" in caller
+
+    reusable = WORKFLOW.read_text()
+    assert "Validate release configuration" in reusable
+    assert "for name in GCP_PROJECT_ID" in reusable
+
+
 def test_smoke_failure_does_not_deploy_or_record(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     log = _fake_commands(tmp_path, smoke_status=1)

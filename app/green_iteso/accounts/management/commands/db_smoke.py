@@ -112,6 +112,15 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _restore_bounded_options(
+    bounded_options: dict[str, object], original_options: dict[str, object]
+) -> None:
+    """Close the connection and restore process-local settings."""
+    connection.close()
+    bounded_options.clear()
+    bounded_options.update(original_options)
+
+
 class Command(BaseCommand):
     """Check PostgreSQL reachability and the minimal migrated ORM schema."""
 
@@ -196,9 +205,7 @@ class Command(BaseCommand):
                 f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}"
             ) from None
         finally:
-            connection.close()
-            bounded_options.clear()
-            bounded_options.update(original_options)
+            _restore_bounded_options(bounded_options, original_options)
 
         self.stdout.write("DB_SMOKE OK")
         self.stdout.write("conexion: OK; SELECT 1: OK")

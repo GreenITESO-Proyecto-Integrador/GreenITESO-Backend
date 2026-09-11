@@ -21,6 +21,7 @@ from green_iteso.accounts.management.commands.db_smoke import (
     SmokeDeadlineExceededError,
     _deadline,
     _is_missing_schema,
+    _restore_bounded_options,
     _set_bounded_options,
     _set_transaction_bounds,
 )
@@ -260,7 +261,7 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
 
     tables = snapshot.get("tables")
     if not isinstance(tables, dict) or any(
-        type(value) is not int or value < 0 for value in tables.values()
+        not _is_nonnegative_integer(value) for value in tables.values()
     ):
         raise CommandError(f"{label} no contiene conteos de tablas válidos.")
 
@@ -289,22 +290,38 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
         )
     fk_orphans = action_logs.get("fk_orphans")
     if not isinstance(fk_orphans, dict) or any(
-        type(value) is not int or value != 0 for value in fk_orphans.values()
+        not _is_zero_integer(value) for value in fk_orphans.values()
     ):
         raise CommandError(
             f"{label} contiene referencias foráneas huérfanas; no es evidencia íntegra."
         )
     history = action_logs.get("history_fingerprint")
-    if (
-        not isinstance(history, dict)
-        or history.get("algorithm") != "sha256"
-        or not isinstance(history.get("count"), int)
-        or history["count"] < 0
-        or not isinstance(history.get("digest"), str)
-        or len(history["digest"]) != 64
-        or any(character not in "0123456789abcdef" for character in history["digest"])
-    ):
+    if not _is_valid_history_fingerprint(history):
         raise CommandError(f"{label} no contiene la huella histórica requerida.")
+
+
+def _is_nonnegative_integer(value: object) -> bool:
+    """Accept JSON counts while excluding booleans from the integer type."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_zero_integer(value: object) -> bool:
+    """Accept only a real integer zero for an orphan check."""
+    return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
+
+def _is_valid_history_fingerprint(value: object) -> bool:
+    """Validate the public shape of the metadata-only history digest."""
+    if not isinstance(value, dict):
+        return False
+    digest = value.get("digest")
+    return (
+        value.get("algorithm") == "sha256"
+        and _is_nonnegative_integer(value.get("count"))
+        and isinstance(digest, str)
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    )
 
 
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
@@ -339,6 +356,74 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     if actual_markers.get("post_present"):
         mismatches.append("POST_MARKER_PRESENT")
     return mismatches
+
+
+def _read_snapshot(
+    timeout: float,
+    expected: dict[str, Any] | None,
+    pre_marker: str | None,
+    post_marker: str | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Capture one coherent read-only snapshot and optional comparison codes."""
+    with _deadline(timeout):
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                cursor.execute("SET TRANSACTION READ ONLY")
+                _set_transaction_bounds(cursor, timeout)
+            if expected is not None:
+                markers = expected["markers"]
+                actual = _snapshot(str(markers["pre_id"]), str(markers["post_id"]))
+                _validate_snapshot(actual, "El estado actual")
+                return actual, _compare(expected, actual)
+            actual = _snapshot(str(pre_marker), str(post_marker))
+            _validate_snapshot(actual, "El estado actual")
+            return actual, []
+
+
+def _parse_mode(
+    options: dict[str, object],
+) -> tuple[Path | None, Path | None, str | None, str | None]:
+    """Validate mode flags and return normalized paths and marker UUIDs."""
+    baseline_path: Path | None = options.get("baseline")  # type: ignore[assignment]
+    write_path: Path | None = options.get("write_baseline")  # type: ignore[assignment]
+    pre_marker = options.get("pre_marker_id")
+    post_marker = options.get("post_marker_id")
+    if write_path is not None:
+        if not pre_marker or not post_marker:
+            raise CommandError(
+                "--write-baseline requiere --pre-marker-id y --post-marker-id."
+            )
+        pre_id = _marker_id(str(pre_marker), "--pre-marker-id")
+        post_id = _marker_id(str(post_marker), "--post-marker-id")
+        if pre_id == post_id:
+            raise CommandError("Los marcadores sintéticos deben ser distintos.")
+        return baseline_path, write_path, pre_id, post_id
+    if pre_marker is not None or post_marker is not None:
+        raise CommandError("Los marcadores solo se indican al crear el baseline.")
+    return baseline_path, write_path, None, None
+
+
+def _write_baseline(path: Path, snapshot: dict[str, Any]) -> None:
+    """Create a private baseline without replacing existing evidence."""
+    if not snapshot["markers"]["pre_present"] or snapshot["markers"]["post_present"]:
+        raise CommandError(
+            "RECOVERY_VERIFY ERROR\ndiagnostico: MARKER_BASELINE_INVALID\n"
+            "detalle: El baseline requiere marcador previo presente y posterior ausente."
+        )
+    try:
+        payload = (
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        )
+        file_descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.chmod(path, 0o600)
+    except OSError:
+        raise CommandError(
+            "RECOVERY_VERIFY ERROR\ndiagnostico: BASELINE_WRITE_FAILURE\n"
+            "detalle: No se pudo escribir el baseline solicitado."
+        ) from None
 
 
 class Command(BaseCommand):
@@ -379,21 +464,8 @@ class Command(BaseCommand):
         if not 0.1 <= timeout <= MAX_TIMEOUT_SECONDS:
             raise CommandError("--timeout debe estar entre 0.1 y 60 segundos.")
 
-        baseline_path: Path | None = options.get("baseline")
-        write_path: Path | None = options.get("write_baseline")
-        pre_marker = options.get("pre_marker_id")
-        post_marker = options.get("post_marker_id")
-        if write_path is not None:
-            if not pre_marker or not post_marker:
-                raise CommandError(
-                    "--write-baseline requiere --pre-marker-id y --post-marker-id."
-                )
-            pre_marker = _marker_id(str(pre_marker), "--pre-marker-id")
-            post_marker = _marker_id(str(post_marker), "--post-marker-id")
-            if pre_marker == post_marker:
-                raise CommandError("Los marcadores sintéticos deben ser distintos.")
-        elif pre_marker is not None or post_marker is not None:
-            raise CommandError("Los marcadores solo se indican al crear el baseline.")
+        typed_options = dict(options)
+        baseline_path, write_path, pre_marker, post_marker = _parse_mode(typed_options)
 
         expected: dict[str, Any] | None = None
         if baseline_path is not None:
@@ -402,25 +474,9 @@ class Command(BaseCommand):
         bounded_options, original_options = _set_bounded_options(timeout)
         try:
             connection.close()
-            with _deadline(timeout):
-                with transaction.atomic():
-                    with connection.cursor() as cursor:
-                        cursor.execute(
-                            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-                        )
-                        cursor.execute("SET TRANSACTION READ ONLY")
-                        _set_transaction_bounds(cursor, timeout)
-                    if baseline_path is not None:
-                        markers = expected["markers"]
-                        actual = _snapshot(
-                            str(markers["pre_id"]), str(markers["post_id"])
-                        )
-                        _validate_snapshot(actual, "El estado actual")
-                        mismatches = _compare(expected, actual)
-                    else:
-                        actual = _snapshot(str(pre_marker), str(post_marker))
-                        _validate_snapshot(actual, "El estado actual")
-                        mismatches = []
+            actual, mismatches = _read_snapshot(
+                timeout, expected, pre_marker, post_marker
+            )
         except CommandError:
             raise
         except SmokeDeadlineExceededError:
@@ -449,37 +505,10 @@ class Command(BaseCommand):
                 "detalle: No se pudo completar la verificación de recuperación."
             ) from None
         finally:
-            connection.close()
-            bounded_options.clear()
-            bounded_options.update(original_options)
+            _restore_bounded_options(bounded_options, original_options)
 
-        if write_path is not None and actual is not None:
-            if (
-                not actual["markers"]["pre_present"]
-                or actual["markers"]["post_present"]
-            ):
-                raise CommandError(
-                    "RECOVERY_VERIFY ERROR\ndiagnostico: MARKER_BASELINE_INVALID\n"
-                    "detalle: El baseline requiere marcador previo presente y posterior ausente."
-                )
-            try:
-                payload = (
-                    json.dumps(actual, ensure_ascii=False, indent=2, sort_keys=True)
-                    + "\n"
-                )
-                file_descriptor = os.open(
-                    write_path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
-                )
-                with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-                    handle.write(payload)
-                os.chmod(write_path, 0o600)
-            except OSError:
-                raise CommandError(
-                    "RECOVERY_VERIFY ERROR\ndiagnostico: BASELINE_WRITE_FAILURE\n"
-                    "detalle: No se pudo escribir el baseline solicitado."
-                ) from None
+        if write_path is not None:
+            _write_baseline(write_path, actual)
             self.stdout.write("RECOVERY_VERIFY BASELINE_OK")
             self.stdout.write(
                 "migrations: captured; tables: captured; action_logs: captured"

@@ -78,8 +78,10 @@ def _factor(value: object, field: str) -> Decimal:
     return factor.quantize(Decimal("0.001"))
 
 
-def validate_catalog(payload: object) -> CatalogData:
-    """Validate every field before opening a write transaction."""
+def _payload_parts(
+    payload: object,
+) -> tuple[int, list[object], list[object], list[object]]:
+    """Validate envelope fields and return the three raw collections."""
     if not isinstance(payload, dict):
         raise CommandError("Catalog payload must be a JSON object.")
     if payload.get("status") != "DRAFT":
@@ -101,6 +103,13 @@ def validate_catalog(payload: object) -> CatalogData:
             "categories, actions, and institutional_clans must be arrays."
         )
 
+    return version, raw_categories, raw_actions, raw_clans
+
+
+def _validate_categories(
+    raw_categories: list[object],
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Validate category rows and return their stable code index."""
     category_codes: set[str] = set()
     categories: list[dict[str, Any]] = []
     for index, item in enumerate(raw_categories):
@@ -120,7 +129,13 @@ def validate_catalog(payload: object) -> CatalogData:
                 "icon": str(item.get("icon", "")).strip(),
             }
         )
+    return categories, category_codes
 
+
+def _validate_actions(
+    raw_actions: list[object], category_codes: set[str]
+) -> list[dict[str, Any]]:
+    """Validate action rows and category references."""
     action_codes: set[str] = set()
     actions: list[dict[str, Any]] = []
     valid_modes = {choice for choice, _label in ActionMaster.ValidationMode.choices}
@@ -175,7 +190,11 @@ def validate_catalog(payload: object) -> CatalogData:
                 "is_active": is_active,
             }
         )
+    return actions
 
+
+def _validate_clans(raw_clans: list[object]) -> list[dict[str, Any]]:
+    """Validate institutional clan reference rows."""
     clan_keys: set[str] = set()
     clans: list[dict[str, Any]] = []
     for index, item in enumerate(raw_clans):
@@ -206,7 +225,15 @@ def validate_catalog(payload: object) -> CatalogData:
                 ),
             }
         )
+    return clans
 
+
+def validate_catalog(payload: object) -> CatalogData:
+    """Validate every field before opening a write transaction."""
+    version, raw_categories, raw_actions, raw_clans = _payload_parts(payload)
+    categories, category_codes = _validate_categories(raw_categories)
+    actions = _validate_actions(raw_actions, category_codes)
+    clans = _validate_clans(raw_clans)
     return CatalogData(version, tuple(categories), tuple(actions), tuple(clans))
 
 

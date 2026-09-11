@@ -62,6 +62,16 @@ jobs:
             exit 1
           fi
 
+      - name: Verify successful source release provenance
+        id: provenance
+        if: inputs.environment != 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          REQUESTED_IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: scripts/verify-source-release.sh
+
       - name: Validate release configuration
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -110,7 +120,7 @@ jobs:
           CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ inputs.release_sha }}
-          EXPECTED_IMAGE_DIGEST: ${{ inputs.image_digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ inputs.image_digest || steps.provenance.outputs.image_digest }}
           BUILD_IMAGE: ${{ inputs.build }}
           DJANGO_SECRET_KEY_SECRET: ${{ secrets.DJANGO_SECRET_KEY_SECRET }}
           DATABASE_URL_SECRET: ${{ secrets.DATABASE_URL_SECRET }}

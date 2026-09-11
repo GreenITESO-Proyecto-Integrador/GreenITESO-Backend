@@ -38,6 +38,14 @@ if [[ "${BUILD_IMAGE:-false}" != true && "${BUILD_IMAGE:-false}" != false ]]; th
   echo "BUILD_IMAGE must be true or false" >&2
   exit 2
 fi
+if [[ "$RELEASE_ENVIRONMENT" != dev && "${BUILD_IMAGE:-false}" == true ]]; then
+  echo "BUILD_IMAGE=true is only allowed for dev releases" >&2
+  exit 2
+fi
+if [[ "$RELEASE_ENVIRONMENT" != dev && -z "${EXPECTED_IMAGE_DIGEST:-}" ]]; then
+  echo "EXPECTED_IMAGE_DIGEST is required for ${RELEASE_ENVIRONMENT} releases" >&2
+  exit 2
+fi
 if [[ ! "$CLOUD_RUN_MAX_INSTANCES" =~ ^[1-9][0-9]*$ ]] ||
    [[ ! "$CLOUD_RUN_CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
   echo "CLOUD_RUN_MAX_INSTANCES and CLOUD_RUN_CONCURRENCY must be positive integers" >&2

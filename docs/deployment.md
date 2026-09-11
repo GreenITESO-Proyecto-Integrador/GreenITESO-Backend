@@ -30,6 +30,12 @@ recorded digest still matches Artifact Registry before migration. Per-environmen
 releases are serialized with `cancel-in-progress: false`; a stale queued
 release fails before it can run a migration.
 
+The same provenance check runs inside the reusable workflow for every staging
+and production entry point, including a direct branch push or manual dispatch.
+An empty or user-supplied digest cannot bypass the successful source-release
+check. Non-dev invocations of `scripts/release.sh` also fail closed without a
+verified expected digest.
+
 Each release runs `scripts/release.sh` in this order:
 
 1. Resolve the commit image tag and verify any source release digest.

@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from dotenv import load_dotenv
 
 from green_iteso.security import redact_database_url
+from green_iteso.settings.neon_endpoints import canonical_neon_host
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR.parent / ".env", override=False)
@@ -60,12 +61,20 @@ def database_from_url(
         raise RuntimeError(
             "Direct migration DATABASE_URL must not use the Neon pooler host."
         )
-
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}
     sslmode = query.get("sslmode", [""])[0]
     if require_ssl and sslmode != "verify-full":
         raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
+    if require_ssl:
+        deployed_environment = os.environ.get("DJANGO_ENV", "")
+        expected_host = canonical_neon_host(deployed_environment, pooled=is_pooled)
+        if parsed.hostname.lower() != expected_host:
+            connection_kind = "pooled" if is_pooled else "direct"
+            raise RuntimeError(
+                f"DATABASE_URL host does not match the canonical {deployed_environment} "
+                f"{connection_kind} Neon endpoint."
+            )
     if sslmode:
         options["sslmode"] = sslmode
     if require_ssl:

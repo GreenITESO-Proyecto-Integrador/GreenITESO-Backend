@@ -108,6 +108,22 @@ se conserva. `verify-full` valida tanto la cadena de confianza como el nombre
 del servidor; consulta la [documentación de SSL de PostgreSQL 18](https://www.postgresql.org/docs/18/libpq-ssl.html)
 y la guía de [prevención de suplantación](https://www.postgresql.org/docs/18/preventing-server-spoofing.html).
 
+El host de `DATABASE_URL` también queda ligado al ambiente: `DJANGO_ENV` solo
+acepta el endpoint revisado para `dev`, `staging` o `production`, y el rol
+`app` debe usar su variante `-pooler` mientras `direct` usa el endpoint sin
+`-pooler`. La tabla comprometida en
+`app/green_iteso/settings/neon_endpoints.py` refleja el inventario de Infra e
+incluye el segmento de routing `c-4`. No agregues un host esperado por variable
+de entorno ni reutilices un secreto de otro ambiente; el arranque falla antes
+de abrir la conexión si no coincide el host canónico.
+
+La imagen Docker predeterminada es la etapa `production`: contiene Django y
+`make` para los entrypoints de release, y ejecuta como `appuser` sin sudo,
+compilador ni cuenta de desarrollo. `compose.yaml` selecciona la etapa
+`development` para el flujo local y Dev Containers, que conserva `adminuser`,
+`make` y sudo. Para validar una imagen local de release usa `docker build .`;
+para trabajo interactivo usa el Compose documentado arriba.
+
 No se ejecuta `neon env pull` durante el onboarding. Si una tarea de Infra necesita consultar el ambiente, conserva el `.env` local y usa `--no-env-pull`; no reemplaces accidentalmente las credenciales locales ni apuntes a `production`. Los roles de la aplicación y los roles de PostgreSQL son conceptos distintos.
 
 ## Simulacro reproducible de conflicto (T10)

@@ -12,7 +12,14 @@ __pycache__
 htmlcov
 *.egg-info
 .env
-.env.local
+.env.*
+.neon
+.neon.*
+.config/neon
+.pgpass
+.pg_service.conf
+.venv
+.agents
 node_modules
 .DS_Store
 volume/

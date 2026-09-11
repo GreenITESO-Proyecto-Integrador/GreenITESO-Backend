@@ -24,6 +24,21 @@ feature branch --PR--> dev --(promote)--> test --(promote)--> preprod --(promote
   configured with required reviewers — this is the manual approval gate
   before production.
 
+## Current deployment gate
+
+The legacy reusable workflow fails closed until the Cloud Run contract is
+ready. It rejects the old `test`/`preprod` names, requires all environment
+scoped GCP and Artifact Registry settings, and requires the environment
+variable `DJANGO_RUNTIME_CONFIG_READY=true`. PR30 is still pending; set that
+variable only after the Cloud Run service receives the Django runtime configuration through the
+approved secret/configuration path and the reviewed one shot migration
+pipeline is available. Until then, a push to a deployment branch fails with a
+dependency message instead of starting a runtime that cannot import settings.
+
+The replacement release workflow can remove this gate once it supplies the
+same settings contract and runs reviewed migrations before serving the new
+revision. No deployment is implied by this local foundation branch.
+
 ## One-time GCP setup (per environment project)
 
 Create four GCP projects, e.g. `greeniteso-dev`, `greeniteso-test`,
@@ -58,6 +73,9 @@ Additionally, on the `dev` project only:
    - `CLOUD_RUN_SERVICE`
    - `DEV_GCP_PROJECT_ID` (same value — the dev project ID — in all four,
      since it identifies where the shared image lives)
+   Add the environment variable `DJANGO_RUNTIME_CONFIG_READY` separately;
+   leave it unset until the approved runtime and migration pipeline are ready,
+   then set it to `true`.
 3. On the `prod` Environment, add required reviewers under protection rules.
    This is what makes the `prod` deploy pause for manual approval.
 4. Add branch protection to `dev`/`test`/`preprod`/`prod` requiring the
@@ -66,8 +84,8 @@ Additionally, on the `dev` project only:
 
 ## Known limitation
 
-The `Dockerfile`'s `CMD ["make", "start"]` runs Django's development server
-(`runserver`), not a production WSGI server. That's acceptable for `dev`,
-but this same image is what reaches `preprod`/`prod` under this pipeline.
-Switching to gunicorn (or similar) before serving real production traffic
-is a recommended follow-up, tracked separately from this pipeline change.
+The legacy workflow still contains the historical `test`/`preprod` callers and
+does not yet provision the Cloud Run Django runtime settings itself. The
+fail-closed gate above prevents those callers from deploying the gunicorn image
+until the environment names, runtime secret path, and reviewed migration step
+are supplied by the replacement release workflow.

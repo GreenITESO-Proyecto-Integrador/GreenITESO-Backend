@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?copy .env.example to .env}
+      POSTGRES_USER: ${POSTGRES_USER:?copy .env.example to .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:?set POSTGRES_PORT in .env}:5432"
+    volumes:
+      - greeniteso_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    restart: unless-stopped
+    working_dir: /workspace
+    environment:
+      DJANGO_ENV: ${DJANGO_ENV:?set DJANGO_ENV in .env}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS in .env}
+      DJANGO_DEPLOYED: ${DJANGO_DEPLOYED:?set DJANGO_DEPLOYED in .env}
+      DJANGO_CONNECTION_ROLE: ${DJANGO_CONNECTION_ROLE:?set DJANGO_CONNECTION_ROLE in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:?set APP_PORT in .env}:8000"
+    volumes:
+      - .:/workspace
+    command: ["make", "-C", "app", "start"]
+
+volumes:
+  greeniteso_postgres_data:

@@ -276,12 +276,22 @@ def start_postgres() -> tuple[str, str]:
     )
     if completed.returncode != 0:
         raise RuntimeError(f"could not start postgres: {completed.stderr.strip()}")
-    port_result = subprocess.run(
-        ["docker", "port", container, "5432/tcp"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        port_result = subprocess.run(
+            ["docker", "port", container, "5432/tcp"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except BaseException:
+        # ``main`` cannot clean up a container until this function returns;
+        # remove it here when Docker starts but port discovery fails.
+        subprocess.run(
+            ["docker", "rm", "--force", container],
+            check=False,
+            capture_output=True,
+        )
+        raise
     host_port = port_result.stdout.strip().rsplit(":", maxsplit=1)[-1]
     url = f"postgresql://{CONTAINER_USER}:{CONTAINER_PASSWORD}@127.0.0.1:{host_port}/{CONTAINER_DATABASE}"
     return url, container

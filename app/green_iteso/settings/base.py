@@ -64,12 +64,18 @@ def database_from_url(
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}
     sslmode = query.get("sslmode", [""])[0]
-    if require_ssl and sslmode not in {"require", "verify-ca", "verify-full"}:
-        raise RuntimeError(
-            "Deployed PostgreSQL URLs must include sslmode=require, verify-ca, or verify-full."
-        )
+    if require_ssl and sslmode != "verify-full":
+        raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
     if sslmode:
         options["sslmode"] = sslmode
+    if require_ssl:
+        # The psycopg binary wheel's OpenSSL paths may not match Debian's
+        # system store. Use the installed bundle explicitly in our image.
+        bundle = Path("/etc/ssl/certs/ca-certificates.crt")
+        default_ca = str(bundle) if bundle.is_file() else "system"
+        options["sslrootcert"] = query.get("sslrootcert", [default_ca])[0] or default_ca
+    if query.get("channel_binding", [""])[0]:
+        options["channel_binding"] = query["channel_binding"][0]
 
     database: dict[str, object] = {
         "ENGINE": "django.db.backends.postgresql",

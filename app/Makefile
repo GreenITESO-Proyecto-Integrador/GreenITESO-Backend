@@ -25,4 +25,5 @@ test:
 	@cd .. && if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; pytest
 
 lint:
-	ruff check green_iteso tests
+	cd .. && ruff check app/
+	cd .. && ruff format --check app/

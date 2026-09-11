@@ -6,6 +6,7 @@ import math
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DatabaseError, OperationalError, connection, transaction
@@ -92,16 +93,23 @@ def _client_ssl_status() -> str:
 
 
 def _set_bounded_options(timeout: float) -> tuple[dict[str, object], dict[str, object]]:
-    """Apply process-local libpq and PostgreSQL statement bounds."""
+    """Apply only the process-local libpq connection bound."""
     settings_dict = connection.settings_dict
     options = settings_dict.setdefault("OPTIONS", {})
     original = dict(options)
-    milliseconds = max(1, math.ceil(timeout * 1000))
     options["connect_timeout"] = max(1, math.ceil(timeout))
-    bounded = f"-c statement_timeout={milliseconds} -c lock_timeout={milliseconds}"
-    existing = str(options.get("options", "")).strip()
-    options["options"] = f"{existing} {bounded}".strip()
     return options, original
+
+
+def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
+    """Set read transaction bounds without relying on startup options."""
+    milliseconds = max(1, math.ceil(timeout * 1000))
+    value = f"{milliseconds}ms"
+    cursor.execute(
+        "SELECT set_config('statement_timeout', %s, true), "
+        "set_config('lock_timeout', %s, true)",
+        [value, value],
+    )
 
 
 class Command(BaseCommand):
@@ -134,7 +142,9 @@ class Command(BaseCommand):
                     # This makes accidental future writes fail at the database
                     # boundary, in addition to this command containing no DML.
                     with connection.cursor() as cursor:
+                        cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                         cursor.execute("SET TRANSACTION READ ONLY")
+                        _set_transaction_bounds(cursor, raw_timeout)
                         cursor.execute("SELECT 1")
                         if cursor.fetchone() != (1,):
                             raise DatabaseError(

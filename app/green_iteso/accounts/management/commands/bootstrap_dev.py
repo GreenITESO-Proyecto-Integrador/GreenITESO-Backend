@@ -339,7 +339,8 @@ def create_action_logs(context: LogSeedContext) -> int:
             },
         )
         created_count += was_created
-        add_mission_contribution(index, status, log, action, missions)
+        if was_created:
+            add_mission_contribution(index, status, log, action, missions)
     return created_count
 
 

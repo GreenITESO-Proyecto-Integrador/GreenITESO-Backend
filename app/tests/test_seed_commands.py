@@ -197,3 +197,19 @@ def test_bootstrap_rejects_unrelated_identity_collisions(collision: str) -> None
     assert (User.objects.count(), Clan.objects.count()) == before
     assert ActionCategory.objects.count() == 0
     assert ActionLog.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_bootstrap_does_not_recreate_reversed_contributions() -> None:
+    call_command("bootstrap_dev", verbosity=0)
+    contribution = ActionLogMissionContribution.objects.select_related(
+        "action_log"
+    ).first()
+    log = contribution.action_log
+    log.status = ActionLog.Status.REJECTED
+    log.save(update_fields=["status"])
+    contribution.delete()
+    call_command("bootstrap_dev", verbosity=0)
+    log.refresh_from_db()
+    assert log.status == ActionLog.Status.REJECTED
+    assert not log.mission_contributions.exists()

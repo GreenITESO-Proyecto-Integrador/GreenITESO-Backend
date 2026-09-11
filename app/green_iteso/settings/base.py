@@ -64,10 +64,8 @@ def database_from_url(
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}
     sslmode = query.get("sslmode", [""])[0]
-    if require_ssl and sslmode not in {"require", "verify-ca", "verify-full"}:
-        raise RuntimeError(
-            "Deployed PostgreSQL URLs must include sslmode=require, verify-ca, or verify-full."
-        )
+    if require_ssl and sslmode != "verify-full":
+        raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
     if sslmode:
         options["sslmode"] = sslmode
 

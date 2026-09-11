@@ -34,7 +34,7 @@ def test_real_postgresql_transaction() -> None:
     with connection.cursor() as cursor:
         cursor.execute("SELECT current_setting('server_version_num')")
         version = int(cursor.fetchone()[0])
-    assert version >= 180000
+    assert 180000 <= version < 190000
 
 
 def test_database_url_redacts_credentials() -> None:
@@ -57,14 +57,19 @@ def test_deployed_database_roles_are_explicit() -> None:
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db", require_ssl=True
         )
-    with pytest.raises(RuntimeError, match="pooler"):
+    with pytest.raises(RuntimeError, match="sslmode=verify-full"):
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db?sslmode=require",
+            require_ssl=True,
+        )
+    with pytest.raises(RuntimeError, match="pooler"):
+        database_from_url(
+            "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full",
             require_ssl=True,
             expected_pooled=True,
         )
     direct = database_from_url(
-        "postgresql://alice:secret@example.test:5432/db?sslmode=require",
+        "postgresql://alice:secret@example.test:5432/db?sslmode=verify-full",
         require_ssl=True,
         expected_pooled=False,
     )

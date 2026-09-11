@@ -2,7 +2,7 @@ name: Release - production
 
 on:
   push:
-    branches: [production]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_sha:
@@ -24,7 +24,7 @@ jobs:
     with:
       environment: production
       release_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
-      source_ref: production
+      source_ref: main
       image_digest: ${{ github.event_name == 'workflow_dispatch' && inputs.image_digest || '' }}
       build: false
     secrets: inherit

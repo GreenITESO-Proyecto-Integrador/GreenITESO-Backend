@@ -3,15 +3,15 @@
 The proposed promotion path has three deployed environments:
 
 ```
-feature branch --PR--> dev --(promote)--> staging --(promote)--> production
+feature branch --PR--> dev --(promote)--> staging --(promote)--> main [production]
 ```
 
-The branch names are `dev`, `staging`, and `production`. This repository change
+The Git branch names are `dev`, `staging`, and `main`, following Notion diagram 5. The corresponding GitHub Environments and Neon branches are `dev`, `staging`, and `production`. This repository change
 does not create or rename remote branches. The existing GitHub setup currently
 has `dev` as its only application Environment (`copilot` is tooling), so the staging and production Environments,
 branch protections, and production reviewers remain setup work.
 
-Before enabling promotion, create the `staging` and `production` Git branches at the reviewed release commit. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
+Before enabling promotion, create the `staging` Git branch at the reviewed release commit and verify `main` can advance by fast-forward. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
 
 ## Release behavior
 

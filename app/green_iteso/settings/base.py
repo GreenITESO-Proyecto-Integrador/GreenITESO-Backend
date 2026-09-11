@@ -77,7 +77,7 @@ def database_from_url(
             )
     if sslmode:
         options["sslmode"] = sslmode
-    if require_ssl:
+    if sslmode == "verify-full":
         # The psycopg binary wheel's OpenSSL paths may not match Debian's
         # system store. Use the installed bundle explicitly in our image.
         bundle = Path("/etc/ssl/certs/ca-certificates.crt")

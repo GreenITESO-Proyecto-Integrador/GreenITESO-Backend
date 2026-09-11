@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?copy .env.example to .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
     ports:
-      - "${POSTGRES_PORT:?set POSTGRES_PORT in .env}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:?set POSTGRES_PORT in .env}:5432"
     volumes:
       - greeniteso_postgres_data:/var/lib/postgresql
     healthcheck:
@@ -35,7 +35,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${APP_PORT:?set APP_PORT in .env}:8000"
     volumes:
       - .:/workspace
     command: ["make", "-C", "app", "start"]

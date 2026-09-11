@@ -133,6 +133,19 @@ echo "Running migration job ${MIGRATION_JOB_NAME} for ${RELEASE_ENVIRONMENT}"
 gcloud run jobs execute "$MIGRATION_JOB_NAME" \
   --region="$GCP_REGION" --project="$GCP_PROJECT_ID" --wait
 
+# Verify the same image using only the app identity before changing traffic.
+# This catches missing grants, incorrect pooled credentials and ORM failures.
+SMOKE_JOB_NAME="${MIGRATION_JOB_NAME}-smoke"
+gcloud run jobs deploy "$SMOKE_JOB_NAME" \
+  --image="$IMAGE_BY_DIGEST" \
+  --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=60s \
+  --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+  --command=python --args=app/manage.py,db_smoke,--timeout,15 \
+  --set-env-vars="$RUNTIME_ENV" --set-secrets="$RUNTIME_SECRETS" \
+  --region="$GCP_REGION" --project="$GCP_PROJECT_ID" --quiet
+gcloud run jobs execute "$SMOKE_JOB_NAME" \
+  --region="$GCP_REGION" --project="$GCP_PROJECT_ID" --wait
+
 # Keep this command after the successful --wait. A failed job leaves the
 # previous service revision serving because this deploy is never reached.
 gcloud run deploy "$CLOUD_RUN_SERVICE" \

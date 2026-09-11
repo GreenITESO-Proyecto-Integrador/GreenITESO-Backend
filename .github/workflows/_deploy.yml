@@ -29,7 +29,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yaml
+    with:
+      ref: ${{ inputs.release_sha }}
+
   release:
+    needs: validate
     name: Migrate and release ${{ inputs.environment }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}

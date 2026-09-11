@@ -1,0 +1,24 @@
+name: Release - staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Full approved commit SHA"
+        required: true
+        type: string
+
+jobs:
+  release:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      release_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+      source_ref: staging
+      build: false
+    secrets: inherit

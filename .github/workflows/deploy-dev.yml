@@ -1,16 +1,18 @@
-name: Deploy - dev
+name: Release - dev
 
 on:
   push:
     branches: [dev]
 
 jobs:
-  deploy:
+  release:
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: dev
+      release_sha: ${{ github.sha }}
+      source_ref: dev
       build: true
     secrets: inherit

@@ -1,73 +1,94 @@
-# Deployment: trunk-based promotion pipeline
+# Deployment: three-environment release pipeline
 
-Four long-lived branches map 1:1 to four GCP environments. Code flows one
-direction only: `dev` → `test` → `preprod` → `prod`.
+The proposed promotion path has three deployed environments:
 
 ```
-feature branch --PR--> dev --(promote)--> test --(promote)--> preprod --(promote)--> prod
+feature branch --PR--> dev --(promote)--> staging --(promote)--> production
 ```
 
-- Feature branches merge into `dev` via normal PRs (gated by the existing
-  `Ruff` and `Precommit` checks).
-- Pushing to `dev` builds the Docker image once, tags it `sha-<short-sha>`,
-  pushes it to Artifact Registry, and deploys it to the `dev` Cloud Run
-  service.
-- Promotion to `test`, `preprod`, and `prod` is triggered manually via the
-  **Promote** GitHub Action (`.github/workflows/promote.yml`,
-  `workflow_dispatch`). It fast-forwards the target branch to the tip of the
-  previous stage's branch — no rebuild happens, so the exact image that was
-  tested in `dev` is the one that reaches `prod`.
-- Pushing to `test`/`preprod`/`prod` (which only happens via that
-  fast-forward) redeploys the same `sha-<short-sha>` image to that
-  environment's Cloud Run service.
-- The `prod` deploy runs under the `prod` GitHub Environment, which is
-  configured with required reviewers — this is the manual approval gate
-  before production.
+The branch names are `dev`, `staging`, and `production`. This repository change
+does not create or rename remote branches. The existing GitHub setup currently
+has only the `dev` Environment, so the staging and production Environments,
+branch protections, and production reviewers remain setup work.
 
-## One-time GCP setup (per environment project)
+## Release behavior
 
-Create four GCP projects, e.g. `greeniteso-dev`, `greeniteso-test`,
-`greeniteso-preprod`, `greeniteso-prod`. For each:
+`.github/workflows/deploy-dev.yml` builds and pushes an image tagged with the
+full approved commit SHA. The reusable `.github/workflows/_deploy.yml` then
+resolves that tag to an Artifact Registry digest. Staging and production reuse
+the same digest; they do not rebuild the image.
 
-1. Enable the Cloud Run and Artifact Registry APIs.
-2. Create a deploy service account with `roles/run.admin` and
-   `roles/iam.serviceAccountUser`.
-3. Set up Workload Identity Federation (a pool + provider trusting
-   `token.actions.githubusercontent.com`, restricted to this repo) so
-   GitHub Actions can authenticate without a long-lived JSON key.
-4. Create a Cloud Run service (or let the first deploy create it).
+`.github/workflows/promote.yml` advances the target branch through the GitHub
+API and explicitly dispatches the target release workflow with the approved
+commit SHA. It does not rely on a `GITHUB_TOKEN` branch push to trigger another
+workflow. The target release checks that its branch still points to the
+approved SHA immediately before migration. Per-environment releases are
+serialized with `cancel-in-progress: false`; a stale queued release fails
+before it can run a migration.
 
-Additionally, on the `dev` project only:
+Each release runs `scripts/release.sh` in this order:
 
-- Create one Artifact Registry Docker repository — this is the **shared**
-  registry every environment pulls the promoted image from.
-- Grant that repo's `roles/artifactregistry.writer` to the dev service
-  account, and `roles/artifactregistry.reader` to the `test`/`preprod`/`prod`
-  service accounts so they can pull the image built in `dev`.
+1. Resolve the immutable image digest.
+2. Create or update a Cloud Run Job using that digest and run
+   `make -C app migrate-direct` with one task and zero retries.
+3. Wait for the migration job to succeed.
+4. Deploy the same digest to the Cloud Run service.
 
-## One-time GitHub setup
+If migration fails, the script exits before the Cloud Run service deploy, so the
+previous serving revision remains active. There is no automatic reverse
+migration, `makemigrations`, or startup migration. Schema changes must follow
+the expand/contract pattern because the previous application revision remains
+live while the migration job runs.
 
-1. Create branches `dev`, `test`, `preprod`, `prod` from `main`.
-2. Create four GitHub Environments named `dev`, `test`, `preprod`, `prod`.
-   In each, add these environment secrets:
-   - `GCP_PROJECT_ID`
-   - `GCP_WORKLOAD_IDENTITY_PROVIDER`
-   - `GCP_SERVICE_ACCOUNT`
-   - `GCP_REGION`
-   - `ARTIFACT_REGISTRY_REPO`
-   - `CLOUD_RUN_SERVICE`
-   - `DEV_GCP_PROJECT_ID` (same value — the dev project ID — in all four,
-     since it identifies where the shared image lives)
-3. On the `prod` Environment, add required reviewers under protection rules.
-   This is what makes the `prod` deploy pause for manual approval.
-4. Add branch protection to `dev`/`test`/`preprod`/`prod` requiring the
-   `Ruff`/`Precommit` checks, and restrict direct pushes so that `test`,
-   `preprod`, and `prod` only ever advance via the **Promote** workflow.
+The application/schema gate is intentionally visible at the migration step.
+Review the custom User and T9 migrations before enabling those releases in a
+deployed environment; this pipeline does not infer that review from a passing
+image build.
 
-## Known limitation
+The migration job receives only the direct database secret
+(`DATABASE_URL_UNPOOLED`) and uses `DJANGO_CONNECTION_ROLE=direct`. The Cloud
+Run service receives only the pooled database secret (`DATABASE_URL`) and uses
+`DJANGO_CONNECTION_ROLE=app`. Both receive the Django secret key through a
+Secret Manager reference. Secret values are never placed in workflow files.
 
-The `Dockerfile`'s `CMD ["make", "start"]` runs Django's development server
-(`runserver`), not a production WSGI server. That's acceptable for `dev`,
-but this same image is what reaches `preprod`/`prod` under this pipeline.
-Switching to gunicorn (or similar) before serving real production traffic
-is a recommended follow-up, tracked separately from this pipeline change.
+## Required GitHub Environment configuration
+
+Create the `dev`, `staging`, and `production` GitHub Environments after the
+project and region choices are confirmed. Add these values to each Environment
+as secrets:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_SERVICE_ACCOUNT`
+- `ARTIFACT_REGISTRY_LOCATION`
+- `ARTIFACT_REGISTRY_REPO`
+- `IMAGE_PROJECT_ID` (the project hosting the shared Artifact Registry image)
+- `CLOUD_RUN_SERVICE`
+- `MIGRATION_JOB_NAME`
+- `DJANGO_SECRET_KEY_SECRET` (Secret Manager secret ID or reference)
+- `DATABASE_URL_SECRET` (pooled runtime connection)
+- `DATABASE_URL_UNPOOLED_SECRET` (direct migration connection)
+- `DJANGO_ALLOWED_HOSTS`
+
+The GCP project and region are intentionally unresolved pending the user’s
+choice. Until those values and Workload Identity Federation are configured, a
+release fails with the missing setting name; it does not report a skipped green
+deployment. Local tests mock `gcloud` and verify migration failure prevents a
+service deploy. They are preparation evidence and do not claim Cloud Run
+execution.
+
+The service account used by each release needs permission to run and update
+Cloud Run Jobs and deploy Cloud Run services, plus permission to read the
+referenced Secret Manager secrets and pull the shared image. The dev release
+also needs Artifact Registry write permission. Configure the exact IAM policy
+after the GCP project is selected.
+
+Useful primary references:
+
+- [Execute Cloud Run jobs](https://docs.cloud.google.com/run/docs/execute/jobs)
+- [`gcloud run jobs create`](https://docs.cloud.google.com/sdk/gcloud/reference/run/jobs/create)
+- [`gcloud run jobs update`](https://docs.cloud.google.com/sdk/gcloud/reference/run/jobs/update)
+- [Cloud Run traffic migration and rollback](https://cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
+- [GitHub workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
+- [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)

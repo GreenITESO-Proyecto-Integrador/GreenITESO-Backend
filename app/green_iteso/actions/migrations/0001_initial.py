@@ -19,7 +19,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ActionCategory",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("code", models.CharField(max_length=50, unique=True)),
                 ("name", models.CharField(max_length=100)),
                 ("description", models.TextField(blank=True)),
@@ -29,61 +37,200 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ActionMaster",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("code", models.CharField(max_length=50, unique=True)),
                 ("name", models.CharField(max_length=150)),
                 ("description", models.TextField()),
                 ("points", models.PositiveIntegerField()),
                 ("daily_limit", models.PositiveIntegerField(default=1)),
-                ("validation_mode", models.CharField(choices=[("DECLARATIVE_BUTTON", "Declarative button"), ("PHOTO", "Photo")], max_length=20)),
-                ("co2_kg_factor", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
-                ("water_liters_factor", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
-                ("plastic_kg_factor", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
+                (
+                    "validation_mode",
+                    models.CharField(
+                        choices=[
+                            ("DECLARATIVE_BUTTON", "Declarative button"),
+                            ("PHOTO", "Photo"),
+                        ],
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "co2_kg_factor",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
+                (
+                    "water_liters_factor",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
+                (
+                    "plastic_kg_factor",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
                 ("is_active", models.BooleanField(default=True)),
-                ("category", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="actions", to="actions.actioncategory")),
+                (
+                    "category",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="actions",
+                        to="actions.actioncategory",
+                    ),
+                ),
             ],
             options={
-                "indexes": [models.Index(fields=["is_active", "code"], name="action_active_code_idx")],
+                "indexes": [
+                    models.Index(
+                        fields=["is_active", "code"], name="action_active_code_idx"
+                    )
+                ],
                 "constraints": [
-                    models.CheckConstraint(condition=models.Q(("points__gt", 0)), name="action_points_positive"),
-                    models.CheckConstraint(condition=models.Q(("daily_limit__gt", 0)), name="action_daily_limit_positive"),
-                    models.CheckConstraint(condition=models.Q(("co2_kg_factor__gte", 0)), name="action_co2_factor_nonnegative"),
-                    models.CheckConstraint(condition=models.Q(("water_liters_factor__gte", 0)), name="action_water_factor_nonnegative"),
-                    models.CheckConstraint(condition=models.Q(("plastic_kg_factor__gte", 0)), name="action_plastic_factor_nonnegative"),
+                    models.CheckConstraint(
+                        condition=models.Q(("points__gt", 0)),
+                        name="action_points_positive",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("daily_limit__gt", 0)),
+                        name="action_daily_limit_positive",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("co2_kg_factor__gte", 0)),
+                        name="action_co2_factor_nonnegative",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("water_liters_factor__gte", 0)),
+                        name="action_water_factor_nonnegative",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("plastic_kg_factor__gte", 0)),
+                        name="action_plastic_factor_nonnegative",
+                    ),
                 ],
             },
         ),
         migrations.CreateModel(
             name="ActionLog",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("idempotency_key", models.CharField(max_length=128)),
                 ("points_awarded", models.PositiveIntegerField()),
-                ("co2_kg_factor_snapshot", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
-                ("water_liters_factor_snapshot", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
-                ("plastic_kg_factor_snapshot", models.DecimalField(decimal_places=3, default=0, max_digits=12)),
-                ("status", models.CharField(choices=[("APPROVED", "Approved"), ("PENDING_AUDIT", "Pending audit"), ("REJECTED", "Rejected")], default="APPROVED", max_length=20)),
+                (
+                    "co2_kg_factor_snapshot",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
+                (
+                    "water_liters_factor_snapshot",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
+                (
+                    "plastic_kg_factor_snapshot",
+                    models.DecimalField(decimal_places=3, default=0, max_digits=12),
+                ),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("APPROVED", "Approved"),
+                            ("PENDING_AUDIT", "Pending audit"),
+                            ("REJECTED", "Rejected"),
+                        ],
+                        default="APPROVED",
+                        max_length=20,
+                    ),
+                ),
                 ("evidence_object_key", models.CharField(blank=True, max_length=500)),
                 ("reviewed_at", models.DateTimeField(blank=True, null=True)),
                 ("rejection_reason", models.TextField(blank=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("action", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="logs", to="actions.actionmaster")),
-                ("credited_private_clan", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="private_action_logs", to="accounts.clan")),
-                ("institutional_clan", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="institutional_action_logs", to="accounts.clan")),
-                ("reviewed_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="reviewed_action_logs", to=settings.AUTH_USER_MODEL)),
-                ("user", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="action_logs", to=settings.AUTH_USER_MODEL)),
+                (
+                    "action",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="logs",
+                        to="actions.actionmaster",
+                    ),
+                ),
+                (
+                    "credited_private_clan",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="private_action_logs",
+                        to="accounts.clan",
+                    ),
+                ),
+                (
+                    "institutional_clan",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="institutional_action_logs",
+                        to="accounts.clan",
+                    ),
+                ),
+                (
+                    "reviewed_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="reviewed_action_logs",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="action_logs",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
                 "indexes": [
-                    models.Index(fields=["user", "action", "created_at"], name="action_log_daily_idx"),
-                    models.Index(fields=["status", "created_at"], name="action_log_audit_idx"),
+                    models.Index(
+                        fields=["user", "action", "created_at"],
+                        name="action_log_daily_idx",
+                    ),
+                    models.Index(
+                        fields=["status", "created_at"], name="action_log_audit_idx"
+                    ),
                 ],
                 "constraints": [
-                    models.UniqueConstraint(fields=("user", "idempotency_key"), name="action_log_user_idempotency_unique"),
-                    models.CheckConstraint(condition=models.Q(("idempotency_key", ""), _negated=True), name="action_log_idempotency_nonblank"),
-                    models.CheckConstraint(condition=models.Q(("co2_kg_factor_snapshot__gte", 0)), name="action_log_co2_snapshot_nonnegative"),
-                    models.CheckConstraint(condition=models.Q(("water_liters_factor_snapshot__gte", 0)), name="action_log_water_snapshot_nonnegative"),
-                    models.CheckConstraint(condition=models.Q(("plastic_kg_factor_snapshot__gte", 0)), name="action_log_plastic_snapshot_nonnegative"),
+                    models.UniqueConstraint(
+                        fields=("user", "idempotency_key"),
+                        name="action_log_user_idempotency_unique",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("idempotency_key", ""), _negated=True),
+                        name="action_log_idempotency_nonblank",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("co2_kg_factor_snapshot__gte", 0)),
+                        name="action_log_co2_snapshot_nonnegative",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("water_liters_factor_snapshot__gte", 0)),
+                        name="action_log_water_snapshot_nonnegative",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(("plastic_kg_factor_snapshot__gte", 0)),
+                        name="action_log_plastic_snapshot_nonnegative",
+                    ),
                 ],
             },
         ),

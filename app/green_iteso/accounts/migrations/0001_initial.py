@@ -18,60 +18,226 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="Clan",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("name", models.CharField(max_length=100, unique=True)),
                 ("description", models.TextField(blank=True)),
                 ("avatar_object_key", models.CharField(blank=True, max_length=500)),
-                ("type", models.CharField(choices=[("INSTITUTIONAL", "Institutional"), ("PRIVATE", "Private")], max_length=16)),
-                ("privacy", models.CharField(choices=[("PUBLIC", "Public"), ("PRIVATE_INVITE", "Private invite")], default="PUBLIC", max_length=20)),
+                (
+                    "type",
+                    models.CharField(
+                        choices=[
+                            ("INSTITUTIONAL", "Institutional"),
+                            ("PRIVATE", "Private"),
+                        ],
+                        max_length=16,
+                    ),
+                ),
+                (
+                    "privacy",
+                    models.CharField(
+                        choices=[
+                            ("PUBLIC", "Public"),
+                            ("PRIVATE_INVITE", "Private invite"),
+                        ],
+                        default="PUBLIC",
+                        max_length=20,
+                    ),
+                ),
                 ("total_points", models.BigIntegerField(default=0)),
                 ("deleted_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
             ],
             options={
-                "indexes": [models.Index(fields=["type", "total_points"], name="clan_type_points_idx")],
-                "constraints": [models.CheckConstraint(condition=models.Q(("total_points__gte", 0)), name="clan_total_points_nonnegative")],
+                "indexes": [
+                    models.Index(
+                        fields=["type", "total_points"], name="clan_type_points_idx"
+                    )
+                ],
+                "constraints": [
+                    models.CheckConstraint(
+                        condition=models.Q(("total_points__gte", 0)),
+                        name="clan_total_points_nonnegative",
+                    )
+                ],
             },
         ),
         migrations.CreateModel(
             name="User",
             fields=[
                 ("password", models.CharField(max_length=128, verbose_name="password")),
-                ("last_login", models.DateTimeField(blank=True, null=True, verbose_name="last login")),
-                ("is_superuser", models.BooleanField(default=False, help_text="Designates that this user has all permissions without explicitly assigning them.", verbose_name="superuser status")),
-                ("first_name", models.CharField(blank=True, max_length=150, verbose_name="first name")),
-                ("last_name", models.CharField(blank=True, max_length=150, verbose_name="last name")),
-                ("is_staff", models.BooleanField(default=False, help_text="Designates whether the user can log into this admin site.", verbose_name="staff status")),
-                ("is_active", models.BooleanField(default=True, help_text="Designates whether this user should be treated as active. Unselect this instead of deleting accounts.", verbose_name="active")),
-                ("date_joined", models.DateTimeField(auto_now_add=False, verbose_name="date joined")),
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "last_login",
+                    models.DateTimeField(
+                        blank=True, null=True, verbose_name="last login"
+                    ),
+                ),
+                (
+                    "is_superuser",
+                    models.BooleanField(
+                        default=False,
+                        help_text="Designates that this user has all permissions without explicitly assigning them.",
+                        verbose_name="superuser status",
+                    ),
+                ),
+                (
+                    "first_name",
+                    models.CharField(
+                        blank=True, max_length=150, verbose_name="first name"
+                    ),
+                ),
+                (
+                    "last_name",
+                    models.CharField(
+                        blank=True, max_length=150, verbose_name="last name"
+                    ),
+                ),
+                (
+                    "is_staff",
+                    models.BooleanField(
+                        default=False,
+                        help_text="Designates whether the user can log into this admin site.",
+                        verbose_name="staff status",
+                    ),
+                ),
+                (
+                    "is_active",
+                    models.BooleanField(
+                        default=True,
+                        help_text="Designates whether this user should be treated as active. Unselect this instead of deleting accounts.",
+                        verbose_name="active",
+                    ),
+                ),
+                (
+                    "date_joined",
+                    models.DateTimeField(
+                        auto_now_add=False, verbose_name="date joined"
+                    ),
+                ),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("email", models.EmailField(max_length=255, unique=True)),
-                ("firebase_uid", models.CharField(blank=True, max_length=128, null=True, unique=True)),
-                ("role", models.CharField(choices=[("STUDENT", "Student"), ("STAFF", "Staff"), ("ADMIN", "Administrator")], default="STUDENT", max_length=16)),
-                ("groups", models.ManyToManyField(blank=True, help_text="The groups this user belongs to. A user will get all permissions granted to each of their groups.", related_name="user_set", related_query_name="user", to="auth.group", verbose_name="groups")),
-                ("user_permissions", models.ManyToManyField(blank=True, help_text="Specific permissions for this user.", related_name="user_set", related_query_name="user", to="auth.permission", verbose_name="user permissions")),
+                (
+                    "firebase_uid",
+                    models.CharField(
+                        blank=True, max_length=128, null=True, unique=True
+                    ),
+                ),
+                (
+                    "role",
+                    models.CharField(
+                        choices=[
+                            ("STUDENT", "Student"),
+                            ("STAFF", "Staff"),
+                            ("ADMIN", "Administrator"),
+                        ],
+                        default="STUDENT",
+                        max_length=16,
+                    ),
+                ),
+                (
+                    "groups",
+                    models.ManyToManyField(
+                        blank=True,
+                        help_text="The groups this user belongs to. A user will get all permissions granted to each of their groups.",
+                        related_name="user_set",
+                        related_query_name="user",
+                        to="auth.group",
+                        verbose_name="groups",
+                    ),
+                ),
+                (
+                    "user_permissions",
+                    models.ManyToManyField(
+                        blank=True,
+                        help_text="Specific permissions for this user.",
+                        related_name="user_set",
+                        related_query_name="user",
+                        to="auth.permission",
+                        verbose_name="user permissions",
+                    ),
+                ),
             ],
-            options={"verbose_name": "user", "verbose_name_plural": "users", "abstract": False},
+            options={
+                "verbose_name": "user",
+                "verbose_name_plural": "users",
+                "abstract": False,
+            },
         ),
         migrations.AddField(
             model_name="clan",
             name="created_by",
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="created_clans", to=settings.AUTH_USER_MODEL),
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="created_clans",
+                to=settings.AUTH_USER_MODEL,
+            ),
         ),
         migrations.CreateModel(
             name="ClanMembership",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ("role", models.CharField(choices=[("LEADER", "Leader"), ("MEMBER", "Member")], default="MEMBER", max_length=10)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                (
+                    "role",
+                    models.CharField(
+                        choices=[("LEADER", "Leader"), ("MEMBER", "Member")],
+                        default="MEMBER",
+                        max_length=10,
+                    ),
+                ),
                 ("is_active_private", models.BooleanField(default=False)),
                 ("joined_at", models.DateTimeField(auto_now_add=True)),
-                ("clan", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="memberships", to="accounts.clan")),
-                ("user", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="clan_memberships", to=settings.AUTH_USER_MODEL)),
+                (
+                    "clan",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="memberships",
+                        to="accounts.clan",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="clan_memberships",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
                 "constraints": [
-                    models.UniqueConstraint(fields=("user", "clan"), name="membership_user_clan_unique"),
-                    models.UniqueConstraint(condition=models.Q(("is_active_private", True)), fields=("user",), name="membership_one_active_private_per_user"),
+                    models.UniqueConstraint(
+                        fields=("user", "clan"), name="membership_user_clan_unique"
+                    ),
+                    models.UniqueConstraint(
+                        condition=models.Q(("is_active_private", True)),
+                        fields=("user",),
+                        name="membership_one_active_private_per_user",
+                    ),
                 ],
             },
         ),
@@ -79,13 +245,41 @@ class Migration(migrations.Migration):
             name="UserProfile",
             fields=[
                 ("career", models.CharField(blank=True, max_length=150)),
-                ("onboarding_completed_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "onboarding_completed_at",
+                    models.DateTimeField(blank=True, null=True),
+                ),
                 ("total_points", models.BigIntegerField(default=0)),
                 ("current_streak", models.PositiveIntegerField(default=0)),
                 ("last_action_date", models.DateField(blank=True, null=True)),
-                ("institutional_clan", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="institutional_profiles", to="accounts.clan")),
-                ("user", models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, primary_key=True, related_name="profile", serialize=False, to=settings.AUTH_USER_MODEL)),
+                (
+                    "institutional_clan",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="institutional_profiles",
+                        to="accounts.clan",
+                    ),
+                ),
+                (
+                    "user",
+                    models.OneToOneField(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        primary_key=True,
+                        related_name="profile",
+                        serialize=False,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
-            options={"constraints": [models.CheckConstraint(condition=models.Q(("total_points__gte", 0)), name="profile_total_points_nonnegative")]},
+            options={
+                "constraints": [
+                    models.CheckConstraint(
+                        condition=models.Q(("total_points__gte", 0)),
+                        name="profile_total_points_nonnegative",
+                    )
+                ]
+            },
         ),
     ]

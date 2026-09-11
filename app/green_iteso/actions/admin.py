@@ -16,7 +16,14 @@ class ActionCategoryAdmin(admin.ModelAdmin):
 
 @admin.register(ActionMaster)
 class ActionMasterAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "points", "daily_limit", "validation_mode", "is_active")
+    list_display = (
+        "code",
+        "name",
+        "points",
+        "daily_limit",
+        "validation_mode",
+        "is_active",
+    )
     list_filter = ("validation_mode", "is_active")
     search_fields = ("code", "name")
 

@@ -16,12 +16,16 @@ from green_iteso.campaigns.models import Campaign
 
 @pytest.mark.django_db
 def test_custom_user_manager_and_admin_flags() -> None:
-    user = User.objects.create_user(email="student@iteso.mx", password="safe-local-password")
+    user = User.objects.create_user(
+        email="student@iteso.mx", password="safe-local-password"
+    )
     assert user.check_password("safe-local-password")
     assert user.username is None
     assert not user.is_staff
 
-    admin = User.objects.create_superuser(email="admin@iteso.mx", password="safe-local-password")
+    admin = User.objects.create_superuser(
+        email="admin@iteso.mx", password="safe-local-password"
+    )
     assert admin.is_staff and admin.is_superuser
     assert admin.role == User.Role.ADMIN
 

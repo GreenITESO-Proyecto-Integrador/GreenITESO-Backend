@@ -23,7 +23,9 @@ class Campaign(models.Model):
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     scope = models.CharField(max_length=10, choices=Scope.choices)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROMOTION)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PROMOTION
+    )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -44,9 +46,15 @@ class Campaign(models.Model):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(condition=Q(end_date__gt=F("start_date")), name="campaign_end_after_start"),
             models.CheckConstraint(
-                condition=(Q(scope="GLOBAL", target_clan__isnull=True) | Q(scope="PRIVATE", target_clan__isnull=False)),
+                condition=Q(end_date__gt=F("start_date")),
+                name="campaign_end_after_start",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(scope="GLOBAL", target_clan__isnull=True)
+                    | Q(scope="PRIVATE", target_clan__isnull=False)
+                ),
                 name="campaign_scope_target_clan_consistent",
             ),
             models.CheckConstraint(
@@ -58,7 +66,11 @@ class Campaign(models.Model):
                 name="campaign_status_valid",
             ),
         ]
-        indexes = [models.Index(fields=["status", "start_date", "end_date"], name="campaign_window_idx")]
+        indexes = [
+            models.Index(
+                fields=["status", "start_date", "end_date"], name="campaign_window_idx"
+            )
+        ]
 
     def __str__(self) -> str:
         return self.title
@@ -66,13 +78,19 @@ class Campaign(models.Model):
 
 class Mission(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    campaign = models.ForeignKey(Campaign, on_delete=models.PROTECT, related_name="missions")
-    action = models.ForeignKey("actions.ActionMaster", on_delete=models.PROTECT, related_name="missions")
+    campaign = models.ForeignKey(
+        Campaign, on_delete=models.PROTECT, related_name="missions"
+    )
+    action = models.ForeignKey(
+        "actions.ActionMaster", on_delete=models.PROTECT, related_name="missions"
+    )
     target_count = models.PositiveIntegerField()
 
     class Meta:
         constraints = [
-            models.CheckConstraint(condition=Q(target_count__gt=0), name="mission_target_positive"),
+            models.CheckConstraint(
+                condition=Q(target_count__gt=0), name="mission_target_positive"
+            ),
         ]
 
     def __str__(self) -> str:
@@ -81,13 +99,21 @@ class Mission(models.Model):
 
 class CampaignParticipant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    campaign = models.ForeignKey(Campaign, on_delete=models.PROTECT, related_name="participants")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="campaign_participations")
+    campaign = models.ForeignKey(
+        Campaign, on_delete=models.PROTECT, related_name="participants"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="campaign_participations",
+    )
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["campaign", "user"], name="campaign_participant_unique"),
+            models.UniqueConstraint(
+                fields=["campaign", "user"], name="campaign_participant_unique"
+            ),
         ]
 
     def __str__(self) -> str:
@@ -96,15 +122,23 @@ class CampaignParticipant(models.Model):
 
 class UserMissionProgress(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="mission_progress")
-    mission = models.ForeignKey(Mission, on_delete=models.PROTECT, related_name="user_progress")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="mission_progress",
+    )
+    mission = models.ForeignKey(
+        Mission, on_delete=models.PROTECT, related_name="user_progress"
+    )
     current_count = models.PositiveIntegerField(default=0)
     is_completed = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["user", "mission"], name="user_mission_progress_unique"),
+            models.UniqueConstraint(
+                fields=["user", "mission"], name="user_mission_progress_unique"
+            ),
         ]
 
     def __str__(self) -> str:

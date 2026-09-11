@@ -14,7 +14,9 @@ class UserManager(BaseUserManager):
 
     use_in_migrations = True
 
-    def create_user(self, email: str, password: str | None = None, **extra_fields: object) -> User:
+    def create_user(
+        self, email: str, password: str | None = None, **extra_fields: object
+    ) -> User:
         if not email:
             raise ValueError("Users must have an email address.")
         user = self.model(email=self.normalize_email(email), **extra_fields)
@@ -22,7 +24,9 @@ class UserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email: str, password: str | None = None, **extra_fields: object) -> User:
+    def create_superuser(
+        self, email: str, password: str | None = None, **extra_fields: object
+    ) -> User:
         extra_fields.setdefault("role", "ADMIN")
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
@@ -76,7 +80,9 @@ class Clan(models.Model):
     description = models.TextField(blank=True)
     avatar_object_key = models.CharField(max_length=500, blank=True)
     type = models.CharField(max_length=16, choices=ClanType.choices)
-    privacy = models.CharField(max_length=20, choices=Privacy.choices, default=Privacy.PUBLIC)
+    privacy = models.CharField(
+        max_length=20, choices=Privacy.choices, default=Privacy.PUBLIC
+    )
     total_points = models.BigIntegerField(default=0)
     created_by = models.ForeignKey(
         "accounts.User",
@@ -103,7 +109,9 @@ class Clan(models.Model):
                 name="clan_privacy_valid",
             ),
         ]
-        indexes = [models.Index(fields=["type", "total_points"], name="clan_type_points_idx")]
+        indexes = [
+            models.Index(fields=["type", "total_points"], name="clan_type_points_idx")
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -112,7 +120,12 @@ class Clan(models.Model):
 class UserProfile(models.Model):
     """Onboarding and denormalized personal totals for the points transaction."""
 
-    user = models.OneToOneField("accounts.User", on_delete=models.CASCADE, primary_key=True, related_name="profile")
+    user = models.OneToOneField(
+        "accounts.User",
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="profile",
+    )
     institutional_clan = models.ForeignKey(
         "accounts.Clan",
         on_delete=models.PROTECT,
@@ -146,15 +159,23 @@ class ClanMembership(models.Model):
         MEMBER = "MEMBER", "Member"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="clan_memberships")
-    clan = models.ForeignKey("accounts.Clan", on_delete=models.CASCADE, related_name="memberships")
-    role = models.CharField(max_length=10, choices=MembershipRole.choices, default=MembershipRole.MEMBER)
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="clan_memberships"
+    )
+    clan = models.ForeignKey(
+        "accounts.Clan", on_delete=models.CASCADE, related_name="memberships"
+    )
+    role = models.CharField(
+        max_length=10, choices=MembershipRole.choices, default=MembershipRole.MEMBER
+    )
     is_active_private = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["user", "clan"], name="membership_user_clan_unique"),
+            models.UniqueConstraint(
+                fields=["user", "clan"], name="membership_user_clan_unique"
+            ),
             models.UniqueConstraint(
                 fields=["user"],
                 condition=Q(is_active_private=True),

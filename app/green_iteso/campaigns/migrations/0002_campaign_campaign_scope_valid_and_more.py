@@ -5,20 +5,27 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('accounts', '0003_alter_user_options_clan_clan_type_valid_and_more'),
-        ('campaigns', '0001_initial'),
+        ("accounts", "0003_alter_user_options_clan_clan_type_valid_and_more"),
+        ("campaigns", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddConstraint(
-            model_name='campaign',
-            constraint=models.CheckConstraint(condition=models.Q(('scope__in', ['GLOBAL', 'PRIVATE'])), name='campaign_scope_valid'),
+            model_name="campaign",
+            constraint=models.CheckConstraint(
+                condition=models.Q(("scope__in", ["GLOBAL", "PRIVATE"])),
+                name="campaign_scope_valid",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='campaign',
-            constraint=models.CheckConstraint(condition=models.Q(('status__in', ['PROMOTION', 'IN_PROGRESS', 'FINISHED'])), name='campaign_status_valid'),
+            model_name="campaign",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("status__in", ["PROMOTION", "IN_PROGRESS", "FINISHED"])
+                ),
+                name="campaign_status_valid",
+            ),
         ),
     ]

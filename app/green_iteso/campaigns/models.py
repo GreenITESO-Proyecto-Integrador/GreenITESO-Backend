@@ -40,7 +40,7 @@ class Campaign(models.Model):
     )
     start_date = models.DateTimeField()
     end_date = models.DateTimeField()
-    # P8 remains unanswered; this nullable field reserves the proposed snapshot shape.
+    # Approved results snapshot; campaign-close behavior belongs to the service.
     podium_snapshot = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -82,7 +82,10 @@ class Mission(models.Model):
         Campaign, on_delete=models.PROTECT, related_name="missions"
     )
     action = models.ForeignKey(
-        "actions.ActionMaster", on_delete=models.PROTECT, related_name="missions"
+        "actions.ActionMaster",
+        on_delete=models.PROTECT,
+        related_name="missions",
+        db_column="action_master_id",
     )
     target_count = models.PositiveIntegerField()
 

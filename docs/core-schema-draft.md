@@ -1,6 +1,13 @@
 # GreenITESO T9a core schema draft
 
-**Status: bounded implementation draft, pending product/schema ratification.** This document accompanies the executable Django migrations on `feat/core-database-schema-draft`. It does not certify the ERD, freeze the OpenAPI contract, or claim approval of P3/P8/P9/P10/P11 or catalog values.
+**Status: T9a schema aligned with the approved ERD.** Fernando confirmed the ERD
+field decisions on 2026-09-11. This document accompanies
+the executable Django migrations on `feat/core-schema-review-draft`. The
+approved ERD is the Notion page [9. Modelo de datos v2 (ERD con cambios
+propuestos)](https://app.notion.com/p/4e7135974884836e9ac9813ca020965f), fetched
+2026-09-11. It establishes the schema shape, frozen `ActionLog` clan FKs,
+nullable campaign context, and `podium_snapshot`; service policy, API details,
+P10/P11 behavior, and catalog values remain unresolved.
 
 ## Ownership and migration graph
 
@@ -14,9 +21,9 @@ The three physical Django apps are:
 
 `accounts.0001_initial` creates the custom user before any dependent model. `actions.0001_initial` creates the catalog and audit log without campaign FKs. `campaigns.0001_initial` creates campaigns and missions, then `actions.0002_actionlog_campaign_contribution` adds the campaign FK and contribution table. This split avoids a migration cycle while leaving contribution ownership with E1.
 
-The UUID primary keys are a proposed canonical API representation. Django Admin is exposed only when local development has `DEBUG=True`; create a local administrator with `python manage.py createsuperuser`. No universal password, seeded admin, Firebase token endpoint, or simulated staging auth is included.
+UUID primary keys follow the approved ERD. Django Admin is exposed only when local development has `DEBUG=True`; create a local administrator with `python manage.py createsuperuser`. No universal password, seeded admin, Firebase token endpoint, or simulated staging auth is included.
 
-## Canonical field dictionary (proposed)
+## Field dictionary and implementation details
 
 ### Accounts and clans
 
@@ -58,7 +65,7 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `ActionMaster.category` | FK Category, PROTECT | Catalog ownership. |
 | `ActionMaster.points` | positive integer | Proposed catalog value; must be greater than zero. |
 | `ActionMaster.daily_limit` | positive integer | Proposed per-local-day limit; rolling 24-hour versus calendar-day semantics are unresolved. |
-| `ActionMaster.validation_mode` | `DECLARATIVE_BUTTON` / `PHOTO` | Canonical draft name/value. `validation_type` is an API compatibility alias. QR is excluded from T9a and remains a separate scope decision. |
+| `ActionMaster.validation_type` | `NONE` / `PHOTO` | Approved ERD name/value. QR is excluded from T9a and remains a separate scope decision. |
 | `ActionMaster.co2_kg_factor`, `.water_liters_factor`, `.plastic_kg_factor` | Decimal(12,3), nonnegative | Provisional exact-decimal factors; no values are ratified by this migration. |
 | `ActionMaster.is_active` | bool | Catalog availability. |
 | `ActionLog.id` | UUID PK | Server generated. |
@@ -66,7 +73,7 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `ActionLog.action` | FK ActionMaster, PROTECT | Historical catalog reference. |
 | `ActionLog.institutional_clan` | FK Clan, PROTECT | Server-resolved frozen destination, required after onboarding. |
 | `ActionLog.credited_private_clan` | FK Clan, PROTECT, nullable | Server-resolved frozen private destination. |
-| `ActionLog.campaign` | FK Campaign, PROTECT, nullable | Explicit campaign context. The one-campaign-per-record proposal is unresolved P9. |
+| `ActionLog.campaign` | FK Campaign, PROTECT, nullable | Approved nullable campaign context; campaign eligibility and advancement are service rules. |
 | `ActionLog.idempotency_key` | varchar 128, required | Nonblank client attempt key; unique together with `user`. Payload conflict behavior is a service/API rule. |
 | `ActionLog.points_awarded` | nonnegative integer | Frozen awarded points; rejection subtracts this snapshot once. |
 | `ActionLog.*_factor_snapshot` | Decimal(12,3), nonnegative | Frozen impact factors used for historical reporting/reversal. |
@@ -76,8 +83,8 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `ActionLog.reviewed_at` | timestamp, nullable | Decision timestamp. |
 | `ActionLog.rejection_reason` | text, blank | Required by the audit service only when status becomes rejected. |
 | `ActionLog.created_at` | timestamp | Server timestamp used by reporting and the future daily query index. |
-| `ActionLogMissionContribution.id` | UUID PK | Surrogate key as proposed by review. |
-| `ActionLogMissionContribution.action_log`, `.mission` | FKs, PROTECT | Exact historical mission increments. Pair is unique; do not infer contributions from current membership/catalog state. |
+| `ActionLogMissionContribution.id` | UUID PK | Physical surrogate key; the unique FK pair preserves the ERD logical identity. |
+| `ActionLogMissionContribution.action_log`, `.mission` | FKs, PROTECT | Exact historical mission increments. The approved ERD pair is represented physically by the surrogate `id` plus a unique pair; do not infer contributions from current membership/catalog state. |
 | `ActionLogMissionContribution.created_at` | timestamp | Contribution timestamp. |
 
 ### Campaigns and missions
@@ -91,20 +98,20 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `Campaign.creator` | FK User, PROTECT | Protected audit graph. Contextual leader/admin authorization is a service rule. |
 | `Campaign.target_clan` | FK Clan, PROTECT, nullable | Required for `PRIVATE`, forbidden for `GLOBAL` by DB check. |
 | `Campaign.start_date`, `.end_date` | aware timestamps | DB check enforces `end_date > start_date`. |
-| `Campaign.podium_snapshot` | nullable JSON | Reserved for proposed frozen results under unresolved P8; no close/snapshot service is included. |
+| `Campaign.podium_snapshot` | nullable JSON | Approved results snapshot column; no close/snapshot service is included. |
 | `Campaign.created_at` | timestamp | Server creation time. |
 | `Mission.id` | UUID PK | Server generated. |
 | `Mission.campaign` | FK Campaign, PROTECT | Protected from deletion while audit/contributions reference it. |
-| `Mission.action` | FK ActionMaster, PROTECT | Catalog action required by the mission. |
+| `Mission.action` (physical `action_master_id`) | FK ActionMaster, PROTECT | Approved ERD foreign-key name; Django keeps `action` as the Python relation and stores `action_master_id`. |
 | `Mission.target_count` | positive integer | Required target; DB check is greater than zero. |
 | `CampaignParticipant` | campaign/user FKs PROTECT, unique pair | Minimal enrollment graph for later progress services. |
 | `UserMissionProgress` | user/mission FKs PROTECT, unique pair | Raw nonnegative count and completion projection. Cross-row consistency with mission target belongs to the service. |
 
-## Explicit unresolved choices
+## Schema decisions and remaining service work
 
-- **P3 (proposed yes):** retain both frozen clan FKs plus campaign context and mission contribution rows. The schema does not make columns immutable against privileged SQL; the service/admin policy must do so.
-- **P8 (unanswered):** retain nullable `podium_snapshot` for the proposed frozen-results interpretation. Whether late rejection changes published standings requires product approval.
-- **P9 (unanswered):** retain nullable explicit `ActionLog.campaign` for the proposed one-campaign-per-record interpretation. Free actions do not implicitly advance campaigns under this proposal.
+- **P3 (approved schema shape):** retain both frozen clan FKs plus campaign context and mission contribution rows. The schema does not make columns immutable against privileged SQL; the service/admin policy must do so.
+- **P8 (approved schema reservation):** retain nullable `podium_snapshot` for frozen results. Whether late rejection changes published standings remains a service/product policy.
+- **P9 (approved nullable field):** retain nullable explicit `ActionLog.campaign`. One-campaign-per-record semantics and whether free actions advance campaigns remain service policy.
 - **P10 (unanswered):** the draft indexes `(user, action, created_at)` and stores server timestamps. The proposed query policy is local calendar day in `America/Mexico_City`; rolling 24-hour semantics remain open.
 - **P11 (unanswered):** the draft uses one partial-unique `ClanMembership.is_active_private` source per user. The proposed authority is user selection; leader membership management remains a service rule.
 - **Catalog approval (unanswered):** `code`, positive points/limits, validation mode and exact-decimal factors are schema requirements. Seed values, environmental mappings and institutional approval are intentionally absent.

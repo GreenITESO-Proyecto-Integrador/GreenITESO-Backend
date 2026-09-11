@@ -21,8 +21,8 @@ class ActionCategory(models.Model):
 
 
 class ActionMaster(models.Model):
-    class ValidationMode(models.TextChoices):
-        DECLARATIVE_BUTTON = "DECLARATIVE_BUTTON", "Declarative button"
+    class ValidationType(models.TextChoices):
+        NONE = "NONE", "None"
         PHOTO = "PHOTO", "Photo"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -34,7 +34,7 @@ class ActionMaster(models.Model):
     description = models.TextField()
     points = models.PositiveIntegerField()
     daily_limit = models.PositiveIntegerField(default=1)
-    validation_mode = models.CharField(max_length=20, choices=ValidationMode.choices)
+    validation_type = models.CharField(max_length=10, choices=ValidationType.choices)
     co2_kg_factor = models.DecimalField(max_digits=12, decimal_places=3, default=0)
     water_liters_factor = models.DecimalField(
         max_digits=12, decimal_places=3, default=0
@@ -51,8 +51,8 @@ class ActionMaster(models.Model):
                 condition=Q(daily_limit__gt=0), name="action_daily_limit_positive"
             ),
             models.CheckConstraint(
-                condition=Q(validation_mode__in=["DECLARATIVE_BUTTON", "PHOTO"]),
-                name="action_validation_mode_valid",
+                condition=Q(validation_type__in=["NONE", "PHOTO"]),
+                name="action_validation_type_valid",
             ),
             models.CheckConstraint(
                 condition=Q(co2_kg_factor__gte=0), name="action_co2_factor_nonnegative"

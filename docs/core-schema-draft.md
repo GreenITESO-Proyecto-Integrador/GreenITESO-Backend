@@ -21,9 +21,9 @@ The three physical Django apps are:
 
 `accounts.0001_initial` creates the custom user before any dependent model. `actions.0001_initial` creates the catalog and audit log without campaign FKs. `campaigns.0001_initial` creates campaigns and missions, then `actions.0002_actionlog_campaign_contribution` adds the campaign FK and contribution table. This split avoids a migration cycle while leaving contribution ownership with E1.
 
-The UUID primary keys are a proposed canonical API representation. Django Admin is exposed only when local development has `DEBUG=True`; create a local administrator with `python manage.py createsuperuser`. No universal password, seeded admin, Firebase token endpoint, or simulated staging auth is included.
+UUID primary keys follow the approved ERD. Django Admin is exposed only when local development has `DEBUG=True`; create a local administrator with `python manage.py createsuperuser`. No universal password, seeded admin, Firebase token endpoint, or simulated staging auth is included.
 
-## Canonical field dictionary (proposed)
+## Field dictionary and implementation details
 
 ### Accounts and clans
 
@@ -73,7 +73,7 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `ActionLog.action` | FK ActionMaster, PROTECT | Historical catalog reference. |
 | `ActionLog.institutional_clan` | FK Clan, PROTECT | Server-resolved frozen destination, required after onboarding. |
 | `ActionLog.credited_private_clan` | FK Clan, PROTECT, nullable | Server-resolved frozen private destination. |
-| `ActionLog.campaign` | FK Campaign, PROTECT, nullable | Explicit campaign context. The one-campaign-per-record proposal is unresolved P9. |
+| `ActionLog.campaign` | FK Campaign, PROTECT, nullable | Approved nullable campaign context; campaign eligibility and advancement are service rules. |
 | `ActionLog.idempotency_key` | varchar 128, required | Nonblank client attempt key; unique together with `user`. Payload conflict behavior is a service/API rule. |
 | `ActionLog.points_awarded` | nonnegative integer | Frozen awarded points; rejection subtracts this snapshot once. |
 | `ActionLog.*_factor_snapshot` | Decimal(12,3), nonnegative | Frozen impact factors used for historical reporting/reversal. |
@@ -98,7 +98,7 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `Campaign.creator` | FK User, PROTECT | Protected audit graph. Contextual leader/admin authorization is a service rule. |
 | `Campaign.target_clan` | FK Clan, PROTECT, nullable | Required for `PRIVATE`, forbidden for `GLOBAL` by DB check. |
 | `Campaign.start_date`, `.end_date` | aware timestamps | DB check enforces `end_date > start_date`. |
-| `Campaign.podium_snapshot` | nullable JSON | Reserved for proposed frozen results under unresolved P8; no close/snapshot service is included. |
+| `Campaign.podium_snapshot` | nullable JSON | Approved results snapshot column; no close/snapshot service is included. |
 | `Campaign.created_at` | timestamp | Server creation time. |
 | `Mission.id` | UUID PK | Server generated. |
 | `Mission.campaign` | FK Campaign, PROTECT | Protected from deletion while audit/contributions reference it. |
@@ -107,7 +107,7 @@ The UUID primary keys are a proposed canonical API representation. Django Admin 
 | `CampaignParticipant` | campaign/user FKs PROTECT, unique pair | Minimal enrollment graph for later progress services. |
 | `UserMissionProgress` | user/mission FKs PROTECT, unique pair | Raw nonnegative count and completion projection. Cross-row consistency with mission target belongs to the service. |
 
-## Explicit unresolved choices
+## Schema decisions and remaining service work
 
 - **P3 (approved schema shape):** retain both frozen clan FKs plus campaign context and mission contribution rows. The schema does not make columns immutable against privileged SQL; the service/admin policy must do so.
 - **P8 (approved schema reservation):** retain nullable `podium_snapshot` for frozen results. Whether late rejection changes published standings remains a service/product policy.

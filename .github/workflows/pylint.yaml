@@ -21,4 +21,11 @@ jobs:
 
       - name: Execute Pylint
         working-directory: app
+        env:
+          DJANGO_ENV: dev
+          DJANGO_DEPLOYED: "false"
+          DJANGO_CONNECTION_ROLE: app
+          DJANGO_SECRET_KEY: local-lint-only
+          DJANGO_ALLOWED_HOSTS: localhost
+          DATABASE_URL: postgresql://local:local@localhost:5432/local
         run: pylint green_iteso

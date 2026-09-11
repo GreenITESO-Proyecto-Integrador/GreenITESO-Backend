@@ -80,7 +80,7 @@ as secrets:
 - `ARTIFACT_REGISTRY_REPO`
 - `IMAGE_PROJECT_ID` (the project hosting the shared Artifact Registry image)
 - `CLOUD_RUN_SERVICE`
-- `MIGRATION_JOB_NAME`
+- `MIGRATION_JOB_NAME` (lowercase Cloud Run name, at most 43 characters to reserve `-smoke`)
 - `RUNTIME_SERVICE_ACCOUNT` (pooled runtime credential)
 - `MIGRATION_SERVICE_ACCOUNT` (direct migration credential)
 - `CLOUD_RUN_MAX_INSTANCES` (small positive bound, for example `3`)
@@ -120,3 +120,5 @@ Useful primary references:
 This draft now depends on Backend PR32 (and its schema foundation) because the release image must contain `db_smoke`. Do not enable it before the schema decisions and initial role credentials are approved. The smoke job checks database access using the runtime identity before deployment; it is not an HTTP check of the serving revision. An HTTP acceptance check remains part of the first Cloud Run integration.
 
 If the new service revision fails application acceptance after deployment, select the last known-good revision in the same service and route traffic back with `gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS_REVISION=100 --region=REGION --project=PROJECT`. Confirm its image digest against the last successful release record before selecting it. Verify the service and app-role smoke check afterward. Do not automatically reverse database migrations: the old revision must remain compatible through expand/contract. If schema compatibility is uncertain, stop promotion and use a forward fix or the approved recovery procedure. A failed release must not be promoted as successful.
+
+IAM scoped to named jobs must include both `MIGRATION_JOB_NAME` (migration identity) and `${MIGRATION_JOB_NAME}-smoke` (runtime identity). Both identities also need access to the Django secret-key reference.

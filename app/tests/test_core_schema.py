@@ -7,11 +7,12 @@ from decimal import Decimal
 
 import pytest
 from django.db import IntegrityError, connection, transaction
+from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
-from green_iteso.campaigns.models import Campaign
+from green_iteso.campaigns.models import Campaign, Mission
 
 
 @pytest.mark.django_db
@@ -38,6 +39,23 @@ def test_custom_user_table_replaces_default_auth_user_table() -> None:
         assert cursor.fetchone()[0] is None
 
 
+@pytest.mark.django_db(transaction=True)
+def test_approved_erd_field_names_are_exposed() -> None:
+    """The ORM reflects the approved validation and mission column names."""
+    validation = ActionMaster._meta.get_field("validation_type")
+    assert validation.choices == [("NONE", "None"), ("PHOTO", "Photo")]
+    assert Mission._meta.get_field("action").db_column == "action_master_id"
+    with connection.cursor() as cursor:
+        columns = {
+            column.name
+            for column in connection.introspection.get_table_description(
+                cursor, "campaigns_mission"
+            )
+        }
+    assert "action_master_id" in columns
+    assert "action_id" not in columns
+
+
 @pytest.mark.django_db
 def test_active_private_membership_is_unique_per_user() -> None:
     user = User.objects.create_user(email="member@iteso.mx")
@@ -60,7 +78,7 @@ def test_catalog_and_campaign_checks_are_database_constraints() -> None:
                 description="invalid",
                 points=0,
                 daily_limit=1,
-                validation_mode=ActionMaster.ValidationMode.DECLARATIVE_BUTTON,
+                validation_type=ActionMaster.ValidationType.NONE,
             )
 
     user = User.objects.create_user(email="creator@iteso.mx")
@@ -89,7 +107,7 @@ def test_raw_sql_delete_is_rejected_at_transaction_commit_and_orm_protects() -> 
         description="Refill a bottle",
         points=5,
         daily_limit=1,
-        validation_mode=ActionMaster.ValidationMode.DECLARATIVE_BUTTON,
+        validation_type=ActionMaster.ValidationType.NONE,
         water_liters_factor=Decimal("1.000"),
     )
     log = ActionLog.objects.create(
@@ -113,3 +131,48 @@ def test_raw_sql_delete_is_rejected_at_transaction_commit_and_orm_protects() -> 
         clan.delete()
     assert ActionLog.objects.filter(pk=log.pk).exists()
     assert UserProfile.objects.filter(pk=profile.pk).exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None:
+    """The approved validation label is preserved when upgrading an old row."""
+    executor = MigrationExecutor(connection)
+    old_target = [
+        ("actions", "0003_actionlog_action_log_status_valid_and_more"),
+    ]
+    forward_target = [
+        ("actions", "0004_align_approved_validation_type"),
+    ]
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_category = old_apps.get_model("actions", "ActionCategory").objects.create(
+        code="legacy-category", name="Legacy"
+    )
+    old_action = old_apps.get_model("actions", "ActionMaster").objects.create(
+        code="legacy-action",
+        category=old_category,
+        name="Legacy action",
+        description="Value stored by the previous draft",
+        points=1,
+        daily_limit=1,
+        validation_mode="DECLARATIVE_BUTTON",
+    )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(forward_target)
+        current_apps = forward_executor.loader.project_state(forward_target).apps
+        current_action = current_apps.get_model("actions", "ActionMaster").objects.get(
+            pk=old_action.pk
+        )
+        assert current_action.validation_type == "NONE"
+
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(old_target)
+        reverted_apps = reverse_executor.loader.project_state(old_target).apps
+        reverted_action = reverted_apps.get_model(
+            "actions", "ActionMaster"
+        ).objects.get(pk=old_action.pk)
+        assert reverted_action.validation_mode == "DECLARATIVE_BUTTON"
+    finally:
+        MigrationExecutor(connection).migrate(forward_target)

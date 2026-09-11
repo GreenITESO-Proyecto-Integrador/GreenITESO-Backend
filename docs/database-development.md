@@ -51,10 +51,11 @@ historia incompatible, usa otro nombre de proyecto y puertos; no borres un
 volumen que otro checkout utilice. Si cambias usuario/contraseña local después
 de inicializar el volumen, PostgreSQL conserva los valores anteriores.
 
-Esta base inicial todavía no incluye modelos de dominio, datos demo ni login.
-`migrate` no crea `auth_user`: T9 debe añadir primero el usuario personalizado.
-El recorrido aquí prueba infraestructura y la ruta `/`; la aplicación con datos
-requiere T9/T11/T12. Ningún `createsuperuser` o login Firebase se declara listo.
+La base T9a incluye los modelos de identidad, clanes, acciones, auditoría,
+campañas y misiones; todavía no incluye datos demo ni login Firebase. `migrate`
+crea el usuario personalizado de `accounts`, no `auth_user`. El recorrido local
+prueba infraestructura y la ruta `/`; la autenticación Firebase y los módulos
+de feed/notificaciones siguen siendo entregables posteriores.
 
 ## Qué vive en qué lugar
 
@@ -62,7 +63,12 @@ El esquema relacional y sus cambios viven exclusivamente en modelos y migracione
 
 El usuario de Django se decide antes de la primera migración que lo referencie. E2 es dueño de identidad, `User`, `UserProfile`, `Clan` y `ClanMembership`; E1 de acciones, catálogo y gamificación; E3 de campañas, feed y notificaciones. Si un modelo cruza dominios, el dueño del modelo referenciado revisa la dependencia y el PR declara su migración inicial.
 
-P3, P8, P9, P10 y P11 siguen siendo decisiones de producto pendientes. Las implementaciones exploratorias deben permanecer en borradores; no se fusionan ni se aplican en ambientes compartidos sin registrar la decisión. En particular, P3 afecta la atribución histórica; P8 el podio congelado; P9 el `campaign_id`; P10 la ventana diaria; y P11 quién determina el clan privado activo.
+El ERD aprobado fija para el esquema los FKs congelados de P3, el contexto
+`campaign_id` nullable de P9 y `podium_snapshot` nullable de P8. La política de
+inmutabilidad y cierre sigue en el servicio. P10 (día calendario frente a 24
+horas) y P11 (quién selecciona el clan privado activo) siguen pendientes; las
+implementaciones exploratorias permanecen en borradores y no se aplican en
+ambientes compartidos sin registrar la decisión.
 
 ## Flujo de modelos y migraciones
 

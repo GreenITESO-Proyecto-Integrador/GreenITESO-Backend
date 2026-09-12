@@ -125,7 +125,7 @@ INSTALLED_APPS = [
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
-    # TODO: replace with Firebase-based authentication once the token→request.user middleware exists.
+    # replace with Firebase-based authentication once the token→request.user middleware exists.
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
 }
 

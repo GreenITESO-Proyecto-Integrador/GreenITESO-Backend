@@ -94,7 +94,7 @@ class CampaignListCreateView(generics.ListCreateAPIView):
         return response
 
     def perform_create(self, serializer: CampaignSerializer) -> None:
-        # TODO: enforce ADMIN/LEADER role rules when campaign authorization is defined.
+        # enforce ADMIN/LEADER role rules when campaign authorization is defined.
         serializer.save(creator=self.request.user)
 
 

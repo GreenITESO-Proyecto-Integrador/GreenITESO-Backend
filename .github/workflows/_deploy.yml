@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: "Target GitHub Environment / Cloud Run environment (dev, test, preprod, prod)"
+        description: "Target GitHub Environment / Cloud Run environment (dev, staging, production)"
         required: true
         type: string
       build:
@@ -28,13 +28,43 @@ jobs:
         id: check
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          REGION: ${{ secrets.GCP_REGION }}
+          DEV_PROJECT_ID: ${{ secrets.DEV_GCP_PROJECT_ID }}
+          ARTIFACT_REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+          CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          DJANGO_RUNTIME_CONFIG_READY: ${{ vars.DJANGO_RUNTIME_CONFIG_READY }}
         run: |
-          if [ -z "$PROJECT_ID" ]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GCP secrets for the '${{ inputs.environment }}' environment are not configured yet - skipping deploy. See docs/deployment.md."
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          case "$TARGET_ENVIRONMENT" in
+            dev|staging|production) ;;
+            *)
+              echo "::error::Automatic deployment is blocked: '${TARGET_ENVIRONMENT}' is not a supported Django environment."
+              echo "::error::Use dev, staging, or production after the environment and pipeline names are aligned."
+              exit 1
+              ;;
+          esac
+
+          missing=""
+          for variable in PROJECT_ID WIF_PROVIDER SERVICE_ACCOUNT REGION DEV_PROJECT_ID ARTIFACT_REPO CLOUD_RUN_SERVICE; do
+            if [ -z "${!variable}" ]; then
+              missing="$missing $variable"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Automatic deployment is blocked: missing GCP configuration ($missing)."
+            echo "::error::Provision the environment-scoped deployment settings before enabling Cloud Run."
+            exit 1
           fi
+
+          if [ "$DJANGO_RUNTIME_CONFIG_READY" != "true" ]; then
+            echo "::error::Automatic deployment is blocked until Cloud Run Django runtime configuration and the reviewed migration pipeline are ready."
+            echo "::error::PR30 is still pending; after its replacement release workflow or an equivalent T14/T15 setup is deployed, set DJANGO_RUNTIME_CONFIG_READY=true."
+            exit 1
+          fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Set short SHA
         if: steps.check.outputs.ready == 'true'

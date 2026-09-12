@@ -8,7 +8,6 @@ on:
         required: true
         type: choice
         options:
-          - test
           - preprod
           - prod
 
@@ -29,8 +28,7 @@ jobs:
         id: source
         run: |
           case "${{ inputs.promote_to }}" in
-            test) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
-            preprod) echo "branch=test" >> "$GITHUB_OUTPUT" ;;
+            preprod) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Fetch source and target branches

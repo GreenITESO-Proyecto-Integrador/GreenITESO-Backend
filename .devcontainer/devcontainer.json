@@ -1,10 +1,8 @@
 {
   "name": "GreenITESO Backend Dev Container",
-  "build": {
-    "dockerfile": "../Dockerfile",
-    "context": ".."
-  },
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "app",
+  "shutdownAction": "stopCompose",
   "workspaceFolder": "/workspace",
   "remoteUser": "adminuser",
   "forwardPorts": [8000],

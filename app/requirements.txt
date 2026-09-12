@@ -1,5 +1,10 @@
-Django>=5.1
-pytest>=8.0
-pytest-django>=4.9
-ruff>=0.9
-pylint>=3.3
+Django==5.2.17
+djangorestframework==3.18.1
+psycopg[binary]==3.3.5
+python-dotenv==1.2.3
+gunicorn==26.2.0
+pytest==9.1.1
+pytest-django==4.14.0
+ruff==0.16.7
+pylint==4.0.8
+pylint-django==2.8.0

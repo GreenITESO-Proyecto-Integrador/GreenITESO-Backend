@@ -56,6 +56,7 @@ class User(AbstractUser):
     REQUIRED_FIELDS: list[str] = []
 
     class Meta:
+        db_table = "accounts_user"
         constraints = [
             models.CheckConstraint(
                 condition=Q(role__in=["STUDENT", "STAFF", "ADMIN"]),
@@ -95,6 +96,7 @@ class Clan(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "accounts_clan"
         constraints = [
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
@@ -140,6 +142,7 @@ class UserProfile(models.Model):
     last_action_date = models.DateField(null=True, blank=True)
 
     class Meta:
+        db_table = "accounts_user_profile"
         constraints = [
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
@@ -172,6 +175,7 @@ class ClanMembership(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "accounts_clan_membership"
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "clan"], name="membership_user_clan_unique"

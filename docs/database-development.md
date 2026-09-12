@@ -61,6 +61,41 @@ de feed/notificaciones siguen siendo entregables posteriores.
 
 El esquema relacional y sus cambios viven exclusivamente en modelos y migraciones de Django. `neon.ts`, Neon Auth y los buckets de Neon no son parte de este proyecto. La autenticación acordada es Firebase Authentication; el almacenamiento GCS privado es la propuesta P1 y su integración sigue pendiente. Una rama de Git tampoco transporta filas de PostgreSQL; cada ambiente recibe las migraciones revisadas.
 
+## Nombres canónicos de tablas
+
+Cada modelo concreto del dominio declara explícitamente `Meta.db_table` con el
+formato `<app>_<entidad_en_snake_case>`: por ejemplo,
+`accounts_user_profile`, `actions_action_log` y
+`campaigns_user_mission_progress`. Las migraciones nuevas de nombres usan
+`AlterModelTable`; renombran las tablas existentes sin reescribir migraciones
+aplicadas y conservan filas, claves foráneas, restricciones y relaciones.
+`accounts_user` mantiene los nombres de sus tablas M2M automáticas
+(`accounts_user_groups` y `accounts_user_user_permissions`), y las tablas de
+framework `auth_*` no se renombran.
+
+Mapa completo del dominio:
+
+| Modelo | Tabla canónica |
+| --- | --- |
+| `accounts.User` | `accounts_user` |
+| `accounts.Clan` | `accounts_clan` |
+| `accounts.UserProfile` | `accounts_user_profile` |
+| `accounts.ClanMembership` | `accounts_clan_membership` |
+| `actions.ActionCategory` | `actions_action_category` |
+| `actions.ActionMaster` | `actions_action_master` |
+| `actions.ActionLog` | `actions_action_log` |
+| `actions.ActionLogMissionContribution` | `actions_action_log_mission_contribution` |
+| `campaigns.Campaign` | `campaigns_campaign` |
+| `campaigns.Mission` | `campaigns_mission` |
+| `campaigns.CampaignParticipant` | `campaigns_campaign_participant` |
+| `campaigns.UserMissionProgress` | `campaigns_user_mission_progress` |
+
+Después de actualizar un checkout existente, ejecuta `make migrate` para
+aplicar los renombres. No borres ni reinicialices el volumen local para
+resolverlos. Un checkout anterior sigue usando los nombres antiguos en el ORM y no es
+compatible con la base ya renombrada: actualiza el código y aplica sus
+migraciones juntos. También actualiza cualquier SQL crudo al mapa canónico.
+
 El usuario de Django se decide antes de la primera migración que lo referencie. E2 es dueño de identidad, `User`, `UserProfile`, `Clan` y `ClanMembership`; E1 de acciones, catálogo y gamificación; E3 de campañas, feed y notificaciones. Si un modelo cruza dominios, el dueño del modelo referenciado revisa la dependencia y el PR declara su migración inicial.
 
 El ERD aprobado fija para el esquema los FKs congelados de P3, el contexto

@@ -157,37 +157,47 @@ def _history_fingerprint() -> dict[str, Any]:
     }
 
 
+def _quoted_table(model: Any) -> str:
+    """Quote a table name declared by a trusted Django model."""
+    return connection.ops.quote_name(model._meta.db_table)
+
+
 def _fk_orphans() -> dict[str, int]:
     """Check ActionLog foreign-key targets without selecting any row payload."""
+    log_table = _quoted_table(ActionLog)
+    user_table = _quoted_table(User)
+    action_table = _quoted_table(ActionMaster)
+    clan_table = _quoted_table(Clan)
+    campaign_table = _quoted_table(Campaign)
     checks = {
-        "user": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN accounts_user AS target ON target.id = log.user_id
+        "user": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {user_table} AS target ON target.id = log.user_id
             WHERE target.id IS NULL
         """,
-        "action": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN actions_actionmaster AS target ON target.id = log.action_id
+        "action": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {action_table} AS target ON target.id = log.action_id
             WHERE target.id IS NULL
         """,
-        "institutional_clan": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN accounts_clan AS target ON target.id = log.institutional_clan_id
+        "institutional_clan": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {clan_table} AS target ON target.id = log.institutional_clan_id
             WHERE target.id IS NULL
         """,
-        "credited_private_clan": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN accounts_clan AS target ON target.id = log.credited_private_clan_id
+        "credited_private_clan": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {clan_table} AS target ON target.id = log.credited_private_clan_id
             WHERE log.credited_private_clan_id IS NOT NULL AND target.id IS NULL
         """,
-        "campaign": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN campaigns_campaign AS target ON target.id = log.campaign_id
+        "campaign": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {campaign_table} AS target ON target.id = log.campaign_id
             WHERE log.campaign_id IS NOT NULL AND target.id IS NULL
         """,
-        "reviewed_by": """
-            SELECT COUNT(*) FROM actions_actionlog AS log
-            LEFT JOIN accounts_user AS target ON target.id = log.reviewed_by_id
+        "reviewed_by": f"""
+            SELECT COUNT(*) FROM {log_table} AS log
+            LEFT JOIN {user_table} AS target ON target.id = log.reviewed_by_id
             WHERE log.reviewed_by_id IS NOT NULL AND target.id IS NULL
         """,
     }

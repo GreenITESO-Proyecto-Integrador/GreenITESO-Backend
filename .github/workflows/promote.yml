@@ -38,6 +38,6 @@ jobs:
           gh pr create \
             --base "${{ inputs.promote_to }}" \
             --head "${{ steps.source.outputs.branch }}" \
-            --title "promote: ${{ steps.source.outputs.branch }} -> ${{ inputs.promote_to }}" \
+            --title "chore: promote ${{ steps.source.outputs.branch }} -> ${{ inputs.promote_to }}" \
             --body "Automated promotion opened by @${{ github.actor }} via the Promote workflow." \
           || echo "::notice::A promotion PR from ${{ steps.source.outputs.branch }} to ${{ inputs.promote_to }} may already be open."

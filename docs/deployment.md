@@ -3,8 +3,8 @@
 ## Current state
 
 Automatic deployment is disabled. The repository variable
-`CLOUD_DEPLOYMENT_ENABLED` is currently unset, so the four historical caller
-jobs on `dev`, `test`, `preprod`, and `prod` are skipped before a runner,
+`CLOUD_DEPLOYMENT_ENABLED` is currently unset, so the historical caller
+jobs on `dev`, `preprod`, and `prod` are skipped before a runner,
 GitHub Environment, or deployment secret is made available. The callers and
 branches remain for compatibility; this branch makes no Cloud Run deployment
 claim.
@@ -33,7 +33,7 @@ When enabled, the reusable workflow remains fail closed. It accepts only the
 approved `dev`, `staging`, and `production` names, requires the environment
 scoped GCP and Artifact Registry settings, and requires
 `DJANGO_RUNTIME_CONFIG_READY=true`. The opt-in guard does not bypass these
-checks; legacy `test`/`preprod`/`prod` inputs continue to be rejected until
+checks; legacy `preprod`/`prod` inputs continue to be rejected until
 the replacement callers provide the approved mapping.
 
 The legacy callers are:
@@ -41,7 +41,6 @@ The legacy callers are:
 | Workflow | Trigger branch | Current input | Build |
 | --- | --- | --- | --- |
 | `deploy-dev.yml` | `dev` | `dev` | yes |
-| `deploy-test.yml` | `test` | `test` | no |
 | `deploy-preprod.yml` | `preprod` | `preprod` | no |
 | `deploy-prod.yml` | `prod` | `prod` | no |
 

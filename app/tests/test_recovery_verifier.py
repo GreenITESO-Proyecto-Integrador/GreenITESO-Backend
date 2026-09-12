@@ -6,6 +6,7 @@ import json
 import uuid
 from pathlib import Path
 from stat import S_IMODE
+from unittest.mock import MagicMock
 
 import pytest
 from django.core.management import call_command
@@ -57,6 +58,49 @@ def _capture_baseline(tmp_path: Path) -> tuple[Path, ActionLog, str]:
         verbosity=0,
     )
     return baseline, marker, post_marker_id
+
+
+@pytest.mark.django_db
+def test_recovery_fk_queries_follow_model_table_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchone.return_value = (0,)
+    monkeypatch.setattr(db_recovery_verify.connection, "cursor", lambda: cursor)
+
+    model_tables = {
+        db_recovery_verify.ActionLog: "renamed_action_log",
+        db_recovery_verify.User: "renamed_user",
+        db_recovery_verify.ActionMaster: "renamed_action_master",
+        db_recovery_verify.Clan: "renamed_clan",
+        db_recovery_verify.Campaign: "renamed_campaign",
+    }
+    for model, table_name in model_tables.items():
+        monkeypatch.setattr(model._meta, "db_table", table_name)
+
+    quoted_names: list[str] = []
+
+    def quote_name(value: str) -> str:
+        quoted_names.append(value)
+        return f'"{value}"'
+
+    monkeypatch.setattr(db_recovery_verify.connection.ops, "quote_name", quote_name)
+
+    fk_orphans = db_recovery_verify._fk_orphans  # pylint: disable=protected-access
+    assert fk_orphans() == {
+        "user": 0,
+        "action": 0,
+        "institutional_clan": 0,
+        "credited_private_clan": 0,
+        "campaign": 0,
+        "reviewed_by": 0,
+    }
+    assert set(quoted_names) == set(model_tables.values())
+    rendered_queries = [call.args[0] for call in cursor.execute.call_args_list]
+    for table_name in model_tables.values():
+        assert any(f'"{table_name}"' in query for query in rendered_queries)
 
 
 @pytest.mark.django_db(transaction=True)

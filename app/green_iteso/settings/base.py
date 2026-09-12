@@ -117,10 +117,17 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.sessions",
     "django.contrib.staticfiles",
+    "rest_framework",
     "green_iteso.accounts",
     "green_iteso.actions",
     "green_iteso.campaigns",
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    # TODO: replace with Firebase-based authentication once the token→request.user middleware exists.
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

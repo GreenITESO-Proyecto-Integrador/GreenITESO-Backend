@@ -25,3 +25,5 @@ También puedes abrir el repositorio en el Dev Container. La guía completa de m
 - Firebase Authentication es el proveedor acordado; GCS privado es la propuesta P1 y aún requiere integración.
 
 No compartas URLs con contraseñas, tokens, fotos o datos reales en commits, issues o logs.
+
+> "All the world's a stage, and all the men and women merely players." — William Shakespeare, *As You Like It*

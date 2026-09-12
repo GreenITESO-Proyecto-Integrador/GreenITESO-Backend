@@ -34,7 +34,7 @@ class Post(models.Model):
         blank=True,
         default="",
     )
-    # TODO (Equipo 1): Uncomment when actions.UserBadge is implemented
+    # Note (Equipo 1): Uncomment when actions.UserBadge is implemented
     # badge_user = models.ForeignKey(
     #     "actions.UserBadge",
     #     on_delete=models.SET_NULL,

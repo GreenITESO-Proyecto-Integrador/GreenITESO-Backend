@@ -120,6 +120,7 @@ INSTALLED_APPS = [
     "green_iteso.accounts",
     "green_iteso.actions",
     "green_iteso.campaigns",
+    "green_iteso.feed"
 ]
 
 MIDDLEWARE = [

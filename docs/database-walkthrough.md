@@ -22,7 +22,6 @@ En una terminal de host nueva:
 git clone -b dev https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Backend.git
 cd GreenITESO-Backend
 make init-local
-make compose-up
 ```
 
 `make init-local` crea `.env` desde `.env.example` sólo si todavía no existe;
@@ -30,6 +29,12 @@ no sobrescribe una configuración local. Si los puertos predeterminados
 `APP_PORT=8000` o `POSTGRES_PORT=5432` están ocupados, edita esos valores en
 `.env` antes de arrancar, por ejemplo `APP_PORT=18480` y
 `POSTGRES_PORT=15492`.
+
+Ahora arranca los servicios:
+
+```sh
+make compose-up
+```
 
 Deja esa terminal abierta. Compose construye la aplicación y mantiene el volumen local de PostgreSQL. En una segunda terminal, entra de nuevo a `GreenITESO-Backend` y ejecuta:
 

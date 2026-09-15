@@ -274,7 +274,8 @@ def test_domain_table_renames_preserve_rows_fks_m2m_and_oids() -> None:
             assert old_name not in final_oids
             assert final_oids[new_name] == old_oids[old_name]
     finally:
-        MigrationExecutor(connection).migrate(new_target)
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
 
 
 @pytest.mark.django_db(transaction=True)
@@ -418,4 +419,5 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
         ).objects.get(pk=old_action.pk)
         assert reverted_action.validation_mode == "DECLARATIVE_BUTTON"
     finally:
-        MigrationExecutor(connection).migrate(forward_target)
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

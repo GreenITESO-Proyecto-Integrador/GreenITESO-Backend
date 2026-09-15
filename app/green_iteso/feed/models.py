@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -72,11 +74,14 @@ class Post(models.Model):
         author_id = self.author_id if self.author_id else "System"
         return f"[{self.post_type}] {self.pk} by {author_id}"
 
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        """Enforce validation rules before writing to the database."""
+        self.full_clean()
+        super().save(*args, **kwargs)
+
     def clean(self) -> None:
-        super().clean()
+        """Enforce business rules and payload constraints."""
         if not self.content or not self.content.strip():
             raise ValidationError({"content": "Content cannot be empty."})
         if self.post_type not in PostType.values:
-            raise ValidationError(
-                {"post_type": f"Invalid post type: {self.post_type}"}
-            )
+            raise ValidationError({"post_type": "Invalid post type specified."})

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.contrib.auth import get_user_model
-from django.utils import timezone
+from django.utils import timezone, translation
 from django.utils.timesince import timesince
 from rest_framework import serializers
 
@@ -20,8 +20,8 @@ class PostAuthorSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name"]
-        read_only_fields = ["id", "email", "first_name", "last_name"]
+        fields = ["id", "first_name", "last_name"]
+        read_only_fields = ["id", "first_name", "last_name"]
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -64,7 +64,8 @@ class PostSerializer(serializers.ModelSerializer):
         diff = now - obj.created_at
         if diff.total_seconds() < 60:
             return "hace un momento"
-        raw_time = timesince(obj.created_at, now).split(",")[0]
+        with translation.override("es"):
+            raw_time = timesince(obj.created_at, now).split(",")[0]
         return f"hace {raw_time}"
 
     def get_badge_info(self, _obj: Post) -> dict[str, Any] | None:

@@ -14,11 +14,13 @@ from green_iteso.feed.serializers import PostSerializer
 
 
 class IsAuthorOrReadOnly(permissions.BasePermission):
-    """Custom permission to restrict update and delete actions to post authors."""
+    """Custom permission to restrict update and delete actions."""
 
     def has_object_permission(self, request: Request, view: Any, obj: Post) -> bool:
-        """Allow read access to any request, write access only to the author."""
+        """Allow read access to all, updates to author, deletes to author or staff."""
         if request.method in permissions.SAFE_METHODS:
+            return True
+        if request.method == "DELETE" and request.user and request.user.is_staff:
             return True
         return obj.author == request.user
 

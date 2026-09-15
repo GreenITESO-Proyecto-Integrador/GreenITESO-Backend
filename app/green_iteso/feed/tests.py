@@ -54,6 +54,16 @@ class PostModelTests(APITestCase):
         with self.assertRaises(ValidationError):
             post.clean()
 
+    def test_save_rejects_empty_content_at_persistence(self) -> None:
+        """Verify save() invokes full_clean and prevents persisting empty content."""
+        post = Post(
+            author=self.user,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="   ",
+        )
+        with self.assertRaises(ValidationError):
+            post.save()
+
     def test_clean_rejects_invalid_post_type(self) -> None:
         """Verify model validation rejects unlisted enum types."""
         post = Post(
@@ -97,6 +107,14 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors
         response = self.client.get(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], self.post.pk)
+
+    def test_author_data_excludes_sensitive_email(self) -> None:
+        """Verify that author payload omits email addresses to prevent harvesting."""
+        response = self.client.get(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data.get("author")
+        self.assertIsNotNone(author_data)
+        self.assertNotIn("email", author_data)
 
     def test_create_post_authenticated(self) -> None:
         """Ensure logged-in users can successfully publish posts."""
@@ -157,8 +175,20 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_delete_post_as_staff_allowed(self) -> None:
+        """Ensure staff members can moderate and delete posts from other users."""
+        staff_user = User.objects.create_user(
+            email="staff@iteso.mx",
+            password="StrongPassword123!",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=staff_user)
+        response = self.client.delete(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Post.objects.filter(pk=self.post.pk).exists())
+
     def test_relative_time_formats(self) -> None:
-        """Verify serializer relative time formats for recent and older posts."""
+        """Verify serializer relative time formats in Spanish."""
         post_old = Post.objects.create(
             author=self.author,
             post_type=PostType.COMMUNITY_MILESTONE,

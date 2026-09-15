@@ -3,7 +3,7 @@
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
-from django.urls import path
+from django.urls import include, path
 
 
 def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-argument
@@ -13,6 +13,10 @@ def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-
 
 urlpatterns = [
     path("", index_view, name="index"),
+    path(
+        "api/v1/notifications/",
+        include("green_iteso.notifications.urls"),
+    ),
 ]
 
 if settings.DEBUG:

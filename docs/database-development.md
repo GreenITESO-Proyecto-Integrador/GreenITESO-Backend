@@ -7,7 +7,7 @@ Esta guía es el contrato de trabajo para los tres equipos de Backend. Un clon n
 Requisitos: Git, Docker Desktop (con Compose) y `make`; opcionalmente, VS Code Dev Containers.
 
 Para seguir el recorrido completo con comandos copiables, seed sintético, cambio
-de modelo, consulta y limpieza del volumen, consulta [Recorrido reproducible de
+de modelo, consulta y detención de servicios sin borrar datos, consulta [Recorrido reproducible de
 base de datos](database-walkthrough.md).
 
 ```sh

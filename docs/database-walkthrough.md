@@ -21,9 +21,15 @@ En una terminal de host nueva:
 ```sh
 git clone -b dev https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Backend.git
 cd GreenITESO-Backend
-cp .env.example .env
+make init-local
 make compose-up
 ```
+
+`make init-local` crea `.env` desde `.env.example` sólo si todavía no existe;
+no sobrescribe una configuración local. Si los puertos predeterminados
+`APP_PORT=8000` o `POSTGRES_PORT=5432` están ocupados, edita esos valores en
+`.env` antes de arrancar, por ejemplo `APP_PORT=18480` y
+`POSTGRES_PORT=15492`.
 
 Deja esa terminal abierta. Compose construye la aplicación y mantiene el volumen local de PostgreSQL. En una segunda terminal, entra de nuevo a `GreenITESO-Backend` y ejecuta:
 
@@ -33,7 +39,12 @@ make db-smoke
 make test
 ```
 
-La primera migración puede mostrar 31 migraciones aplicadas. `db-smoke` debe mostrar `DB_SMOKE OK`, `SELECT 1: OK`, conteos ORM en cero y `ssl_cliente: inactivo`; ese estado TLS es esperado para PostgreSQL local. La suite debe terminar con `28 passed`. El CI usa la misma idea con una base temporal y no actualiza Neon.
+En la revisión actual la primera migración muestra 31 migraciones aplicadas;
+ese número puede crecer cuando se agreguen migraciones aprobadas. `db-smoke`
+debe mostrar `DB_SMOKE OK`, `SELECT 1: OK`, conteos ORM en cero y
+`ssl_cliente: inactivo`; ese estado TLS es esperado para PostgreSQL local. La
+suite terminó con `28 passed` en esta copia; el número de pruebas puede crecer.
+El CI usa la misma idea con una base temporal y no actualiza Neon.
 
 ## Crear un registro de demostración
 
@@ -56,8 +67,11 @@ git switch -c demo/category-order
 Edita exactamente `app/green_iteso/actions/models.py`. Dentro de `ActionCategory`, agrega:
 
 ```python
-display_order = models.PositiveIntegerField(default=0)
+    display_order = models.PositiveIntegerField(default=0)
 ```
+
+Colócalo dentro de `ActionCategory`, antes de `class Meta`, conservando los
+campos existentes.
 
 Genera la migración con una sola línea. El comando visual es compatible con Compose moderno:
 
@@ -82,7 +96,9 @@ Consulta el registro demo y el nuevo valor:
 docker compose exec -T app python app/manage.py shell -c 'from green_iteso.actions.models import ActionCategory; c = ActionCategory.objects.get(code="DEMO"); print(c.code, c.name, "display_order=", c.display_order)'
 ```
 
-La salida esperada es `DEMO Reciclaje display_order= 0` y después `No changes detected`. Ejecuta las pruebas otra vez:
+La salida esperada de `make makemigrations-check` es `No changes detected`.
+Después consulta el registro y espera `DEMO Reciclaje display_order= 0`.
+Ejecuta las pruebas otra vez:
 
 ```sh
 make db-smoke

@@ -16,6 +16,9 @@ class ActionCategory(models.Model):
     description = models.TextField(blank=True)
     icon = models.CharField(max_length=100, blank=True)
 
+    class Meta:
+        db_table = "actions_action_category"
+
     def __str__(self) -> str:
         return self.code
 
@@ -43,6 +46,7 @@ class ActionMaster(models.Model):
     is_active = models.BooleanField(default=True)
 
     class Meta:
+        db_table = "actions_action_master"
         constraints = [
             models.CheckConstraint(
                 condition=Q(points__gt=0), name="action_points_positive"
@@ -134,6 +138,7 @@ class ActionLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "actions_action_log"
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "idempotency_key"],
@@ -185,6 +190,7 @@ class ActionLogMissionContribution(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "actions_action_log_mission_contribution"
         constraints = [
             models.UniqueConstraint(
                 fields=["action_log", "mission"], name="action_log_mission_unique"

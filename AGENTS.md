@@ -17,5 +17,9 @@ generales de las skills vendorizadas:
   ejecutan una vez por ambiente con la conexión directa; la aplicación usa la
   URL pooled.
 
-P3/P8/P9/P10/P11 siguen pendientes de ratificación. Se permiten implementaciones en borradores identificados; no se fusionan ni se
-aplican a ambientes compartidos hasta registrar la ratificación.
+La página 9 del ERD fue confirmada como esquema aprobado el 2026-09-11:
+P3 fija los FKs congelados, P8 reserva `podium_snapshot` y P9 conserva
+`campaign` nullable. Las políticas de servicio de esos puntos y las decisiones
+P10/P11 siguen pendientes; no se deben presentar como decisiones del esquema.
+Las implementaciones exploratorias de esas políticas permanecen en borradores
+identificados y no se aplican a ambientes compartidos sin registrar la decisión.

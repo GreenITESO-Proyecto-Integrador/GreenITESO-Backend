@@ -45,6 +45,7 @@ class Campaign(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "campaigns_campaign"
         constraints = [
             models.CheckConstraint(
                 condition=Q(end_date__gt=F("start_date")),
@@ -90,6 +91,7 @@ class Mission(models.Model):
     target_count = models.PositiveIntegerField()
 
     class Meta:
+        db_table = "campaigns_mission"
         constraints = [
             models.CheckConstraint(
                 condition=Q(target_count__gt=0), name="mission_target_positive"
@@ -113,6 +115,7 @@ class CampaignParticipant(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "campaigns_campaign_participant"
         constraints = [
             models.UniqueConstraint(
                 fields=["campaign", "user"], name="campaign_participant_unique"
@@ -138,6 +141,7 @@ class UserMissionProgress(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "campaigns_user_mission_progress"
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "mission"], name="user_mission_progress_unique"

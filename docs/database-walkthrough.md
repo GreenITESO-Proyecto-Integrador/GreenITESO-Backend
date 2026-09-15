@@ -107,6 +107,43 @@ make test
 
 El smoke check es de lectura y no aplica migraciones. La suite debe terminar con `28 passed` en la copia de demostración.
 
+## Cerrar el ejercicio temporal
+
+Mientras conserves este ejercicio, conserva **juntos** el campo del modelo y su
+archivo de migración. No elimines sólo uno. Si el equipo decide incorporar un
+cambio real, modelo y migración se incluyen juntos en un PR revisado.
+
+Para volver al esquema inicial en **este clon dedicado al ejercicio**, sin otros
+cambios ni migraciones posteriores, deshaz primero la migración de ejemplo con
+los servicios todavía levantados:
+
+```sh
+docker compose exec -T app python app/manage.py migrate actions 0005_alter_actioncategory_table_alter_actionlog_table_and_more
+```
+
+Este destino es el predecesor de `0006_actioncategory_display_order` en la
+revisión de esta guía. Si tu historial ya es distinto, no copies ese destino a
+ciegas: revisa la migración generada y sus dependencias. No uses este procedimiento
+en un ambiente compartido. Revertir este `AddField` descarta los valores del
+campo de ejemplo, pero conserva la categoría.
+
+Después, en el editor, elimina únicamente la línea `display_order` que agregaste
+a `ActionCategory` y el archivo generado
+`app/green_iteso/actions/migrations/0006_actioncategory_display_order.py`.
+No borres migraciones previas ni otros cambios propios. Verifica:
+
+```sh
+make makemigrations-check
+make db-smoke
+make test
+git status --short
+```
+
+Debes obtener `No changes detected`, smoke correcto, pruebas pasando y ningún
+cambio del ejercicio pendiente en Git. Ya puedes volver a `dev`. Si prefieres
+mantener el ejercicio para repetir la demostración, omite esta reversión y deja
+juntos el modelo, la migración y su base local.
+
 ## Limpieza
 
 Conserva el volumen local para poder repetir el recorrido y detén Compose cuando termines:

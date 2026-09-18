@@ -33,21 +33,24 @@ UUID primary keys follow the approved ERD. Django Admin is exposed only when loc
 | `User.email` | email, required, unique | Institutional identity at the integration boundary; the Firebase login service must verify `@iteso.mx`. Domain validation is intentionally outside this schema draft. |
 | `User.firebase_uid` | varchar 128, nullable, unique | Firebase subject, nullable for local admin/dev identities; nullable uniqueness permits many local accounts without a Firebase subject. |
 | `User.role` | `STUDENT` / `STAFF` / `ADMIN` | Global application role. It is separate from `is_staff` and `is_superuser`; Django permissions control Admin access. |
+| `User.nickname` | varchar 50, blank | Display name; set during onboarding, so it starts blank rather than enforcing `NOT NULL` against pre-onboarding accounts. |
 | `User.is_active` | bool | Deactivation marker. Historical logs protect the account from physical deletion. |
 | `UserProfile.user` | one-to-one PK/FK | Account extension. Cascade is safe for profile-only data; the account itself is protected by audit FKs. |
 | `UserProfile.institutional_clan` | FK Clan, nullable | Nullable only during onboarding; the action service must reject credit before it exists. Protected to preserve history. |
 | `UserProfile.career` | varchar 150, blank | Autodeclared onboarding value; Firebase does not verify it. |
 | `UserProfile.onboarding_completed_at` | timestamp, nullable | Explicit onboarding marker. |
-| `UserProfile.total_points` | bigint, default 0 | Denormalized total written by the points transaction; DB check is nonnegative. |
+| `UserProfile.total_points` | bigint, default 0 | Denormalized historical total written by the points transaction; DB check is nonnegative. Never decreases on redemption. |
+| `UserProfile.available_points` | bigint, default 0 | Spendable balance; increases alongside `total_points` on point-earning actions, decreases on reward redemption (owned by the redemption service, E1). DB check is nonnegative. |
 | `UserProfile.current_streak` | nonnegative integer | Derived/lazy streak projection. |
 | `UserProfile.last_action_date` | local business date, nullable | Date used by the proposed Mexico City streak policy. |
+| `UserProfile.visibility` | `PUBLIC` / `PRIVATE`, default `PUBLIC` | Profile visibility to other users; DB check mirrors the choices. |
 | `Clan.id` | UUID PK | Server generated. |
 | `Clan.name` | varchar 100, required, unique | Stable display name for the draft. Rename policy is pending product review. |
 | `Clan.type` | `INSTITUTIONAL` / `PRIVATE` | Clan kind; membership eligibility and five-private-clan limit are service rules. |
 | `Clan.privacy` | `PUBLIC` / `PRIVATE_INVITE` | Visibility/access hint. |
 | `Clan.total_points` | bigint, default 0 | Denormalized historical contribution total; DB check is nonnegative. |
 | `Clan.created_by` | FK User, nullable, PROTECT | Creator audit link. |
-| `Clan.deleted_at` | timestamp, nullable | Canonical soft-delete marker. The old `is_deleted` name maps to `deleted_at IS NOT NULL`. |
+| `Clan.deleted_at` | timestamp, nullable | Canonical soft-delete marker. The old `is_deleted` name maps to `deleted_at IS NOT NULL`. `Clan.objects` (default manager) excludes soft-deleted rows; `Clan.all_objects` returns every row, including deleted ones. |
 | `ClanMembership.user`, `.clan` | FKs, required | Membership identity; one row per pair. Membership rows may be removed as a service operation after historical logs are protected. |
 | `ClanMembership.role` | `LEADER` / `MEMBER` | Contextual role, independent of global `User.role`. |
 | `ClanMembership.is_active_private` | bool | Proposed source of the active private clan. A partial unique constraint permits at most one true row per user. The service must also ensure it points to an active private clan. |

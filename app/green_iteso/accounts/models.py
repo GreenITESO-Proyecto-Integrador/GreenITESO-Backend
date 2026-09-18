@@ -1,4 +1,6 @@
-"""Provisional identity and clan schema for the T9a core draft."""
+"""Provisional identity and clan schema for the T9a core draft, extended with
+profile visibility and clan soft-delete support.
+"""
 
 from __future__ import annotations
 
@@ -50,6 +52,9 @@ class User(AbstractUser):
     email = models.EmailField(unique=True, max_length=255)
     firebase_uid = models.CharField(max_length=128, unique=True, null=True, blank=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.STUDENT)
+    # Display name shown across the app; set during onboarding, so it starts
+    # blank rather than enforcing NOT NULL against pre-onboarding accounts.
+    nickname = models.CharField(max_length=50, blank=True, default="")
     objects = UserManager()
 
     USERNAME_FIELD = "email"
@@ -63,6 +68,25 @@ class User(AbstractUser):
                 name="user_role_valid",
             ),
         ]
+
+
+class ClanQuerySet(models.QuerySet):
+    """Queryset helpers shared between the alive-only and unrestricted managers."""
+
+    def alive(self) -> ClanQuerySet:
+        """Return clans that have not been soft-deleted."""
+        return self.filter(deleted_at__isnull=True)
+
+    def deleted(self) -> ClanQuerySet:
+        """Return only soft-deleted clans."""
+        return self.filter(deleted_at__isnull=False)
+
+
+class ClanManager(models.Manager.from_queryset(ClanQuerySet)):
+    """Default manager: excludes soft-deleted clans from every query."""
+
+    def get_queryset(self) -> ClanQuerySet:
+        return super().get_queryset().alive()
 
 
 class Clan(models.Model):
@@ -95,8 +119,13 @@ class Clan(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    all_objects = models.Manager()
+    objects = ClanManager()
+
     class Meta:
         db_table = "accounts_clan"
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         constraints = [
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
@@ -122,6 +151,10 @@ class Clan(models.Model):
 class UserProfile(models.Model):
     """Onboarding and denormalized personal totals for the points transaction."""
 
+    class Visibility(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public"
+        PRIVATE = "PRIVATE", "Private"
+
     user = models.OneToOneField(
         "accounts.User",
         on_delete=models.CASCADE,
@@ -138,8 +171,12 @@ class UserProfile(models.Model):
     career = models.CharField(max_length=150, blank=True)
     onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     total_points = models.BigIntegerField(default=0)
+    available_points = models.BigIntegerField(default=0)
     current_streak = models.PositiveIntegerField(default=0)
     last_action_date = models.DateField(null=True, blank=True)
+    visibility = models.CharField(
+        max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC
+    )
 
     class Meta:
         db_table = "accounts_user_profile"
@@ -147,6 +184,14 @@ class UserProfile(models.Model):
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
                 name="profile_total_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(available_points__gte=0),
+                name="profile_available_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(visibility__in=["PUBLIC", "PRIVATE"]),
+                name="profile_visibility_valid",
             ),
         ]
 

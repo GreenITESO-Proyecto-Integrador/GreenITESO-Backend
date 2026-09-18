@@ -1,4 +1,14 @@
-"""Reusable DRF permission classes combining global and clan-contextual roles."""
+"""Reusable DRF permission classes combining global and clan-contextual roles.
+
+Caveat: ``IsSelfOrAdmin`` and ``IsClanLeader`` only implement
+``has_object_permission``, which DRF invokes solely when a view calls
+``get_object()`` (i.e. retrieve/update/destroy on a detail route). Neither
+class overrides ``has_permission``, so attaching one to a ``list`` or
+``create`` action — which never fetches a single object — silently no-ops
+and lets every authenticated caller through. Combine them with
+``IsAuthenticated`` at minimum, and use ``IsAdmin`` (view-level) instead for
+list/create actions that need a hard role gate.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +32,11 @@ class IsAdmin(BasePermission):
 
 
 class IsSelfOrAdmin(BasePermission):
-    """Allow the resource's owner or a global ADMIN; deny everyone else."""
+    """Allow the resource's owner or a global ADMIN; deny everyone else.
+
+    Object-level only (see module docstring): has no effect on actions that
+    don't call ``get_object()``, such as ``list``/``create``.
+    """
 
     def has_object_permission(self, request: Request, view: APIView, obj: Any) -> bool:
         user = request.user
@@ -37,7 +51,9 @@ class IsSelfOrAdmin(BasePermission):
 class IsClanLeader(BasePermission):
     """Allow a clan's LEADER, or a global ADMIN, to manage that clan.
 
-    ``obj`` must be a ``Clan`` or expose a ``.clan`` attribute.
+    ``obj`` must be a ``Clan`` or expose a ``.clan`` attribute. Object-level
+    only (see module docstring): has no effect on actions that don't call
+    ``get_object()``, such as ``list``/``create``.
     """
 
     def has_object_permission(self, request: Request, view: APIView, obj: Any) -> bool:

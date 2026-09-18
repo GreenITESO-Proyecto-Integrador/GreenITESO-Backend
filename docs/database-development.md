@@ -4,7 +4,11 @@ Esta guía es el contrato de trabajo para los tres equipos de Backend. Un clon n
 
 ## Arranque de un clon nuevo
 
-Requisitos: Git, Docker Desktop (con Compose) y, opcionalmente, VS Code Dev Containers.
+Requisitos: Git, Docker Desktop (con Compose) y `make`; opcionalmente, VS Code Dev Containers.
+
+Para seguir el recorrido completo con comandos copiables, seed sintético, cambio
+de modelo, consulta y detención de servicios sin borrar datos, consulta [Recorrido reproducible de
+base de datos](database-walkthrough.md).
 
 ```sh
 git clone https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Backend.git

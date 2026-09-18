@@ -16,6 +16,7 @@ urlpatterns = [
     path("", index_view, name="index"),
     path("api/v1/", include("green_iteso.accounts.urls")),
     path("api/v1/", include("green_iteso.clans.urls")),
+    path("api/v1/", include("green_iteso.actions.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/docs/",

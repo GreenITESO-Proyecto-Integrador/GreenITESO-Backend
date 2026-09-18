@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from green_iteso.accounts.models import Clan
+from green_iteso.accounts.models import Clan, UserProfile
 
 
 class ClanSerializer(serializers.ModelSerializer):
@@ -22,3 +22,20 @@ class ClanSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "privacy", "total_points", "created_at"]
+
+
+class InstitutionalOnboardingSerializer(serializers.Serializer):
+    """Input payload for declaring a career during onboarding (T2-30)."""
+
+    career = serializers.CharField(max_length=150, allow_blank=False)
+
+
+class InstitutionalAssignmentSerializer(serializers.ModelSerializer):
+    """Read-only view of the caller's institutional clan assignment."""
+
+    institutional_clan = ClanSerializer(read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = ["career", "institutional_clan", "onboarding_completed_at"]
+        read_only_fields = fields

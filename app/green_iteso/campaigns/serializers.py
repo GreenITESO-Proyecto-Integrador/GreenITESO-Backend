@@ -6,7 +6,9 @@ from typing import Any
 
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
+from green_iteso.accounts.models import ClanMembership, User
 from green_iteso.actions.models import ActionMaster
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
@@ -90,6 +92,24 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"target_clan": "Private campaigns must target a clan."}
             )
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if self.instance is None and user is not None:
+            if scope == Campaign.Scope.GLOBAL and user.role != User.Role.ADMIN:
+                raise PermissionDenied(
+                    "Only administrators can create global campaigns."
+                )
+            if scope == Campaign.Scope.PRIVATE and target_clan is not None:
+                is_leader = ClanMembership.objects.filter(
+                    user=user,
+                    clan=target_clan,
+                    role=ClanMembership.MembershipRole.LEADER,
+                ).exists()
+                if not is_leader:
+                    raise PermissionDenied(
+                        "Only the clan leader can create campaigns for this clan."
+                    )
         return attrs
 
     @transaction.atomic

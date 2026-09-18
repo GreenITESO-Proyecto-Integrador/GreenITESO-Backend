@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
@@ -11,9 +12,10 @@ import pytest
 from django.db import IntegrityError
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.actions.models import ActionCategory, ActionMaster
 from green_iteso.campaigns.models import (
     Campaign,
@@ -26,6 +28,11 @@ from green_iteso.campaigns.serializers import (
     MissionSerializer,
     UserMissionProgressSerializer,
 )
+
+
+@dataclass
+class _FakeRequest:
+    user: User
 
 
 @pytest.fixture
@@ -41,6 +48,13 @@ def user() -> User:
 @pytest.fixture
 def other_user() -> User:
     return User.objects.create_user(email="other@example.test", password="test-pass")
+
+
+@pytest.fixture
+def admin_user() -> User:
+    return User.objects.create_user(
+        email="admin@example.test", password="test-pass", role=User.Role.ADMIN
+    )
 
 
 @pytest.fixture
@@ -174,6 +188,66 @@ class TestCampaignSerializer:
         assert list(campaign.missions.values_list("action_id", "target_count")) == [
             (action.pk, 3)
         ]
+
+    def test_nested_mission_ignores_client_supplied_campaign(
+        self, user: User, action: ActionMaster, campaign_factory: Any
+    ) -> None:
+        other_campaign = campaign_factory()
+        serializer = CampaignSerializer(
+            data=campaign_data(
+                missions=[
+                    {
+                        "campaign": other_campaign.pk,
+                        "action_id": action.pk,
+                        "target_count": 3,
+                    }
+                ]
+            )
+        )
+
+        assert serializer.is_valid(), serializer.errors
+        campaign = serializer.save(creator=user)
+
+        mission = campaign.missions.get()
+        assert mission.campaign_id == campaign.pk
+        assert mission.campaign_id != other_campaign.pk
+
+    def test_global_scope_requires_admin_role(self, user: User) -> None:
+        serializer = CampaignSerializer(
+            data=campaign_data(), context={"request": _FakeRequest(user=user)}
+        )
+
+        with pytest.raises(PermissionDenied):
+            serializer.is_valid(raise_exception=True)
+
+    def test_global_scope_allowed_for_admin(self, admin_user: User) -> None:
+        serializer = CampaignSerializer(
+            data=campaign_data(), context={"request": _FakeRequest(user=admin_user)}
+        )
+
+        assert serializer.is_valid(), serializer.errors
+
+    def test_private_scope_requires_clan_leader(self, user: User, clan: Clan) -> None:
+        serializer = CampaignSerializer(
+            data=campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=clan.pk),
+            context={"request": _FakeRequest(user=user)},
+        )
+
+        with pytest.raises(PermissionDenied):
+            serializer.is_valid(raise_exception=True)
+
+    def test_private_scope_allowed_for_clan_leader(
+        self, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        serializer = CampaignSerializer(
+            data=campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=clan.pk),
+            context={"request": _FakeRequest(user=user)},
+        )
+
+        assert serializer.is_valid(), serializer.errors
 
     def test_podium_snapshot_is_not_serialized(self, campaign: Campaign) -> None:
         campaign.podium_snapshot = {"winner": "hidden"}
@@ -352,19 +426,30 @@ class TestCampaignEndpoints:
 
     @pytest.mark.parametrize("scope", [Campaign.Scope.GLOBAL, Campaign.Scope.PRIVATE])
     def test_create_uses_authenticated_creator(
-        self, api_client: APIClient, user: User, clan: Clan, scope: str
+        self,
+        api_client: APIClient,
+        user: User,
+        admin_user: User,
+        clan: Clan,
+        scope: str,
     ) -> None:
-        api_client.force_authenticate(user=user)
         data = campaign_data(scope=scope)
         if scope == Campaign.Scope.PRIVATE:
             data["target_clan"] = str(clan.pk)
+            ClanMembership.objects.create(
+                user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+            )
+            creator = user
+        else:
+            creator = admin_user
         data["creator"] = "00000000-0000-0000-0000-000000000000"
+        api_client.force_authenticate(user=creator)
 
         response = api_client.post(reverse("campaign-list"), data, format="json")
 
         assert response.status_code == 201
-        assert response.data["creator"] == user.pk
-        assert Campaign.objects.get(pk=response.data["id"]).creator_id == user.pk
+        assert response.data["creator"] == creator.pk
+        assert Campaign.objects.get(pk=response.data["id"]).creator_id == creator.pk
 
     @pytest.mark.parametrize(
         "data",
@@ -388,9 +473,9 @@ class TestCampaignEndpoints:
         assert Campaign.objects.count() == before
 
     def test_create_without_missions_succeeds(
-        self, api_client: APIClient, user: User
+        self, api_client: APIClient, admin_user: User
     ) -> None:
-        api_client.force_authenticate(user=user)
+        api_client.force_authenticate(user=admin_user)
 
         response = api_client.post(
             reverse("campaign-list"), campaign_data(), format="json"
@@ -398,6 +483,69 @@ class TestCampaignEndpoints:
 
         assert response.status_code == 201
         assert Mission.objects.count() == 0
+
+    @pytest.mark.parametrize("role", [User.Role.STUDENT, User.Role.STAFF])
+    def test_global_create_rejects_non_admin(
+        self, api_client: APIClient, role: str
+    ) -> None:
+        non_admin = User.objects.create_user(
+            email=f"{role.lower()}@example.test", password="test-pass", role=role
+        )
+        api_client.force_authenticate(user=non_admin)
+
+        response = api_client.post(
+            reverse("campaign-list"), campaign_data(), format="json"
+        )
+
+        assert response.status_code == 403
+        assert Campaign.objects.count() == 0
+
+    def test_private_create_allowed_for_clan_leader(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+
+        assert response.status_code == 201
+
+    def test_private_create_rejected_for_clan_member(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+        )
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+
+        assert response.status_code == 403
+        assert Campaign.objects.count() == 0
+
+    def test_private_create_rejected_without_membership(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+
+        assert response.status_code == 403
+        assert Campaign.objects.count() == 0
 
     def test_unauthenticated_create_is_rejected(self, api_client: APIClient) -> None:
         response = api_client.post(

@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from django.db import transaction
 from rest_framework import status, views
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from .models import ActionLog, ActionMaster
@@ -7,7 +10,10 @@ from .serializers import ActionLogSerializer
 
 
 class ActionLogCreateView(views.APIView):
-    def post(self, request):
+    """API view to process and store historical action logs atomically."""
+
+    def post(self, request: Request) -> Response:
+        """Handle POST requests to register a user action and update points."""
         serializer = ActionLogSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -21,14 +27,12 @@ class ActionLogCreateView(views.APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # define el estado inicial basado en si requiere foto o no
         log_status = (
             ActionLog.Status.PENDING_AUDIT
             if action.validation_type == ActionMaster.ValidationType.PHOTO
             else ActionLog.Status.APPROVED
         )
 
-        # transaccion ACID para asegurar integridad de puntos
         with transaction.atomic():
             profile = user.profile
             institutional_clan = profile.institutional_clan
@@ -52,7 +56,6 @@ class ActionLogCreateView(views.APIView):
                 evidence_object_key=data.get("evidence_object_key", ""),
             )
 
-            # sumar los puntos solo si la accion se aprobo
             if log_status == ActionLog.Status.APPROVED:
                 profile.total_points += action.points
                 profile.save(update_fields=["total_points"])

@@ -592,12 +592,12 @@ class TestCampaignEndpoints:
 
         empty_response = api_client.get(url)
         assert empty_response.status_code == 200
-        assert empty_response.data == []
+        assert empty_response.data["results"] == []
 
         CampaignParticipant.objects.create(campaign=campaign, user=user)
         full_response = api_client.get(url)
         assert full_response.status_code == 200
-        assert len(full_response.data) == 1
+        assert len(full_response.data["results"]) == 1
 
 
 @pytest.mark.django_db

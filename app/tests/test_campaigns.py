@@ -116,8 +116,10 @@ def campaign(campaign_factory: Any) -> Campaign:
 
 
 @pytest.fixture
-def mission(campaign: Campaign, action: ActionMaster) -> Mission:
-    return Mission.objects.create(campaign=campaign, action=action, target_count=5)
+def mission(campaign: Campaign, action: ActionMaster, user: User) -> Mission:
+    mission = Mission.objects.create(campaign=campaign, action=action, target_count=5)
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+    return mission
 
 
 @pytest.mark.django_db
@@ -371,6 +373,7 @@ class TestCampaignEndpoints:
         expected: set[str],
     ) -> None:
         current_time = timezone.now()
+        ClanMembership.objects.create(user=user, clan=clan)
         Campaign.objects.create(
             **campaign_data(
                 title="global", creator=user, status=Campaign.Status.PROMOTION
@@ -557,7 +560,6 @@ class TestCampaignEndpoints:
     def test_campaign_detail_contains_related_data(
         self, api_client: APIClient, user: User, campaign: Campaign, mission: Mission
     ) -> None:
-        CampaignParticipant.objects.create(campaign=campaign, user=user)
         UserMissionProgress.objects.create(user=user, mission=mission, current_count=1)
         api_client.force_authenticate(user=user)
 
@@ -599,6 +601,73 @@ class TestCampaignEndpoints:
         assert full_response.status_code == 200
         assert len(full_response.data["results"]) == 1
 
+    def test_private_campaign_hidden_from_non_member_list(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=clan)
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.get(reverse("campaign-list"))
+
+        assert response.status_code == 200
+        assert campaign.pk not in [item["id"] for item in response.data["results"]]
+
+    def test_private_campaign_detail_is_404_for_non_member(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=clan)
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 404
+
+    def test_private_campaign_participants_404_for_non_member(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=clan)
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.get(
+            reverse("campaign-participants", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 404
+
+    def test_private_campaign_visible_to_clan_member(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=clan)
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 200
+
 
 @pytest.mark.django_db
 class TestCampaignJoinEndpoint:
@@ -630,6 +699,52 @@ class TestCampaignJoinEndpoint:
 
         assert response.status_code == 400
         assert response.data["detail"] == "Campaign is not active."
+
+    def test_join_private_campaign_rejected_without_clan_membership(
+        self,
+        api_client: APIClient,
+        user: User,
+        other_user: User,
+        clan: Clan,
+    ) -> None:
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan,
+                status=Campaign.Status.IN_PROGRESS,
+            )
+        )
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.post(
+            reverse("campaign-join", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 403
+        assert not CampaignParticipant.objects.filter(
+            campaign=campaign, user=other_user
+        ).exists()
+
+    def test_join_private_campaign_allowed_for_clan_member(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan,
+                status=Campaign.Status.IN_PROGRESS,
+            )
+        )
+        ClanMembership.objects.create(user=other_user, clan=clan)
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.post(
+            reverse("campaign-join", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 201
 
     def test_join_twice_returns_400(
         self, api_client: APIClient, user: User, campaign: Campaign
@@ -706,6 +821,21 @@ class TestMissionProgressEndpoint:
         )
 
         assert response.status_code == 404
+
+    def test_progress_rejected_for_non_participant(
+        self, api_client: APIClient, other_user: User, mission: Mission
+    ) -> None:
+        api_client.force_authenticate(user=other_user)
+        url = reverse("mission-progress", kwargs={"mission_id": mission.pk})
+
+        get_response = api_client.get(url)
+        patch_response = api_client.patch(url, {"increment": 1}, format="json")
+
+        assert get_response.status_code == 403
+        assert patch_response.status_code == 403
+        assert not UserMissionProgress.objects.filter(
+            user=other_user, mission=mission
+        ).exists()
 
     def test_increment_updates_progress(
         self, api_client: APIClient, user: User, mission: Mission

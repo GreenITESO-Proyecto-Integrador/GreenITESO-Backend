@@ -5,15 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 from django.db import IntegrityError, transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from green_iteso.accounts.models import ClanMembership
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .serializers import (
@@ -27,6 +30,14 @@ class CampaignPagination(PageNumberPagination):
     """Paginate campaign collections with the API's fixed page size."""
 
     page_size = 20
+
+
+def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
+    """Return campaigns the user may see: global, or private clans they belong to."""
+    return Campaign.objects.filter(
+        Q(scope=Campaign.Scope.GLOBAL)
+        | Q(scope=Campaign.Scope.PRIVATE, target_clan__memberships__user=user)
+    ).distinct()
 
 
 def _progress_by_campaign(
@@ -58,7 +69,9 @@ class CampaignListCreateView(generics.ListCreateAPIView):
     pagination_class = CampaignPagination
 
     def get_queryset(self) -> QuerySet[Campaign]:
-        queryset = Campaign.objects.prefetch_related("missions", "participants")
+        queryset = _visible_campaigns(self.request.user).prefetch_related(
+            "missions__action", "participants"
+        )
         scope = self.request.query_params.get("scope")
         scopes = [
             value.strip()
@@ -100,10 +113,14 @@ class CampaignListCreateView(generics.ListCreateAPIView):
 class CampaignDetailView(generics.RetrieveAPIView):
     """Return one campaign with its missions and participants."""
 
-    queryset = Campaign.objects.prefetch_related("missions", "participants")
     serializer_class = CampaignSerializer
     permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "campaign_id"
+
+    def get_queryset(self) -> QuerySet[Campaign]:
+        return _visible_campaigns(self.request.user).prefetch_related(
+            "missions__action", "participants"
+        )
 
     def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         campaign = self.get_object()
@@ -124,9 +141,12 @@ class CampaignParticipantListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self) -> QuerySet[CampaignParticipant]:
-        return CampaignParticipant.objects.filter(
-            campaign_id=self.kwargs["campaign_id"]
-        ).select_related("user")
+        campaign = get_object_or_404(
+            _visible_campaigns(self.request.user), pk=self.kwargs["campaign_id"]
+        )
+        return CampaignParticipant.objects.filter(campaign=campaign).select_related(
+            "user"
+        )
 
 
 class CampaignJoinView(APIView):
@@ -141,6 +161,16 @@ class CampaignJoinView(APIView):
             return Response(
                 {"detail": "Campaign is not active."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            campaign.scope == Campaign.Scope.PRIVATE
+            and not ClanMembership.objects.filter(
+                user=request.user, clan=campaign.target_clan
+            ).exists()
+        ):
+            return Response(
+                {"detail": "User is not a member of this campaign's clan."},
+                status=status.HTTP_403_FORBIDDEN,
             )
         if CampaignParticipant.objects.filter(
             campaign=campaign, user=request.user
@@ -185,8 +215,17 @@ class MissionProgressView(APIView):
             )
         return progress
 
+    def _require_participation(self, request: Request, mission: Mission) -> None:
+        if not CampaignParticipant.objects.filter(
+            campaign_id=mission.campaign_id, user=request.user
+        ).exists():
+            raise PermissionDenied(
+                "User must join the campaign before tracking mission progress."
+            )
+
     def get_progress(self, request: Request, mission_id: Any) -> UserMissionProgress:
         mission = get_object_or_404(Mission, pk=mission_id)
+        self._require_participation(request, mission)
         return self.get_or_create_progress(request, mission)
 
     def get(self, request: Request, mission_id: Any) -> Response:
@@ -195,6 +234,7 @@ class MissionProgressView(APIView):
 
     def patch(self, request: Request, mission_id: Any) -> Response:
         mission = get_object_or_404(Mission, pk=mission_id)
+        self._require_participation(request, mission)
         with transaction.atomic():
             progress = self.get_or_create_progress(request, mission)
             progress = UserMissionProgress.objects.select_for_update().get(

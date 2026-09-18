@@ -37,7 +37,10 @@ class MissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Mission
         fields = ("id", "campaign", "action", "action_id", "target_count")
-        extra_kwargs = {"id": {"read_only": True}, "campaign": {"required": False}}
+        extra_kwargs = {
+            "id": {"read_only": True},
+            "campaign": {"read_only": True},
+        }
 
 
 class CampaignSerializer(serializers.ModelSerializer):

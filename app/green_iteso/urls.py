@@ -14,6 +14,7 @@ def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-
 
 urlpatterns = [
     path("", index_view, name="index"),
+    path("api/v1/", include("green_iteso.campaigns.urls")),
     path("api/v1/feed/", include("green_iteso.feed.urls")),
     path("api/v1/notifications/", include("green_iteso.notifications.urls")),
     path("api/v1/", include("green_iteso.accounts.urls")),

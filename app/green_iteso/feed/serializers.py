@@ -17,7 +17,6 @@ User = get_user_model()
 class PostAuthorSerializer(serializers.ModelSerializer):
     """Minimal nested author details for feed cards."""
 
-
     class Meta:
         model = User
         fields = ["id", "first_name", "last_name"]
@@ -28,9 +27,7 @@ class PostSerializer(serializers.ModelSerializer):
     """Serializer handling validation and serialization for Post instances."""
 
     author = PostAuthorSerializer(read_only=True)
-    author_id = serializers.PrimaryKeyRelatedField(
-        source="author", read_only=True
-    )
+    author_id = serializers.PrimaryKeyRelatedField(source="author", read_only=True)
     badge_info = serializers.SerializerMethodField()
     relative_time = serializers.SerializerMethodField()
 

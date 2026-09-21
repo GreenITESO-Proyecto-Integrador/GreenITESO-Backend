@@ -123,7 +123,8 @@ INSTALLED_APPS = [
     "green_iteso.clans",
     "green_iteso.actions",
     "green_iteso.campaigns",
-    "green_iteso.feed"
+    "green_iteso.feed",
+    "green_iteso.notifications",
 ]
 
 REST_FRAMEWORK = {

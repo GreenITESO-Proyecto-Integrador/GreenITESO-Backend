@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
@@ -15,21 +14,60 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='Post',
+            name="Post",
             fields=[
-                ('id', models.BigAutoField(primary_key=True, serialize=False)),
-                ('post_type', models.CharField(choices=[('OFFICIAL_ANNOUNCEMENT', 'Official Announcement'), ('COMMUNITY_MILESTONE', 'Community Milestone'), ('SHARED_EVIDENCE', 'Shared Evidence')], max_length=30)),
-                ('content', models.TextField()),
-                ('image_url', models.URLField(blank=True, default='', max_length=500)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('author', models.ForeignKey(blank=True, db_column='author_id', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='posts', to=settings.AUTH_USER_MODEL)),
+                ("id", models.BigAutoField(primary_key=True, serialize=False)),
+                (
+                    "post_type",
+                    models.CharField(
+                        choices=[
+                            ("OFFICIAL_ANNOUNCEMENT", "Official Announcement"),
+                            ("COMMUNITY_MILESTONE", "Community Milestone"),
+                            ("SHARED_EVIDENCE", "Shared Evidence"),
+                        ],
+                        max_length=30,
+                    ),
+                ),
+                ("content", models.TextField()),
+                ("image_url", models.URLField(blank=True, default="", max_length=500)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "author",
+                    models.ForeignKey(
+                        blank=True,
+                        db_column="author_id",
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="posts",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'db_table': 'feed_posts',
-                'ordering': ['-created_at'],
-                'indexes': [models.Index(fields=['created_at', 'author'], name='feed_post_created_author_idx')],
-                'constraints': [models.CheckConstraint(condition=models.Q(('post_type__in', ['OFFICIAL_ANNOUNCEMENT', 'COMMUNITY_MILESTONE', 'SHARED_EVIDENCE'])), name='feed_post_type_valid')],
+                "db_table": "feed_posts",
+                "ordering": ["-created_at"],
+                "indexes": [
+                    models.Index(
+                        fields=["created_at", "author"],
+                        name="feed_post_created_author_idx",
+                    )
+                ],
+                "constraints": [
+                    models.CheckConstraint(
+                        condition=models.Q(
+                            (
+                                "post_type__in",
+                                [
+                                    "OFFICIAL_ANNOUNCEMENT",
+                                    "COMMUNITY_MILESTONE",
+                                    "SHARED_EVIDENCE",
+                                ],
+                            )
+                        ),
+                        name="feed_post_type_valid",
+                    )
+                ],
             },
         ),
     ]

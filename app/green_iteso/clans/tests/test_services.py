@@ -10,37 +10,28 @@ from green_iteso.clans.services import create_clan, dissolve_clan
 
 
 @pytest.mark.django_db
-def test_create_clan_sets_owner() -> None:
-    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-
+def test_create_clan_sets_owner(leader: User) -> None:
     clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
     )
 
-    assert clan.created_by == owner
+    assert clan.created_by == leader
     assert clan.type == Clan.ClanType.PRIVATE
     assert Clan.objects.filter(pk=clan.pk).exists()
 
 
 @pytest.mark.django_db
-def test_create_clan_grants_creator_leader_membership() -> None:
-    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
-    )
-
-    membership = ClanMembership.objects.get(user=owner, clan=clan)
-    assert membership.role == ClanMembership.MembershipRole.LEADER
-
-
-@pytest.mark.django_db
-def test_dissolve_clan_marks_it_as_deleted() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+def test_create_clan_grants_creator_leader_membership(leader: User) -> None:
     clan = create_clan(
         name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
     )
 
+    membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_dissolve_clan_marks_it_as_deleted(leader: User, clan: Clan) -> None:
     dissolved = dissolve_clan(clan=clan, actor=leader)
 
     assert dissolved.deleted_at is not None
@@ -48,12 +39,9 @@ def test_dissolve_clan_marks_it_as_deleted() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_preserves_points_and_memberships() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_dissolve_clan_preserves_points_and_memberships(
+    leader: User, member: User, clan: Clan
+) -> None:
     ClanMembership.objects.create(user=member, clan=clan)
     Clan.objects.filter(pk=clan.pk).update(total_points=120)
     clan.refresh_from_db()
@@ -66,11 +54,9 @@ def test_dissolve_clan_preserves_points_and_memberships() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_clears_active_private_selection() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_dissolve_clan_clears_active_private_selection(
+    leader: User, clan: Clan
+) -> None:
     ClanMembership.objects.filter(user=leader, clan=clan).update(is_active_private=True)
 
     dissolve_clan(clan=clan, actor=leader)
@@ -80,12 +66,7 @@ def test_dissolve_clan_clears_active_private_selection() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_rejects_non_leader() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_dissolve_clan_rejects_non_leader(member: User, clan: Clan) -> None:
     ClanMembership.objects.create(user=member, clan=clan)
 
     with pytest.raises(PermissionDenied):
@@ -96,29 +77,27 @@ def test_dissolve_clan_rejects_non_leader() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_rejects_institutional_clan() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = Clan.objects.create(
+def test_dissolve_clan_rejects_institutional_clan(leader: User) -> None:
+    institutional_clan = Clan.objects.create(
         name="Software Engineering", type=Clan.ClanType.INSTITUTIONAL
     )
     ClanMembership.objects.create(
-        user=leader, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        user=leader,
+        clan=institutional_clan,
+        role=ClanMembership.MembershipRole.LEADER,
     )
 
     with pytest.raises(PermissionDenied):
-        dissolve_clan(clan=clan, actor=leader)
+        dissolve_clan(clan=institutional_clan, actor=leader)
 
-    clan.refresh_from_db()
-    assert clan.deleted_at is None
+    institutional_clan.refresh_from_db()
+    assert institutional_clan.deleted_at is None
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_keeps_the_first_deletion_timestamp() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
-
+def test_dissolve_clan_keeps_the_first_deletion_timestamp(
+    leader: User, clan: Clan
+) -> None:
     first = dissolve_clan(clan=clan, actor=leader)
     second = dissolve_clan(clan=clan, actor=leader)
 

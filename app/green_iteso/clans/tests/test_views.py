@@ -6,7 +6,6 @@ import pytest
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
-from green_iteso.clans.services import create_clan
 
 
 @pytest.mark.django_db
@@ -34,12 +33,7 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolve_clan_requires_authentication() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
-
+def test_dissolve_clan_requires_authentication(clan: Clan) -> None:
     response = APIClient().delete(f"/api/v1/clans/{clan.pk}/")
 
     assert response.status_code == 403
@@ -48,11 +42,9 @@ def test_dissolve_clan_requires_authentication() -> None:
 
 
 @pytest.mark.django_db
-def test_leader_dissolves_clan_and_it_leaves_the_listing() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_leader_dissolves_clan_and_it_leaves_the_listing(
+    leader: User, clan: Clan
+) -> None:
     client = APIClient()
     client.force_authenticate(leader)
 
@@ -64,12 +56,7 @@ def test_leader_dissolves_clan_and_it_leaves_the_listing() -> None:
 
 
 @pytest.mark.django_db
-def test_member_cannot_dissolve_clan() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_member_cannot_dissolve_clan(member: User, clan: Clan) -> None:
     ClanMembership.objects.create(user=member, clan=clan)
     client = APIClient()
     client.force_authenticate(member)
@@ -82,11 +69,7 @@ def test_member_cannot_dissolve_clan() -> None:
 
 
 @pytest.mark.django_db
-def test_dissolved_clan_is_not_retrievable() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_dissolved_clan_is_not_retrievable(leader: User, clan: Clan) -> None:
     client = APIClient()
     client.force_authenticate(leader)
     client.delete(f"/api/v1/clans/{clan.pk}/")

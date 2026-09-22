@@ -1,6 +1,8 @@
 from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 
@@ -74,11 +76,14 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 
 class ClanMembershipAdminForm(forms.ModelForm):
-    """Enforce the single-LEADER-per-clan rule on direct admin writes.
+    """Give a friendly error for the common (non-concurrent) case.
 
     ``clans.services.assign_leader`` guards the normal application write path,
     but Django admin saves a ``ClanMembership`` via ``ModelForm`` directly,
-    bypassing it. This form closes that gap for both add and change.
+    bypassing it. This check runs outside any lock, so it cannot rule out a
+    race between two concurrent admin submissions on its own -- see
+    ``ClanMembershipAdmin.save_model`` for the guard that actually closes
+    that race.
     """
 
     class Meta:
@@ -109,3 +114,43 @@ class ClanMembershipAdmin(admin.ModelAdmin):
     form = ClanMembershipAdminForm
     list_display = ("user", "clan", "role", "is_active_private")
     list_filter = ("role", "is_active_private")
+
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: ClanMembership,
+        form: ClanMembershipAdminForm,
+        change: bool,
+    ) -> None:
+        """Re-check the single-LEADER rule atomically, under a clan-row lock.
+
+        ``ClanMembershipAdminForm.clean()`` already rejects the common case,
+        but it runs unlocked before the save, so two concurrent admin
+        submissions can both pass it and both write a LEADER row -- the same
+        race ``clans.services.assign_leader`` closes on the normal write
+        path. Lock the clan row and re-check immediately before the write,
+        inside the same transaction, so the two requests serialize instead.
+
+        A conflict detected here raises past Django admin's normal
+        validation-error handling (which only wraps ``form.is_valid()``), so
+        it surfaces as a 500 rather than a re-rendered form. The write is
+        still rolled back by the transaction either way; only the race case
+        gets the worse error page instead of a friendly message.
+        """
+        with transaction.atomic():
+            if obj.role == ClanMembership.MembershipRole.LEADER:
+                Clan.objects.select_for_update().get(pk=obj.clan_id)
+                existing_leader = (
+                    ClanMembership.objects.filter(
+                        clan_id=obj.clan_id,
+                        role=ClanMembership.MembershipRole.LEADER,
+                    )
+                    .exclude(pk=obj.pk)
+                    .first()
+                )
+                if existing_leader is not None:
+                    raise ValidationError(
+                        f"Clan {obj.clan} already has a LEADER membership "
+                        f"({existing_leader.user})."
+                    )
+            super().save_model(request, obj, form, change)

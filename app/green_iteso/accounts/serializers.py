@@ -16,7 +16,7 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class LoginRequestSerializer(serializers.Serializer):
+class LoginRequestSerializer(serializers.Serializer):  # pylint: disable=abstract-method
     """Tokens the SPA obtained from Microsoft (MSAL) for the signed-in user."""
 
     id_token = serializers.CharField(trim_whitespace=True, max_length=8192)
@@ -34,7 +34,7 @@ class LoginUserSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class LoginResponseSerializer(serializers.Serializer):
+class LoginResponseSerializer(serializers.Serializer):  # pylint: disable=abstract-method
     """JWT pair plus the account; ``created`` is true on the first login."""
 
     access = serializers.CharField()

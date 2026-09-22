@@ -31,6 +31,7 @@ def _check_settings(**overrides: str) -> subprocess.CompletedProcess[str]:
         env=env,
         capture_output=True,
         text=True,
+        check=False,
         timeout=30,
     )
 

@@ -7,7 +7,7 @@ from typing import Protocol
 
 
 @dataclass(frozen=True)
-class ExternalIdentity:
+class ExternalIdentity:  # pylint: disable=too-many-instance-attributes
     """What the identity provider vouched for and what Graph added.
 
     ``None`` on an optional field means "not fetched" (for example Graph was
@@ -31,4 +31,3 @@ class IdentityProvider(Protocol):
 
     def authenticate(self, *, id_token: str, access_token: str) -> ExternalIdentity:
         """Raise ``LoginError`` subclasses when the tokens cannot be trusted."""
-        ...

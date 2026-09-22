@@ -28,7 +28,10 @@ class StubKeyResolver:
         self._public_key = public_key
         self._fail = fail
 
-    def get_signing_key_from_jwt(self, token: str) -> _StubKey:
+    def get_signing_key_from_jwt(  # pylint: disable=unused-argument
+        self, token: str
+    ) -> _StubKey:
+        """Ignore ``token``: this stub always answers with the same test key."""
         if self._fail:
             raise jwt.PyJWKClientConnectionError("could not reach the JWKS endpoint")
         return _StubKey(self._public_key)
@@ -39,7 +42,7 @@ def make_keypair() -> tuple[rsa.RSAPrivateKey, Any]:
     return private_key, private_key.public_key()
 
 
-def make_id_token(
+def make_id_token(  # pylint: disable=too-many-arguments
     private_key: rsa.RSAPrivateKey,
     *,
     oid: str | None = None,

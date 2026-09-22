@@ -22,7 +22,10 @@ class MockProvider:
     not deployed.
     """
 
-    def authenticate(self, *, id_token: str, access_token: str) -> ExternalIdentity:
+    def authenticate(  # pylint: disable=unused-argument
+        self, *, id_token: str, access_token: str
+    ) -> ExternalIdentity:
+        """Ignore ``access_token``: mock mode never calls Graph."""
         if not id_token.startswith(_PREFIX):
             raise InvalidIdentityTokenError(
                 "Mock mode expects an id_token like mock:<email>."

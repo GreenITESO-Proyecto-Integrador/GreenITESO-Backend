@@ -22,7 +22,9 @@ class _StubProvider:
     def __init__(self, identity: ExternalIdentity) -> None:
         self._identity = identity
 
-    def authenticate(self, *, id_token: str, access_token: str) -> ExternalIdentity:
+    def authenticate(  # pylint: disable=unused-argument
+        self, *, id_token: str, access_token: str
+    ) -> ExternalIdentity:
         return self._identity
 
 

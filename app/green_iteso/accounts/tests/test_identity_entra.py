@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from green_iteso.accounts.exceptions import (
     IdentityProviderUnavailableError,
@@ -24,18 +25,12 @@ from .identity_helpers import (
 )
 
 
-@pytest.fixture
-def keypair() -> tuple[rsa.RSAPrivateKey, object]:
-    return make_keypair()
-
-
 def _provider(
-    keypair: tuple[rsa.RSAPrivateKey, object],
+    public_key: Any,
     responses: dict[str, httpx.Response] | None = None,
     *,
     fail_keys: bool = False,
 ) -> EntraProvider:
-    _, public_key = keypair
     transport = RecordingTransport(responses or {})
     return EntraProvider(
         tenant_id=TENANT_ID,
@@ -64,14 +59,12 @@ def _groups_response(*ids: str) -> httpx.Response:
     return httpx.Response(200, json={"value": [{"id": i} for i in ids]})
 
 
-def test_valid_token_returns_identity_with_graph_data(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, _ = keypair
+def test_valid_token_returns_identity_with_graph_data() -> None:
+    private_key, public_key = make_keypair()
     oid = "33333333-3333-3333-3333-333333333333"
     token = make_id_token(private_key, oid=oid)
     provider = _provider(
-        keypair,
+        public_key,
         {
             "/v1.0/me": _profile_response(oid),
             "/v1.0/me/transitiveMemberOf/microsoft.graph.group": _groups_response(
@@ -88,50 +81,47 @@ def test_valid_token_returns_identity_with_graph_data(
     assert identity.group_ids == ("g1", "g2")
 
 
-def test_expired_token_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> None:
-    private_key, _ = keypair
+def test_expired_token_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     token = make_id_token(private_key, expired=True)
-    provider = _provider(keypair)
+    provider = _provider(public_key)
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="t")
 
 
-def test_wrong_audience_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> None:
-    private_key, _ = keypair
+def test_wrong_audience_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     token = make_id_token(private_key, audience="someone-else")
-    provider = _provider(keypair)
+    provider = _provider(public_key)
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="t")
 
 
-def test_wrong_issuer_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> None:
-    private_key, _ = keypair
+def test_wrong_issuer_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     token = make_id_token(
         private_key, issuer="https://login.microsoftonline.com/other/v2.0"
     )
-    provider = _provider(keypair)
+    provider = _provider(public_key)
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="t")
 
 
-def test_wrong_tenant_claim_is_rejected(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, _ = keypair
+def test_wrong_tenant_claim_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     token = make_id_token(private_key, tenant_id="44444444-4444-4444-4444-444444444444")
-    provider = _provider(keypair)
+    provider = _provider(public_key)
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="t")
 
 
-def test_unsigned_alg_none_is_rejected(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    provider = _provider(keypair)
+def test_unsigned_alg_none_is_rejected() -> None:
+    _, public_key = make_keypair()
+    provider = _provider(public_key)
     unsigned = jwt.encode(
         {
             "oid": "oid",
@@ -150,9 +140,9 @@ def test_unsigned_alg_none_is_rejected(
         provider.authenticate(id_token=unsigned, access_token="t")
 
 
-def test_hs256_token_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> None:
-    _, public_key = keypair
-    provider = _provider(keypair)
+def test_hs256_token_is_rejected() -> None:
+    _, public_key = make_keypair()
+    provider = _provider(public_key)
     forged = jwt.encode(
         {
             "oid": "oid",
@@ -171,8 +161,8 @@ def test_hs256_token_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> N
         provider.authenticate(id_token=forged, access_token="t")
 
 
-def test_missing_oid_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> None:
-    private_key, public_key = keypair
+def test_missing_oid_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     token = jwt.encode(
         {
             "tid": TENANT_ID,
@@ -185,29 +175,25 @@ def test_missing_oid_is_rejected(keypair: tuple[rsa.RSAPrivateKey, object]) -> N
         private_key,
         algorithm="RS256",
     )
-    provider = _provider(keypair)
+    provider = _provider(public_key)
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="t")
 
 
-def test_graph_profile_owned_by_a_different_user_is_rejected(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, _ = keypair
+def test_graph_profile_owned_by_a_different_user_is_rejected() -> None:
+    private_key, public_key = make_keypair()
     oid = "33333333-3333-3333-3333-333333333333"
     token = make_id_token(private_key, oid=oid)
     other_oid = "55555555-5555-5555-5555-555555555555"
-    provider = _provider(keypair, {"/v1.0/me": _profile_response(other_oid)})
+    provider = _provider(public_key, {"/v1.0/me": _profile_response(other_oid)})
 
     with pytest.raises(InvalidIdentityTokenError):
         provider.authenticate(id_token=token, access_token="stolen-token")
 
 
-def test_graph_timeout_is_best_effort_and_login_still_succeeds(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, public_key = keypair
+def test_graph_timeout_is_best_effort_and_login_still_succeeds() -> None:
+    private_key, public_key = make_keypair()
     oid = "33333333-3333-3333-3333-333333333333"
     token = make_id_token(private_key, oid=oid)
 
@@ -230,13 +216,11 @@ def test_graph_timeout_is_best_effort_and_login_still_succeeds(
     assert identity.group_ids is None
 
 
-def test_graph_5xx_is_best_effort_and_login_still_succeeds(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, _ = keypair
+def test_graph_5xx_is_best_effort_and_login_still_succeeds() -> None:
+    private_key, public_key = make_keypair()
     oid = "33333333-3333-3333-3333-333333333333"
     token = make_id_token(private_key, oid=oid)
-    provider = _provider(keypair, {"/v1.0/me": httpx.Response(503, text="down")})
+    provider = _provider(public_key, {"/v1.0/me": httpx.Response(503, text="down")})
 
     identity = provider.authenticate(id_token=token, access_token="t")
 
@@ -244,12 +228,10 @@ def test_graph_5xx_is_best_effort_and_login_still_succeeds(
     assert identity.department is None
 
 
-def test_jwks_endpoint_unreachable_raises_service_unavailable(
-    keypair: tuple[rsa.RSAPrivateKey, object],
-) -> None:
-    private_key, _ = keypair
+def test_jwks_endpoint_unreachable_raises_service_unavailable() -> None:
+    private_key, public_key = make_keypair()
     token = make_id_token(private_key)
-    provider = _provider(keypair, fail_keys=True)
+    provider = _provider(public_key, fail_keys=True)
 
     with pytest.raises(IdentityProviderUnavailableError):
         provider.authenticate(id_token=token, access_token="t")

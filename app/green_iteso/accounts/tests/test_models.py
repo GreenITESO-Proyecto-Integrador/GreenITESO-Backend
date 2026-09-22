@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, User, UserProfile
@@ -51,3 +52,23 @@ def test_clan_all_objects_includes_soft_deleted() -> None:
     )
 
     assert Clan.all_objects.count() == 2
+
+
+@pytest.mark.django_db
+def test_clan_name_can_be_reused_after_soft_delete() -> None:
+    original = Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)
+    original.deleted_at = timezone.now()
+    original.save(update_fields=["deleted_at"])
+
+    reused = Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)
+
+    assert Clan.all_objects.filter(name="Green Team").count() == 2
+    assert reused.deleted_at is None
+
+
+@pytest.mark.django_db
+def test_clan_name_still_unique_among_alive_clans() -> None:
+    Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)

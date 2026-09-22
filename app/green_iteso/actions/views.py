@@ -57,8 +57,13 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
+                # available_points is the spendable balance introduced by T2-02
+                # (see UserProfile.available_points); it accrues alongside
+                # total_points and only total_points is drawn down separately
+                # by the (future) redemption flow.
                 profile.total_points += action.points
-                profile.save(update_fields=["total_points"])
+                profile.available_points += action.points
+                profile.save(update_fields=["total_points", "available_points"])
 
                 if institutional_clan:
                     institutional_clan.total_points += action.points

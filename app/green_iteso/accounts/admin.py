@@ -45,7 +45,15 @@ class ClanAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[Clan]:
-        return Clan.all_objects.all()
+        # Swap in the unfiltered manager so soft-deleted clans stay visible in
+        # admin, but otherwise mirror ModelAdmin.get_queryset's own ordering
+        # step so a future `ordering`/list_select_related change on this
+        # class is not silently dropped by this override.
+        queryset = Clan.all_objects.get_queryset()
+        ordering = self.get_ordering(request)
+        if ordering:
+            queryset = queryset.order_by(*ordering)
+        return queryset
 
 
 @admin.register(UserProfile)

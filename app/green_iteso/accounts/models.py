@@ -101,7 +101,10 @@ class Clan(models.Model):
         PRIVATE_INVITE = "PRIVATE_INVITE", "Private invite"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
+    # Not globally unique: uniqueness is scoped to alive rows by the
+    # ``clan_name_unique_when_alive`` constraint below, so a soft-deleted
+    # clan's name can be reused without an IntegrityError.
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     avatar_object_key = models.CharField(max_length=500, blank=True)
     type = models.CharField(max_length=16, choices=ClanType.choices)
@@ -138,6 +141,11 @@ class Clan(models.Model):
             models.CheckConstraint(
                 condition=Q(privacy__in=["PUBLIC", "PRIVATE_INVITE"]),
                 name="clan_privacy_valid",
+            ),
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=Q(deleted_at__isnull=True),
+                name="clan_name_unique_when_alive",
             ),
         ]
         indexes = [

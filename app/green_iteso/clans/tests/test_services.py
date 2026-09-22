@@ -5,16 +5,23 @@ from __future__ import annotations
 import pytest
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
-from green_iteso.clans.services import assign_institutional_clan, create_clan
+from green_iteso.clans.services import (
+    MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER,
+    AlreadyLeadingAClanError,
+    DuplicateClanNameError,
+    PrivateClanLimitExceededError,
+    assign_institutional_clan,
+    create_private_clan,
+)
+
+from .conftest import join_user_to_new_private_clans
 
 
 @pytest.mark.django_db
-def test_create_clan_sets_owner() -> None:
+def test_create_private_clan_sets_owner_and_forces_private_type() -> None:
     owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
 
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
-    )
+    clan = create_private_clan(name="Green Team", created_by=owner)
 
     assert clan.created_by == owner
     assert clan.type == Clan.ClanType.PRIVATE
@@ -22,15 +29,67 @@ def test_create_clan_sets_owner() -> None:
 
 
 @pytest.mark.django_db
-def test_create_clan_grants_creator_leader_membership() -> None:
+def test_create_private_clan_grants_creator_leader_membership() -> None:
     owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
 
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
-    )
+    clan = create_private_clan(name="Green Team", created_by=owner)
 
     membership = ClanMembership.objects.get(user=owner, clan=clan)
     assert membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_create_private_clan_defaults_to_public_privacy() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+
+    clan = create_private_clan(name="Green Team", created_by=owner)
+
+    assert clan.privacy == Clan.Privacy.PUBLIC
+
+
+@pytest.mark.django_db
+def test_create_private_clan_accepts_private_invite_privacy_and_avatar() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+
+    clan = create_private_clan(
+        name="Green Team",
+        created_by=owner,
+        description="Solo por invitación",
+        avatar_object_key="clans/avatars/green-team.png",
+        privacy=Clan.Privacy.PRIVATE_INVITE,
+    )
+
+    assert clan.privacy == Clan.Privacy.PRIVATE_INVITE
+    assert clan.avatar_object_key == "clans/avatars/green-team.png"
+    assert clan.description == "Solo por invitación"
+
+
+@pytest.mark.django_db
+def test_create_private_clan_rejects_a_duplicate_name() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    other = User.objects.create_user(email="other@iteso.mx", password="local-only")
+    create_private_clan(name="Green Team", created_by=owner)
+
+    with pytest.raises(DuplicateClanNameError):
+        create_private_clan(name="Green Team", created_by=other)
+
+
+@pytest.mark.django_db
+def test_create_private_clan_rejects_a_second_leadership_for_the_same_user() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    create_private_clan(name="First Clan", created_by=owner)
+
+    with pytest.raises(AlreadyLeadingAClanError):
+        create_private_clan(name="Second Clan", created_by=owner)
+
+
+@pytest.mark.django_db
+def test_create_private_clan_rejects_a_sixth_private_clan_membership() -> None:
+    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
+    join_user_to_new_private_clans(member, MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER)
+
+    with pytest.raises(PrivateClanLimitExceededError):
+        create_private_clan(name="One Too Many", created_by=member)
 
 
 @pytest.mark.django_db

@@ -10,7 +10,13 @@ from green_iteso.accounts.models import Clan, UserProfile
 
 
 class ClanSerializer(serializers.ModelSerializer):
-    """Representation of a clan; creation delegates to clans.services.create_clan."""
+    """Representation of a clan; creation delegates to clans.services.
+
+    ``type`` is read-only: every clan created through this serializer is
+    PRIVATE (see ``create_private_clan``, T2-31). Institutional clans are
+    only ever produced by ``assign_institutional_clan`` (T2-30), which does
+    not go through this serializer.
+    """
 
     class Meta:
         model = Clan
@@ -18,12 +24,13 @@ class ClanSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
+            "avatar_object_key",
             "type",
             "privacy",
             "total_points",
             "created_at",
         ]
-        read_only_fields = ["id", "privacy", "total_points", "created_at"]
+        read_only_fields = ["id", "type", "total_points", "created_at"]
 
 
 class InstitutionalOnboardingSerializer(serializers.Serializer):

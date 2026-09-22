@@ -18,7 +18,10 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
 )
-from .services import assign_institutional_clan, create_clan
+from .services import (
+    assign_institutional_clan,
+    create_private_clan,
+)
 
 
 class ClanViewSet(
@@ -27,7 +30,11 @@ class ClanViewSet(
     mixins.CreateModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, and create clans under /api/v1/clans/."""
+    """List, retrieve, and create private clans under /api/v1/clans/ (T2-31).
+
+    Institutional clans never come from this endpoint; they are auto-assigned
+    during onboarding through /api/v1/clans/institutional-clan/ (T2-30).
+    """
 
     serializer_class = ClanSerializer
 
@@ -35,12 +42,18 @@ class ClanViewSet(
         return list_active_clans()
 
     def perform_create(self, serializer: ClanSerializer) -> None:
-        serializer.instance = create_clan(
-            name=serializer.validated_data["name"],
-            clan_type=serializer.validated_data["type"],
-            description=serializer.validated_data.get("description", ""),
-            created_by=self.request.user,
-        )
+        try:
+            serializer.instance = create_private_clan(
+                name=serializer.validated_data["name"],
+                created_by=self.request.user,
+                description=serializer.validated_data.get("description", ""),
+                avatar_object_key=serializer.validated_data.get(
+                    "avatar_object_key", ""
+                ),
+                privacy=serializer.validated_data.get("privacy", Clan.Privacy.PUBLIC),
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
 
 class InstitutionalClanAssignmentView(APIView):

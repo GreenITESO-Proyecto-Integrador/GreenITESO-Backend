@@ -50,10 +50,31 @@ class MockProvider:
             oid=str(uuid.uuid5(_NAMESPACE, email.lower())),
             tenant_id=_MOCK_TENANT,
             email=email,
-            given_name=str(claims.get("given_name", "")),
-            surname=str(claims.get("surname", "")),
-            job_title=str(claims.get("job_title", "")),
-            department=str(claims.get("department", "")),
-            employee_id=str(claims.get("employee_id", "")),
-            group_ids=tuple(str(g) for g in groups) if isinstance(groups, list) else (),
+            given_name=_text_or_none(claims, "given_name"),
+            surname=_text_or_none(claims, "surname"),
+            job_title=_text_or_none(claims, "job_title"),
+            department=_text_or_none(claims, "department"),
+            employee_id=_text_or_none(claims, "employee_id"),
+            group_ids=_group_ids_or_none(groups, "group_ids" in claims),
         )
+
+
+def _text_or_none(claims: dict[str, object], key: str) -> str | None:
+    """``None`` if ``key`` is absent, matching ExternalIdentity's contract.
+
+    A key that IS present (even as an empty string) is an explicit value from
+    the test payload; a key that is absent means "not fetched" and callers
+    should keep whatever was already stored, the same as EntraProvider does
+    when Graph doesn't return a field.
+    """
+    if key not in claims:
+        return None
+    return str(claims[key])
+
+
+def _group_ids_or_none(groups: object, key_present: bool) -> tuple[str, ...] | None:
+    if not key_present:
+        return None
+    if isinstance(groups, list):
+        return tuple(str(g) for g in groups)
+    return ()

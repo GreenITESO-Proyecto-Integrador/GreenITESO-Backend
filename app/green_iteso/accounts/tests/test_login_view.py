@@ -10,6 +10,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from green_iteso.accounts.models import User
 
 LOGIN_URL = "/api/v1/auth/login/"
+REFRESH_URL = "/api/v1/auth/refresh/"
 
 
 @pytest.mark.django_db
@@ -43,6 +44,35 @@ def test_issued_access_token_authenticates_a_follow_up_request() -> None:
 
 
 @pytest.mark.django_db
+def test_refresh_token_exchanges_for_a_new_access_token() -> None:
+    login = APIClient().post(
+        LOGIN_URL, {"id_token": "mock:ana@iteso.mx", "access_token": ""}, format="json"
+    )
+    refresh = login.json()["refresh"]
+
+    response = APIClient().post(REFRESH_URL, {"refresh": refresh}, format="json")
+
+    assert response.status_code == 200
+    new_access = response.json()["access"]
+    assert new_access
+
+    authenticated = APIClient()
+    authenticated.credentials(HTTP_AUTHORIZATION=f"Bearer {new_access}")
+    me_response = authenticated.get("/api/v1/users/me/")
+    assert me_response.status_code == 200
+    assert me_response.json()["email"] == "ana@iteso.mx"
+
+
+@pytest.mark.django_db
+def test_refresh_rejects_a_garbage_token() -> None:
+    response = APIClient().post(
+        REFRESH_URL, {"refresh": "not-a-real-token"}, format="json"
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
 def test_request_without_an_access_token_is_rejected() -> None:
     response = APIClient().get("/api/v1/users/me/")
 
@@ -64,6 +94,9 @@ def test_malformed_body_returns_validation_error() -> None:
     response = APIClient().post(LOGIN_URL, {}, format="json")
 
     assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "id_token" in body["error"]["message"]
 
 
 @pytest.mark.django_db

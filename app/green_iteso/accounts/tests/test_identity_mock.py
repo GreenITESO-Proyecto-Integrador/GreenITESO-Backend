@@ -14,6 +14,35 @@ def test_plain_email_token() -> None:
     )
 
     assert identity.email == "student@iteso.mx"
+
+
+def test_omitted_optional_claims_are_none_not_empty() -> None:
+    """None means "not fetched, keep the stored value" (see ExternalIdentity).
+
+    A plain ``mock:<email>`` token only asserts the email; it says nothing
+    about department/groups/etc., so those must come back as None rather
+    than blank out whatever a previous login already stored.
+    """
+    identity = MockProvider().authenticate(
+        id_token="mock:student@iteso.mx", access_token=""
+    )
+
+    assert identity.given_name is None
+    assert identity.surname is None
+    assert identity.job_title is None
+    assert identity.department is None
+    assert identity.employee_id is None
+    assert identity.group_ids is None
+
+
+def test_explicitly_empty_claims_are_kept_empty_not_none() -> None:
+    """A key present with an empty value is a real answer, not "not fetched"."""
+    identity = MockProvider().authenticate(
+        id_token='mock:{"email": "ana@iteso.mx", "department": "", "group_ids": []}',
+        access_token="",
+    )
+
+    assert identity.department == ""
     assert identity.group_ids == ()
 
 

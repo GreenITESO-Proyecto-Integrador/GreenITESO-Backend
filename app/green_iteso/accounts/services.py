@@ -56,7 +56,9 @@ def login_with_microsoft(
     if not is_institutional_email(email):
         # Log neither the address nor the tokens; only that the gate fired.
         logger.info("Login rejected: email outside %s", settings.ALLOWED_EMAIL_DOMAIN)
-        raise DomainNotAllowedError()
+        raise DomainNotAllowedError(
+            f"Solo se permiten cuentas institucionales @{settings.ALLOWED_EMAIL_DOMAIN}."
+        )
 
     user, created = _upsert_user(identity, email)
     update_last_login(None, user)

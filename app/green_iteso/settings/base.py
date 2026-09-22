@@ -136,7 +136,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
-    "DEFAULT_THROTTLE_RATES": {"auth_login": "10/min"},
+    "DEFAULT_THROTTLE_RATES": {"auth_login": "10/min", "auth_refresh": "30/min"},
 }
 
 # Provisional lifetimes from the SDD; T2-11 owns the final values.

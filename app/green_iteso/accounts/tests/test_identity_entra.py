@@ -81,6 +81,38 @@ def test_valid_token_returns_identity_with_graph_data() -> None:
     assert identity.group_ids == ("g1", "g2")
 
 
+def test_graph_mail_wins_over_a_conflicting_token_email_claim() -> None:
+    """Graph's verified profile outranks the ID token's self-reported claim."""
+    private_key, public_key = make_keypair()
+    oid = "33333333-3333-3333-3333-333333333333"
+    token = make_id_token(private_key, oid=oid, email="stale-alias@iteso.mx")
+    provider = _provider(
+        public_key, {"/v1.0/me": _profile_response(oid, mail="current@iteso.mx")}
+    )
+
+    identity = provider.authenticate(id_token=token, access_token="t")
+
+    assert identity.email == "current@iteso.mx"
+
+
+def test_upn_wins_over_token_email_claim_when_graph_mail_is_blank() -> None:
+    private_key, public_key = make_keypair()
+    oid = "33333333-3333-3333-3333-333333333333"
+    token = make_id_token(private_key, oid=oid, email="stale-alias@iteso.mx")
+    provider = _provider(
+        public_key,
+        {
+            "/v1.0/me": _profile_response(
+                oid, mail=None, userPrincipalName="upn@iteso.mx"
+            )
+        },
+    )
+
+    identity = provider.authenticate(id_token=token, access_token="t")
+
+    assert identity.email == "upn@iteso.mx"
+
+
 def test_expired_token_is_rejected() -> None:
     private_key, public_key = make_keypair()
     token = make_id_token(private_key, expired=True)

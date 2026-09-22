@@ -26,15 +26,21 @@ decisión en el issue T2-10 y en `CLAUDE.md`.
    actualiza si ya existía.
 6. La respuesta trae `{access, refresh, user, created}`; `access`/`refresh`
    son JWT de `djangorestframework-simplejwt` (60 min / 7 días,
-   provisional — T2-11 define los valores finales).
+   provisional — T2-11 define los valores finales). `refresh` se canjea en
+   `POST /api/v1/auth/refresh/` con `{"refresh": "<jwt>"}` → `{"access":
+   "<jwt>"}`; logout/blacklist de refresh tokens sigue siendo T2-11.
 
 Microsoft Graph es *best-effort*: si Graph no responde, o el `access_token`
 no tiene permiso para una llamada concreta (por ejemplo, membresías de grupo
-sin `GroupMember.Read.All`), el login continúa con los claims del `id_token`
-y conserva los últimos valores de perfil guardados; solo el `id_token`
-decide la identidad y el dominio permitido. `EntraProvider._fetch_group_ids`
-trata cualquier respuesta que no sea 200 como "no se pudo obtener" y deja
-`microsoft_group_ids` vacío, sin fallar el login.
+sin `GroupMember.Read.All`), el login continúa con los claims del `id_token`;
+solo el `id_token` decide la identidad y el dominio permitido.
+`EntraProvider._fetch_group_ids` trata cualquier respuesta que no sea 200
+como "no se pudo obtener" y devuelve `None` (no una lista vacía).
+`accounts.services._sync_profile` interpreta ese `None` como "sin dato
+nuevo" y **conserva** el valor de `UserProfile.microsoft_group_ids` que ya
+estaba guardado de un login anterior; no lo vacía. Lo mismo aplica al resto
+de los campos de Graph (`job_title`, `department`, `employee_id`, nombre):
+si el perfil de Graph no llegó, esta corrida no toca esos campos.
 
 ## Variables de entorno
 
@@ -47,6 +53,27 @@ trata cualquier respuesta que no sea 200 como "no se pudo obtener" y deja
 
 No se necesita client secret: el backend solo valida tokens ya emitidos al
 usuario (public client / SPA), nunca actúa como confidential client.
+
+## Cambios de comportamiento en toda la API
+
+Estos dos puntos no son específicos del login, pero esta historia los activa
+para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
+
+- **Una petición sin token ahora responde 401, no 403.** Antes de T2-10,
+  `DEFAULT_AUTHENTICATION_CLASSES` estaba vacío, así que cualquier endpoint
+  protegido devolvía 403 (`IsAuthenticated` sin más). Con `JWTAuthentication`
+  activo como autenticador por defecto, DRF distingue "no autenticado" (401)
+  de "autenticado pero sin permiso" (403) para **todos** los endpoints de E1
+  y E3 también, no solo los dos ajustados en este PR
+  (`accounts/tests/test_views.py`, `clans/tests/test_views.py`). Si algún
+  otro test o cliente asume 403 ante la ausencia de token, va a romper.
+- **El throttle de `/auth/login/` (`10/min`) no limita lo que parece.**
+  `DEFAULT_THROTTLE_RATES`/`ScopedRateThrottle` usa el cache por defecto de
+  Django, `LocMemCache`, que es **por proceso**. Con N workers de Gunicorn el
+  límite real es `10×N` peticiones/min, no 10, y el conteo es por IP, así que
+  una red con NAT (un campus, por ejemplo) comparte esa cuota entre todos sus
+  usuarios. Cerrar esto bien requiere un backend de cache compartido (Redis)
+  entre workers; queda fuera de esta historia.
 
 ## Registro de la aplicación en Entra ID
 
@@ -105,12 +132,13 @@ largo plazo. Los mismos permisos (`openid`, `profile`, `email`,
 **`GroupMember.Read.All` queda fuera de cualquiera de las dos rutas.** Es el
 único permiso de esta lista que exige "admin consent", y pedirlo junto con
 el resto puede hacer que Entra rechace el login completo si no fue
-aprobado. Sin él se pierden las membresías de grupo
-(`UserProfile.microsoft_group_ids` queda vacío), pero el resto de los datos
-de Graph (nombre, `jobTitle`, `department`, `employeeId`) se sigue leyendo
-con `User.Read`, porque es el propio usuario leyendo su registro. Si más
-adelante T2-13 necesita el grupo para distinguir STAFF de STUDENT, ese es el
-momento de pedirle a IT que apruebe `GroupMember.Read.All`.
+aprobado. Sin él, cada login deja `UserProfile.microsoft_group_ids` sin
+tocar (ver la nota sobre `None` arriba: nunca se llega a pedir el dato, así
+que no hay nada que vaciar), pero el resto de los datos de Graph (nombre,
+`jobTitle`, `department`, `employeeId`) se sigue leyendo con `User.Read`,
+porque es el propio usuario leyendo su registro. Si más adelante T2-13
+necesita el grupo para distinguir STAFF de STUDENT, ese es el momento de
+pedirle a IT que apruebe `GroupMember.Read.All`.
 
 ## Desarrollo local sin un registro real
 
@@ -148,8 +176,20 @@ rechaza al arrancar Django si `DJANGO_ENV` no es `dev` o si
 }
 
 // Errores: {"error": {"code": "...", "message": "..."}}
-// 400 VALIDATION_ERROR · 401 UNAUTHENTICATED · 403 DOMAIN_NOT_ALLOWED / PERMISSION_DENIED · 429 (throttle)
+// 400 VALIDATION_ERROR · 401 UNAUTHENTICATED · 403 DOMAIN_NOT_ALLOWED / PERMISSION_DENIED
+// · 429 (throttle) · 503 SERVER_ERROR (el proveedor de identidad no responde)
 ```
 
 `created=true` en el primer login habilita a T2-12/T2-30 a arrancar el flujo
 de onboarding (selección de carrera, clan institucional).
+
+```jsonc
+// POST /api/v1/auth/refresh/
+// Request
+{ "refresh": "<jwt del login>" }
+
+// Response 200
+{ "access": "<jwt nuevo>" }
+
+// 401 si el refresh token es inválido o expiró.
+```

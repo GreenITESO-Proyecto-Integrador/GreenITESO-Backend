@@ -51,11 +51,15 @@ class EntraProvider:
         key_resolver: _KeyResolver | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
+        # Normalized once so every derived URL/comparison agrees. Microsoft
+        # always lowercases the `tid`/`iss` claims it issues, so building
+        # `_issuer` from a raw, possibly-mixed-case env value would silently
+        # fail every login with a confusing 401.
         self._tenant_id = tenant_id.lower()
         self._client_id = client_id
-        self._issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+        self._issuer = f"https://login.microsoftonline.com/{self._tenant_id}/v2.0"
         self._keys: _KeyResolver = key_resolver or PyJWKClient(
-            f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys",
+            f"https://login.microsoftonline.com/{self._tenant_id}/discovery/v2.0/keys",
             cache_keys=True,
             timeout=5,
         )
@@ -67,11 +71,16 @@ class EntraProvider:
         profile = self._fetch_profile(access_token, oid)
         groups = self._fetch_group_ids(access_token) if profile is not None else None
 
+        # Graph's own profile (already cross-checked against `oid` above) is
+        # more authoritative than the ID token's self-reported claims, and
+        # `userPrincipalName` is Entra's stable sign-in identifier -- more
+        # reliable than the optional, unverified `email` claim. Token claims
+        # are still the fallback for when Graph is unreachable.
         email = _first_text(
-            claims.get("email"),
             profile.get("mail") if profile else None,
-            claims.get("preferred_username"),
             profile.get("userPrincipalName") if profile else None,
+            claims.get("email"),
+            claims.get("preferred_username"),
         )
         if not email:
             raise InvalidIdentityTokenError(

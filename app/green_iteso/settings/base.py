@@ -123,9 +123,12 @@ INSTALLED_APPS = [
     "green_iteso.clans",
     "green_iteso.actions",
     "green_iteso.campaigns",
+    "green_iteso.feed",
+    "green_iteso.notifications",
 ]
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",

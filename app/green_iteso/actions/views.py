@@ -91,7 +91,9 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
-                profile.total_points += action.points #TODO: Transactionalize point changes to avoid race conditions
+                # pylint: disable=fixme
+                # TODO: Transactionalize point changes to avoid race conditions
+                profile.total_points += action.points
                 profile.save(update_fields=["total_points"])
 
                 if institutional_clan:

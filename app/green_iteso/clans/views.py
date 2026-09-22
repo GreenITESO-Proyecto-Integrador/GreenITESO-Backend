@@ -9,16 +9,17 @@ from green_iteso.accounts.models import Clan
 
 from .selectors import list_active_clans
 from .serializers import ClanSerializer
-from .services import create_clan
+from .services import create_clan, dissolve_clan
 
 
 class ClanViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, and create clans under /api/v1/clans/."""
+    """List, retrieve, create, and dissolve clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
@@ -32,3 +33,7 @@ class ClanViewSet(
             description=serializer.validated_data.get("description", ""),
             created_by=self.request.user,
         )
+
+    def perform_destroy(self, instance: Clan) -> None:
+        """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
+        dissolve_clan(clan=instance, actor=self.request.user)

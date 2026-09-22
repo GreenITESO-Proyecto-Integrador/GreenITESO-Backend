@@ -11,8 +11,9 @@ generales de las skills vendorizadas:
   identifican también su destino explícito (nombre/ID o --branch según el comando). No se hace neon env pull durante el onboarding; cuando
   corresponda, se usa --no-env-pull.
 - Los modelos y migraciones de Django son la única fuente del esquema. No se
-  agrega neon.ts ni se usa Neon Auth: la autenticación acordada es Firebase y
-  GCS privado sigue siendo la propuesta P1 pendiente de integración.
+  agrega neon.ts ni se usa Neon Auth: la autenticación de login es Microsoft
+  Entra ID (T2-10) y GCS privado sigue siendo la propuesta P1 pendiente de
+  integración.
 - Una rama de Git no mezcla ni promueve datos. Las migraciones se revisan y se
   ejecutan una vez por ambiente con la conexión directa; la aplicación usa la
   URL pooled.

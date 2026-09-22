@@ -10,7 +10,18 @@ class UserAdmin(BaseUserAdmin):
     list_display = ("email", "role", "is_active", "is_staff")
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Identity", {"fields": ("first_name", "last_name", "firebase_uid", "role")}),
+        (
+            "Identity",
+            {
+                "fields": (
+                    "first_name",
+                    "last_name",
+                    "firebase_uid",
+                    "microsoft_oid",
+                    "role",
+                )
+            },
+        ),
         (
             "Permissions",
             {

@@ -38,7 +38,7 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractUser):
-    """Institutional account; Firebase verification is an API concern."""
+    """Institutional account, identified by its Microsoft Entra object id."""
 
     class Role(models.TextChoices):
         STUDENT = "STUDENT", "Student"
@@ -49,6 +49,7 @@ class User(AbstractUser):
     username = None
     email = models.EmailField(unique=True, max_length=255)
     firebase_uid = models.CharField(max_length=128, unique=True, null=True, blank=True)
+    microsoft_oid = models.UUIDField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.STUDENT)
     objects = UserManager()
 
@@ -136,6 +137,10 @@ class UserProfile(models.Model):
         blank=True,
     )
     career = models.CharField(max_length=150, blank=True)
+    job_title = models.CharField(max_length=255, blank=True)
+    department = models.CharField(max_length=255, blank=True)
+    employee_id = models.CharField(max_length=64, blank=True)
+    microsoft_group_ids = models.JSONField(default=list, blank=True)
     onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     total_points = models.BigIntegerField(default=0)
     current_streak = models.PositiveIntegerField(default=0)

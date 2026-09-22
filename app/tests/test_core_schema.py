@@ -380,7 +380,9 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
         ("actions", "0003_actionlog_action_log_status_valid_and_more"),
     ]
     forward_target = [
-        ("accounts", "0004_alter_clan_table_alter_clanmembership_table_and_more"),
+        # Pinned to the accounts leaf so this actions-focused rehearsal leaves
+        # accounts untouched; bump this whenever accounts gains a migration.
+        ("accounts", "0005_microsoft_identity"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",

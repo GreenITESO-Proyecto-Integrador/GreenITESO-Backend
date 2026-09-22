@@ -18,14 +18,16 @@ from green_iteso.actions.views import ActionLogCreateView
 def test_list_action_categories_requires_authentication() -> None:
     response = APIClient().get("/api/v1/action-categories/")
 
-    assert response.status_code == 403
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
 def test_list_actions_requires_authentication() -> None:
     response = APIClient().get("/api/v1/actions/")
 
-    assert response.status_code == 403
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

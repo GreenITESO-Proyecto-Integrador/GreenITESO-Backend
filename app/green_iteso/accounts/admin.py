@@ -17,7 +17,16 @@ class UserAdmin(BaseUserAdmin):
         (None, {"fields": ("email", "password")}),
         (
             "Identity",
-            {"fields": ("first_name", "last_name", "nickname", "firebase_uid", "role")},
+            {
+                "fields": (
+                    "first_name",
+                    "last_name",
+                    "nickname",
+                    "firebase_uid",
+                    "microsoft_oid",
+                    "role",
+                )
+            },
         ),
         (
             "Permissions",

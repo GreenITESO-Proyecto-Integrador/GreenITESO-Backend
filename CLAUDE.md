@@ -27,7 +27,7 @@ Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, cat�
 
 ## Servicios externos
 
-La autenticación acordada de staging/production es Firebase Authentication. GCS privado es la propuesta P1 y su integración sigue pendiente. Neon solo aporta PostgreSQL en `dev`, `staging` y `production`; no se agrega `neon.ts`, Neon Auth, Neon Object Storage ni una rama cloud automática por PR. La aplicación usa una URL pooled y la migración una URL directa, siempre desde secretos del ambiente.
+La autenticación de staging/production es Microsoft Entra ID (login institucional @iteso.mx vía OAuth 2.0/OIDC), implementada en T2-10; Firebase Authentication ya no es el proveedor de login. GCS privado es la propuesta P1 y su integración sigue pendiente. Neon solo aporta PostgreSQL en `dev`, `staging` y `production`; no se agrega `neon.ts`, Neon Auth, Neon Object Storage ni una rama cloud automática por PR. La aplicación usa una URL pooled y la migración una URL directa, siempre desde secretos del ambiente.
 
 ## Calidad
 

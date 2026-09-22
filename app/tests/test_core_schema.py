@@ -400,7 +400,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0007_clan_name_unique_when_alive"),
+        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -438,6 +438,63 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
             "actions", "ActionMaster"
         ).objects.get(pk=old_action.pk)
         assert reverted_action.validation_mode == "DECLARATIVE_BUTTON"
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0005_migration_preserves_existing_rows_and_adds_microsoft_fields() -> (
+    None
+):
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    accounts.0005_microsoft_identity only adds nullable/blank-default fields,
+    but the rule doesn't distinguish additive from destructive changes, so
+    this still rehearses migrating a populated 0004 database forward.
+    """
+    old_target = [
+        ("accounts", "0004_alter_clan_table_alter_clanmembership_table_and_more"),
+    ]
+    new_target = [("accounts", "0005_microsoft_identity")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_profile_model = old_apps.get_model("accounts", "UserProfile")
+
+    user = old_user_model.objects.create(
+        email="pre-entra@iteso.mx", first_name="Ana", last_name="García"
+    )
+    profile = old_profile_model.objects.create(user=user, career="Ingeniería")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_user_model = new_apps.get_model("accounts", "User")
+        new_profile_model = new_apps.get_model("accounts", "UserProfile")
+
+        migrated_user = new_user_model.objects.get(pk=user.pk)
+        assert migrated_user.email == "pre-entra@iteso.mx"
+        assert migrated_user.first_name == "Ana"
+        assert migrated_user.microsoft_oid is None
+
+        migrated_profile = new_profile_model.objects.get(pk=profile.pk)
+        assert migrated_profile.career == "Ingeniería"
+        assert migrated_profile.department == ""
+        assert migrated_profile.job_title == ""
+        assert migrated_profile.employee_id == ""
+        assert migrated_profile.microsoft_group_ids == []
+
+        # A second, distinct account can set microsoft_oid; the new field's
+        # uniqueness constraint doesn't reject the first (still-null) row.
+        second_user = new_user_model.objects.create(
+            email="second@iteso.mx",
+            microsoft_oid="11111111-1111-1111-1111-111111111111",
+        )
+        assert new_user_model.objects.filter(pk=second_user.pk).exists()
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

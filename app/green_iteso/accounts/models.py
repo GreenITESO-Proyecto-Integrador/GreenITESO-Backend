@@ -1,4 +1,6 @@
-"""Provisional identity and clan schema for the T9a core draft."""
+"""Provisional identity and clan schema for the T9a core draft, extended with
+profile visibility and clan soft-delete support.
+"""
 
 from __future__ import annotations
 
@@ -51,6 +53,9 @@ class User(AbstractUser):
     firebase_uid = models.CharField(max_length=128, unique=True, null=True, blank=True)
     microsoft_oid = models.UUIDField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.STUDENT)
+    # Display name shown across the app; set during onboarding, so it starts
+    # blank rather than enforcing NOT NULL against pre-onboarding accounts.
+    nickname = models.CharField(max_length=50, blank=True, default="")
     objects = UserManager()
 
     USERNAME_FIELD = "email"
@@ -66,6 +71,25 @@ class User(AbstractUser):
         ]
 
 
+class ClanQuerySet(models.QuerySet):
+    """Queryset helpers shared between the alive-only and unrestricted managers."""
+
+    def alive(self) -> ClanQuerySet:
+        """Return clans that have not been soft-deleted."""
+        return self.filter(deleted_at__isnull=True)
+
+    def deleted(self) -> ClanQuerySet:
+        """Return only soft-deleted clans."""
+        return self.filter(deleted_at__isnull=False)
+
+
+class ClanManager(models.Manager.from_queryset(ClanQuerySet)):
+    """Default manager: excludes soft-deleted clans from every query."""
+
+    def get_queryset(self) -> ClanQuerySet:
+        return super().get_queryset().alive()
+
+
 class Clan(models.Model):
     """Institutional or private clan; deletion is represented by ``deleted_at``."""
 
@@ -78,7 +102,10 @@ class Clan(models.Model):
         PRIVATE_INVITE = "PRIVATE_INVITE", "Private invite"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
+    # Not globally unique: uniqueness is scoped to alive rows by the
+    # ``clan_name_unique_when_alive`` constraint below, so a soft-deleted
+    # clan's name can be reused without an IntegrityError.
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     avatar_object_key = models.CharField(max_length=500, blank=True)
     type = models.CharField(max_length=16, choices=ClanType.choices)
@@ -96,8 +123,13 @@ class Clan(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    all_objects = models.Manager()
+    objects = ClanManager()
+
     class Meta:
         db_table = "accounts_clan"
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         constraints = [
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
@@ -111,6 +143,11 @@ class Clan(models.Model):
                 condition=Q(privacy__in=["PUBLIC", "PRIVATE_INVITE"]),
                 name="clan_privacy_valid",
             ),
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=Q(deleted_at__isnull=True),
+                name="clan_name_unique_when_alive",
+            ),
         ]
         indexes = [
             models.Index(fields=["type", "total_points"], name="clan_type_points_idx")
@@ -122,6 +159,10 @@ class Clan(models.Model):
 
 class UserProfile(models.Model):
     """Onboarding and denormalized personal totals for the points transaction."""
+
+    class Visibility(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public"
+        PRIVATE = "PRIVATE", "Private"
 
     user = models.OneToOneField(
         "accounts.User",
@@ -143,8 +184,12 @@ class UserProfile(models.Model):
     microsoft_group_ids = models.JSONField(default=list, blank=True)
     onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     total_points = models.BigIntegerField(default=0)
+    available_points = models.BigIntegerField(default=0)
     current_streak = models.PositiveIntegerField(default=0)
     last_action_date = models.DateField(null=True, blank=True)
+    visibility = models.CharField(
+        max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC
+    )
 
     class Meta:
         db_table = "accounts_user_profile"
@@ -152,6 +197,14 @@ class UserProfile(models.Model):
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
                 name="profile_total_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(available_points__gte=0),
+                name="profile_available_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(visibility__in=["PUBLIC", "PRIVATE"]),
+                name="profile_visibility_valid",
             ),
         ]
 

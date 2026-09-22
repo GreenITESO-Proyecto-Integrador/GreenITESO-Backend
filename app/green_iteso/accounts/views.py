@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+from django.db.models import QuerySet
 from drf_spectacular.utils import OpenApiResponse, extend_schema
-from rest_framework import status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRefreshView
 
+from green_iteso.core.permissions import IsAdmin
+
 from .exceptions import RequestValidationError
-from .selectors import get_user_by_id
+from .models import User
+from .selectors import get_user_by_id, list_users
 from .serializers import (
     LoginRequestSerializer,
     LoginResponseSerializer,
@@ -23,10 +27,18 @@ from .serializers import (
 from .services import login_with_microsoft
 
 
-class UserViewSet(viewsets.GenericViewSet):
-    """Self-scoped access to the caller's own account, under /api/v1/users/."""
+class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """Self-scoped `me`, plus an admin-only directory listing, under /api/v1/users/."""
 
     serializer_class = UserSerializer
+
+    def get_queryset(self) -> QuerySet[User]:
+        return list_users()
+
+    def get_permissions(self) -> list[BasePermission]:
+        if self.action == "list":
+            return [IsAdmin()]
+        return super().get_permissions()
 
     @action(detail=False, methods=["get"])
     def me(self, request: Request) -> Response:

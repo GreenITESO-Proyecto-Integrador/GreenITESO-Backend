@@ -306,6 +306,24 @@ def test_active_private_membership_is_unique_per_user() -> None:
 
 
 @pytest.mark.django_db
+def test_profile_visibility_check_is_a_database_constraint() -> None:
+    user = User.objects.create_user(email="visibility@iteso.mx")
+    profile = UserProfile.objects.create(user=user)
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            UserProfile.objects.filter(pk=profile.pk).update(visibility="BOGUS")
+
+
+@pytest.mark.django_db
+def test_profile_available_points_check_is_a_database_constraint() -> None:
+    user = User.objects.create_user(email="available-points@iteso.mx")
+    profile = UserProfile.objects.create(user=user)
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            UserProfile.objects.filter(pk=profile.pk).update(available_points=-1)
+
+
+@pytest.mark.django_db
 def test_catalog_and_campaign_checks_are_database_constraints() -> None:
     category = ActionCategory.objects.create(code="mobility", name="Mobility")
     with pytest.raises(IntegrityError):
@@ -382,7 +400,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0005_microsoft_identity"),
+        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",

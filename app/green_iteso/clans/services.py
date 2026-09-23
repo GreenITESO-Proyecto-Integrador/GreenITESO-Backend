@@ -9,11 +9,24 @@ from django.utils import timezone
 from green_iteso.accounts.models import Clan, ClanMembership, User
 
 
+class DuplicateClanLeaderError(Exception):
+    """Raised when a clan would end up with more than one LEADER membership."""
+
+
+class MembershipClanMismatchError(Exception):
+    """Raised when a membership does not belong to the clan it is promoted in."""
+
+
 @transaction.atomic
 def create_clan(
     *, name: str, clan_type: str, created_by: User, description: str = ""
 ) -> Clan:
-    """Create a clan and grant its creator the LEADER membership (FR-CLAN-02)."""
+    """Create a clan and grant its creator the LEADER membership (FR-CLAN-02).
+
+    A brand-new clan has no prior memberships, so this always produces exactly
+    one LEADER row by construction; the ``assign_leader`` guard below is for
+    any later promote/transfer-leadership flow.
+    """
     clan = Clan.objects.create(
         name=name,
         type=clan_type,
@@ -26,8 +39,52 @@ def create_clan(
     return clan
 
 
+@transaction.atomic
+def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
+    """Promote ``membership`` to LEADER, guarding the single-leader-per-clan rule.
+
+    Locks the ``clan`` row itself with ``select_for_update`` so two concurrent
+    calls for the same clan always serialize, including through the
+    zero-leader intermediate state of a leadership transfer. Locking only the
+    existing LEADER rows (the previous approach) misses that state: with no
+    LEADER row to lock, two concurrent callers both see "no leader" and both
+    proceed, producing two LEADER rows.
+
+    Raises:
+        MembershipClanMismatchError: If ``membership`` does not belong to
+            ``clan``.
+        DuplicateClanLeaderError: If another active LEADER membership already
+            exists for the clan.
+    """
+    if membership.clan_id != clan.pk:
+        raise MembershipClanMismatchError(
+            f"Membership {membership.pk} belongs to clan {membership.clan_id}, "
+            f"not {clan.pk}."
+        )
+    Clan.objects.select_for_update().get(pk=clan.pk)
+    existing_leader = (
+        ClanMembership.objects.filter(
+            clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        .exclude(pk=membership.pk)
+        .first()
+    )
+    if existing_leader is not None:
+        raise DuplicateClanLeaderError(
+            f"Clan {clan.pk} already has LEADER membership {existing_leader.pk}."
+        )
+    membership.role = ClanMembership.MembershipRole.LEADER
+    membership.save(update_fields=["role"])
+    return membership
+
+
 def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
-    """Enforce that only the leader of a private clan dissolves it (FR-CLAN-03)."""
+    """Enforce that only the leader of a private clan dissolves it (FR-CLAN-03).
+
+    Must be called with ``clan`` already locked via ``select_for_update`` in
+    the caller's transaction, and checks leadership against that locked row's
+    current membership state rather than a snapshot taken before the lock.
+    """
     if clan.type != Clan.ClanType.PRIVATE:
         raise PermissionDenied("Only private clans can be dissolved.")
     is_leader = ClanMembership.objects.filter(
@@ -45,6 +102,17 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     members stay consistent in the global scoreboards. The active private clan
     selection is cleared instead, so future actions no longer credit the clan.
 
+    Locks the ``clan`` row before checking leadership, matching the discipline
+    ``assign_leader`` and ``ClanMembershipAdmin.save_model`` already use:
+    checking permission on an unlocked read and only then locking would leave
+    a window where a concurrent leadership transfer commits in between,
+    letting an actor who is no longer LEADER dissolve the clan anyway.
+    Locking first means whichever operation gets there first fully commits
+    before the other re-reads current state. ``all_objects`` is used for the
+    lock fetch (rather than the default ``objects`` manager, which excludes
+    soft-deleted rows) so a concurrent double-dissolve can still find the row
+    and return it idempotently instead of raising ``Clan.DoesNotExist``.
+
     Args:
         clan: Clan to dissolve.
         actor: User requesting the dissolution; must be its LEADER.
@@ -55,8 +123,8 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     Raises:
         PermissionDenied: If the clan is institutional or the actor is not its leader.
     """
-    _assert_can_dissolve(clan=clan, actor=actor)
-    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    locked = Clan.all_objects.select_for_update().get(pk=clan.pk)
+    _assert_can_dissolve(clan=locked, actor=actor)
     if locked.deleted_at is not None:
         # Already dissolved by a concurrent request: keep the original timestamp.
         return locked

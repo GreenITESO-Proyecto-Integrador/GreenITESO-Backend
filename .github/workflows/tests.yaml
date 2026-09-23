@@ -29,6 +29,7 @@ jobs:
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
       DATABASE_URL_UNPOOLED: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
+      MICROSOFT_AUTH_MODE: mock
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

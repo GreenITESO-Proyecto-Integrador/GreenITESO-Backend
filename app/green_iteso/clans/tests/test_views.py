@@ -12,7 +12,8 @@ from green_iteso.accounts.models import Clan, ClanMembership, User
 def test_list_clans_requires_authentication() -> None:
     response = APIClient().get("/api/v1/clans/")
 
-    assert response.status_code == 403
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
@@ -36,7 +37,8 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
 def test_dissolve_clan_requires_authentication(clan: Clan) -> None:
     response = APIClient().delete(f"/api/v1/clans/{clan.pk}/")
 
-    assert response.status_code == 403
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
     clan.refresh_from_db()
     assert clan.deleted_at is None
 
@@ -52,7 +54,9 @@ def test_leader_dissolves_clan_and_it_leaves_the_listing(
 
     assert response.status_code == 204
     assert client.get("/api/v1/clans/").json()["results"] == []
-    assert Clan.objects.filter(pk=clan.pk).exists()
+    # The default manager excludes soft-deleted clans; use all_objects to
+    # confirm the row was preserved rather than hard-deleted.
+    assert Clan.all_objects.filter(pk=clan.pk).exists()
 
 
 @pytest.mark.django_db

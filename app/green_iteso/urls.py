@@ -16,6 +16,7 @@ api_v1_patterns = [
     path("", include("green_iteso.campaigns.urls")),
     path("", include("green_iteso.accounts.urls")),
     path("", include("green_iteso.clans.urls")),
+    path("", include("green_iteso.actions.urls")),
     path("feed/", include("green_iteso.feed.urls")),
     path("notifications/", include("green_iteso.notifications.urls")),
 ]

@@ -31,13 +31,16 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
     list_response = client.get("/api/v1/clans/")
     names = [row["name"] for row in list_response.json()["results"]]
     assert names == ["Green Team"]
+
+
 @pytest.mark.django_db
 def test_institutional_clan_assignment_requires_authentication() -> None:
     response = APIClient().post(
         "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
     )
 
-    assert response.status_code == 403
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

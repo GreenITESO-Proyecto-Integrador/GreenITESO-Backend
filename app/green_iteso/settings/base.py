@@ -110,6 +110,11 @@ if CONNECTION_ROLE not in {"app", "direct"}:
     raise RuntimeError("DJANGO_CONNECTION_ROLE must be exactly app or direct.")
 DEBUG = False
 ALLOWED_HOSTS = csv_setting("DJANGO_ALLOWED_HOSTS")
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -184,6 +189,7 @@ SPECTACULAR_SETTINGS = {
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "green_iteso.core.middleware.DevelopmentCorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

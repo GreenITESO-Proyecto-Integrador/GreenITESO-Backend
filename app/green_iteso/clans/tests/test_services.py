@@ -10,6 +10,7 @@ from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import (
     DuplicateClanLeaderError,
     MembershipClanMismatchError,
+    assign_institutional_clan,
     assign_leader,
     create_clan,
 )
@@ -208,3 +209,93 @@ def test_assign_leader_rejects_a_membership_from_a_different_clan() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_creates_it_on_first_use() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    profile = assign_institutional_clan(user=user, career="Ingeniería en Sistemas")
+
+    clan = Clan.objects.get(name="Ingeniería en Sistemas")
+    assert clan.type == Clan.ClanType.INSTITUTIONAL
+    assert profile.institutional_clan == clan
+    assert profile.career == "Ingeniería en Sistemas"
+    assert profile.onboarding_completed_at is not None
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_grants_member_role() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    profile = assign_institutional_clan(user=user, career="Ingeniería en Sistemas")
+
+    membership = ClanMembership.objects.get(user=user, clan=profile.institutional_clan)
+    assert membership.role == ClanMembership.MembershipRole.MEMBER
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_reuses_the_same_career_clan() -> None:
+    first_user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    second_user = User.objects.create_user(email="zoe@iteso.mx", password="local-only")
+
+    first_profile = assign_institutional_clan(
+        user=first_user, career="Diseño Industrial"
+    )
+    second_profile = assign_institutional_clan(
+        user=second_user, career="Diseño Industrial"
+    )
+
+    assert first_profile.institutional_clan == second_profile.institutional_clan
+    assert Clan.objects.filter(name="Diseño Industrial").count() == 1
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_is_idempotent_for_the_same_career() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    assign_institutional_clan(user=user, career="Diseño Industrial")
+    assign_institutional_clan(user=user, career="Diseño Industrial")
+
+    assert ClanMembership.objects.filter(user=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_keeps_the_original_timestamp() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    first = assign_institutional_clan(user=user, career="Diseño Industrial")
+    second = assign_institutional_clan(user=user, career="Mecatrónica")
+
+    assert second.onboarding_completed_at == first.onboarding_completed_at
+    assert second.career == "Mecatrónica"
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_rejects_a_blank_career() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    with pytest.raises(ValueError):
+        assign_institutional_clan(user=user, career="   ")
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_rejects_a_name_taken_by_another_clan_type() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    Clan.objects.create(name="Diseño Industrial", type=Clan.ClanType.PRIVATE)
+
+    with pytest.raises(ValueError):
+        assign_institutional_clan(user=user, career="Diseño Industrial")
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_removes_the_stale_membership_on_change() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    first_profile = assign_institutional_clan(user=user, career="Diseño Industrial")
+    second_profile = assign_institutional_clan(user=user, career="Mecatrónica")
+
+    memberships = ClanMembership.objects.filter(user=user)
+    assert memberships.count() == 1
+    assert memberships.get().clan == second_profile.institutional_clan
+    assert first_profile.institutional_clan != second_profile.institutional_clan

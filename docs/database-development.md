@@ -56,14 +56,15 @@ volumen que otro checkout utilice. Si cambias usuario/contraseña local después
 de inicializar el volumen, PostgreSQL conserva los valores anteriores.
 
 La base T9a incluye los modelos de identidad, clanes, acciones, auditoría,
-campañas y misiones; todavía no incluye datos demo ni login Firebase. `migrate`
+campañas y misiones; todavía no incluye datos demo. `migrate`
 crea el usuario personalizado de `accounts`, no `auth_user`. El recorrido local
-prueba infraestructura y la ruta `/`; la autenticación Firebase y los módulos
-de feed/notificaciones siguen siendo entregables posteriores.
+prueba infraestructura y la ruta `/`; no cubre el login vía Microsoft Entra ID
+(T2-10, ver [auth-microsoft-entra.md](auth-microsoft-entra.md)) ni los módulos
+de feed/notificaciones.
 
 ## Qué vive en qué lugar
 
-El esquema relacional y sus cambios viven exclusivamente en modelos y migraciones de Django. `neon.ts`, Neon Auth y los buckets de Neon no son parte de este proyecto. La autenticación acordada es Firebase Authentication; el almacenamiento GCS privado es la propuesta P1 y su integración sigue pendiente. Una rama de Git tampoco transporta filas de PostgreSQL; cada ambiente recibe las migraciones revisadas.
+El esquema relacional y sus cambios viven exclusivamente en modelos y migraciones de Django. `neon.ts`, Neon Auth y los buckets de Neon no son parte de este proyecto. La autenticación de login es Microsoft Entra ID (T2-10); el almacenamiento GCS privado es la propuesta P1 y su integración sigue pendiente. Una rama de Git tampoco transporta filas de PostgreSQL; cada ambiente recibe las migraciones revisadas.
 
 ## Nombres canónicos de tablas
 

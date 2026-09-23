@@ -39,7 +39,7 @@ def test_institutional_clan_assignment_requires_authentication() -> None:
         "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

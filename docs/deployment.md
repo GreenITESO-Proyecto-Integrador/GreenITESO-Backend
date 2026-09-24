@@ -37,10 +37,11 @@ not receive Neon credentials.
 The `Neon database migrations` workflow listens for a successful `Django tests`
 run caused by a push to protected `dev` or `preprod`. That push is the result of
 a merged PR; PR-close events (including unmerged closures) cannot trigger this
-workflow. The job also requires the test run to be successful, skips a queued
-SHA if the branch has advanced, and serializes migrations separately per Git
-branch. Thus `dev` updates Neon `dev`, while Git `preprod` updates Neon
-`staging`.
+workflow. A credential-free gate checks the workflow-run event, conclusion,
+branch, repository, and Cloud mode; only its tested eligible result starts the
+job with a Neon GitHub Environment. The migration job skips a queued SHA if
+the branch has advanced and serializes migrations separately per Git branch.
+Thus `dev` updates Neon `dev`, while Git `preprod` updates Neon `staging`.
 
 The migrator uses only `DATABASE_URL_UNPOOLED` (direct URL); the post-migration
 `db_smoke` check uses only `DATABASE_URL` (pooled app URL). Django settings

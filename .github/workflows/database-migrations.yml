@@ -9,18 +9,32 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: neon-migration-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: false
-
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      eligible: ${{ steps.evaluate.outputs.eligible }}
+    steps:
+      - name: Check out trusted default-branch gate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+      - name: Evaluate migration event without database credentials
+        id: evaluate
+        env:
+          CLOUD_DEPLOYMENT_ENABLED: ${{ vars.CLOUD_DEPLOYMENT_ENABLED }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/should-run-neon-migration.py
+
   migrate:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      vars.CLOUD_DEPLOYMENT_ENABLED != 'true' &&
-      contains(fromJSON('["dev", "preprod"]'), github.event.workflow_run.head_branch) &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+    needs: gate
+    if: needs.gate.outputs.eligible == 'true'
+    concurrency:
+      group: neon-migration-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ github.event.workflow_run.head_branch }}

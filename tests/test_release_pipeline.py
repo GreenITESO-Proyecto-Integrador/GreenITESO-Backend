@@ -7,6 +7,7 @@ Google Cloud or GitHub; the shell release script is exercised with fake
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -18,6 +19,7 @@ PROVENANCE = ROOT / "scripts" / "verify-source-release.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "_deploy.yml"
 PROMOTE = ROOT / ".github" / "workflows" / "promote.yml"
 DATABASE_MIGRATIONS = ROOT / ".github" / "workflows" / "database-migrations.yml"
+MIGRATION_GATE = ROOT / "scripts" / "should-run-neon-migration.py"
 
 
 def _base_env(tmp_path: Path) -> dict[str, str]:
@@ -420,11 +422,11 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert 'workflows: ["Django tests"]' in workflow
     assert "types: [completed]" in workflow
     assert "branches: [dev, preprod]" in workflow
-    assert "workflow_run.event == 'push'" in workflow
-    assert "vars.CLOUD_DEPLOYMENT_ENABLED != 'true'" in workflow
-    assert "workflow_run.conclusion == 'success'" in workflow
+    assert "needs.gate.outputs.eligible == 'true'" in workflow
+    assert "scripts/should-run-neon-migration.py" in workflow
     assert "pull_request:" not in workflow
     assert "workflow_dispatch:" not in workflow
+    assert "head_sha" in workflow
     assert "environment: ${{ github.event.workflow_run.head_branch }}" in workflow
     assert (
         "group: neon-migration-${{ github.event.workflow_run.head_branch }}" in workflow
@@ -443,6 +445,88 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "cancel-in-progress: false" in workflow
     assert "continue-on-error" not in workflow
     assert "scripts/rehearse-migration-conflict.py" in tests_workflow
+
+
+def _run_migration_gate(
+    tmp_path: Path,
+    *,
+    event_name: str = "push",
+    conclusion: str = "success",
+    branch: str = "dev",
+    head_repository: str = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
+    cloud_deployment_enabled: str = "",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "github-output"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+    event_path.write_text(
+        json.dumps(
+            {
+                "workflow_run": {
+                    "event": event_name,
+                    "conclusion": conclusion,
+                    "head_branch": branch,
+                    "head_repository": {"full_name": head_repository},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_OUTPUT": str(output_path),
+        "GITHUB_REPOSITORY": repository,
+        "CLOUD_DEPLOYMENT_ENABLED": cloud_deployment_enabled,
+    }
+    result = subprocess.run(
+        ["python3", str(MIGRATION_GATE)],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, output_path.read_text(
+        encoding="utf-8"
+    ) if output_path.exists() else ""
+
+
+def test_migration_gate_allows_successful_pushes_to_nonproduction_tiers(
+    tmp_path: Path,
+) -> None:
+    for branch in ("dev", "preprod"):
+        result, output = _run_migration_gate(tmp_path / branch, branch=branch)
+        assert result.returncode == 0, result.stderr
+        assert "eligible=true" in output
+
+
+def test_migration_gate_rejects_failed_tests_and_unmerged_pr_closures(
+    tmp_path: Path,
+) -> None:
+    for event_name, conclusion in (("push", "failure"), ("pull_request", "success")):
+        result, output = _run_migration_gate(
+            tmp_path / f"{event_name}-{conclusion}",
+            event_name=event_name,
+            conclusion=conclusion,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "eligible=false" in output
+
+
+def test_migration_gate_rejects_unsupported_branch_forks_and_cloud_mode(
+    tmp_path: Path,
+) -> None:
+    cases = (
+        {"branch": "main"},
+        {"head_repository": "attacker/fork"},
+        {"cloud_deployment_enabled": "true"},
+    )
+    for index, overrides in enumerate(cases):
+        result, output = _run_migration_gate(tmp_path / str(index), **overrides)
+        assert result.returncode == 0, result.stderr
+        assert "eligible=false" in output
 
 
 def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -> None:

@@ -7,6 +7,7 @@ Google Cloud or GitHub; the shell release script is exercised with fake
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -17,6 +18,8 @@ SCRIPT = ROOT / "scripts" / "release.sh"
 PROVENANCE = ROOT / "scripts" / "verify-source-release.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "_deploy.yml"
 PROMOTE = ROOT / ".github" / "workflows" / "promote.yml"
+DATABASE_MIGRATIONS = ROOT / ".github" / "workflows" / "database-migrations.yml"
+MIGRATION_GATE = ROOT / "scripts" / "should-run-neon-migration.py"
 
 
 def _base_env(tmp_path: Path) -> dict[str, str]:
@@ -215,6 +218,76 @@ def _run_provenance(tmp_path: Path, record: str) -> subprocess.CompletedProcess[
     )
 
 
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, text=True, capture_output=True, check=True
+    )
+    return result.stdout.strip()
+
+
+def _provenance_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    _git(repo, "config", "user.name", "Release Test")
+    _git(repo, "config", "user.email", "release-test@example.invalid")
+    (repo / "source.txt").write_text("same release tree\n")
+    _git(repo, "add", "source.txt")
+    _git(repo, "commit", "-m", "source release")
+    source_sha = _git(repo, "rev-parse", "HEAD")
+    source_tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    target_sha = _git(
+        repo, "commit-tree", source_tree, "-p", source_sha, "-m", "merged target"
+    )
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "origin", f"{source_sha}:refs/heads/dev")
+    _git(repo, "push", "origin", f"{target_sha}:refs/heads/preprod")
+    return repo, source_sha, target_sha
+
+
+def _run_promotion_provenance(
+    tmp_path: Path, repo: Path, source_sha: str, release_sha: str
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "promotion-bin"
+    fake_bin.mkdir(exist_ok=True)
+    gh = fake_bin / "gh"
+    record = (
+        f"environment=dev\nrelease_sha={source_sha}\nimage_digest=sha256:{'a' * 64}\n"
+    )
+    quoted_record = shlex.quote(record)
+    gh.write_text(
+        "#!/bin/sh\n"
+        'if [ "$2" = list ]; then echo 123; exit 0; fi\n'
+        'if [ "$2" = download ]; then\n'
+        '  mkdir -p "$7"\n'
+        f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n"
+    )
+    gh.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RELEASE_ENVIRONMENT": "staging",
+        "RELEASE_SHA": release_sha,
+        "SOURCE_REF": "dev",
+        "SOURCE_RELEASE_SHA": source_sha,
+        "GITHUB_OUTPUT": str(tmp_path / "promotion-output"),
+    }
+    return subprocess.run(
+        [str(PROVENANCE)],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_source_provenance_accepts_matching_success_record(tmp_path: Path) -> None:
     digest = "sha256:" + "a" * 64
     result = _run_provenance(
@@ -242,6 +315,39 @@ def test_source_provenance_rejects_empty_digest(tmp_path: Path) -> None:
     assert "does not match" in result.stderr
 
 
+def test_promotion_provenance_accepts_different_merge_sha_with_identical_tree(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
+    assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_rejects_target_only_tree_change(tmp_path: Path) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    _git(repo, "checkout", "--detach", release_sha)
+    (repo / "target-only.txt").write_text("not in the tested source image\n")
+    _git(repo, "add", "target-only.txt")
+    _git(repo, "commit", "-m", "target-only change")
+    release_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "origin", f"{release_sha}:refs/heads/preprod")
+    result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
+    assert result.returncode != 0
+    assert "does not match the merged release commit" in result.stderr
+
+
+def test_promotion_provenance_rejects_advanced_source_branch(tmp_path: Path) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    (repo / "source.txt").write_text("new source commit\n")
+    _git(repo, "add", "source.txt")
+    _git(repo, "commit", "-m", "advance source")
+    advanced_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "origin", f"{advanced_sha}:refs/heads/dev")
+    result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
+    assert result.returncode != 0
+    assert "Stale source release" in result.stderr
+
+
 def test_multiple_hosts_are_encoded_as_one_env_value(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["DJANGO_ALLOWED_HOSTS"] = "greeniteso.example,admin.greeniteso.example"
@@ -261,7 +367,8 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     workflow = WORKFLOW.read_text()
     promote = PROMOTE.read_text()
     assert "workflow_call" in workflow
-    assert "cancel-in-progress: false" in workflow
+    assert "group: db-release-${{ inputs.environment }}" in workflow
+    assert "queue: max" in workflow
     assert "migration" in workflow.lower()
     assert "actions/upload-artifact@v4" in workflow
     assert "verify-source-release.sh" in workflow
@@ -281,42 +388,221 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
         '--service-account="$RUNTIME_SERVICE_ACCOUNT"'
         in (ROOT / "scripts" / "release.sh").read_text()
     )
-    assert "staging" in promote and "production" in promote
-    assert "image_digest" in promote
-    assert "verify-source-release.sh" in promote
+    assert "preprod" in promote and "main" in promote
+    assert "gh pr create" in promote
+    assert "pull-requests: write" in promote
+    assert "git/refs/heads/" not in promote
+    assert "contents: write" not in promote
     assert "git push" not in promote
 
 
-def test_production_environment_uses_architecture_main_branch() -> None:
+def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
     production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
     promote = PROMOTE.read_text()
     assert "branches: [main]" in production
-    assert "source_ref: main" in production
-    assert "environment: production" in production
-    assert "production) source_ref=staging; target_ref=main;" in promote
-    assert "git/refs/heads/${TARGET_REF}" in promote
-    assert '--ref "$TARGET_REF"' in promote
+    assert "release_ref: main" in production
+    assert "source_ref: preprod" in production
+    assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in production
+    assert (
+        "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in production
+    )
+    assert "github_environment: production" in production
+    assert "main" in promote
+    assert "preprod" in promote
+    assert "pull-requests: write" in promote
+    assert "gh pr create" in promote
+    assert "git/refs/heads/" not in promote
+    assert "contents: write" not in promote
+
+
+def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates() -> (
+    None
+):
+    workflow = DATABASE_MIGRATIONS.read_text()
+    tests_workflow = (ROOT / ".github" / "workflows" / "tests.yaml").read_text()
+    assert 'workflows: ["Django tests"]' in workflow
+    assert "types: [completed]" in workflow
+    assert "branches: [dev, preprod]" in workflow
+    assert "needs.gate.outputs.eligible == 'true'" in workflow
+    assert workflow.count("scripts/should-run-neon-migration.py") == 2
+    assert "steps.mode.outputs.eligible == 'true'" in workflow
+    assert "cancel-in-progress" not in workflow
+    assert "secrets." not in workflow.split("  migrate:", 1)[0]
+    assert "pull_request:" not in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "head_sha" in workflow
+    assert "environment: ${{ github.event.workflow_run.head_branch }}" in workflow
+    assert (
+        "group: db-release-${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in workflow
+    )
+    assert "queue: max" in workflow
+    assert "DATABASE_URL_UNPOOLED" in workflow
+    assert "DATABASE_URL" in workflow
+    assert workflow.count("persist-credentials: false") == 2
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_BRANCH}"' in workflow
+    assert "git ls-remote origin" not in workflow
+    assert (
+        workflow.index("Install Django dependencies")
+        < workflow.index("Skip a stale queued migration")
+        < workflow.index("Require environment-scoped database settings")
+    )
+    migration_tip_check = (
+        workflow.split("- name: Recheck migration eligibility", 1)[1]
+        .split("- name: Skip a stale queued migration", 1)[1]
+        .split("- name:", 1)[0]
+    )
+    assert "GH_TOKEN: ${{ github.token }}" in migration_tip_check
+    assert "db_smoke" in workflow
+    assert (
+        "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in workflow
+    )
+    assert "production" not in workflow
+    assert workflow.index("Apply committed migrations") < workflow.index(
+        "Verify access through the pooled application role"
+    )
+    assert "continue-on-error" not in workflow
+    assert "scripts/rehearse-migration-conflict.py" in tests_workflow
+    assert "group: db-release-${{ inputs.environment }}" in WORKFLOW.read_text()
+    assert "queue: max" in WORKFLOW.read_text()
+
+
+def _run_migration_gate(
+    tmp_path: Path,
+    *,
+    event_name: str = "push",
+    conclusion: str = "success",
+    branch: str = "dev",
+    head_repository: str = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
+    cloud_deployment_enabled: str = "",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "github-output"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+    event_path.write_text(
+        json.dumps(
+            {
+                "workflow_run": {
+                    "event": event_name,
+                    "conclusion": conclusion,
+                    "head_branch": branch,
+                    "head_repository": {"full_name": head_repository},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_OUTPUT": str(output_path),
+        "GITHUB_REPOSITORY": repository,
+        "CLOUD_DEPLOYMENT_ENABLED": cloud_deployment_enabled,
+    }
+    result = subprocess.run(
+        ["python3", str(MIGRATION_GATE)],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, output_path.read_text(
+        encoding="utf-8"
+    ) if output_path.exists() else ""
+
+
+def test_migration_gate_allows_successful_pushes_to_nonproduction_tiers(
+    tmp_path: Path,
+) -> None:
+    for branch in ("dev", "preprod"):
+        result, output = _run_migration_gate(tmp_path / branch, branch=branch)
+        assert result.returncode == 0, result.stderr
+        assert "eligible=true" in output
+
+
+def test_migration_gate_rejects_failed_tests_and_unmerged_pr_closures(
+    tmp_path: Path,
+) -> None:
+    for event_name, conclusion in (("push", "failure"), ("pull_request", "success")):
+        result, output = _run_migration_gate(
+            tmp_path / f"{event_name}-{conclusion}",
+            event_name=event_name,
+            conclusion=conclusion,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "eligible=false" in output
+
+
+def test_migration_gate_rejects_unsupported_branch_forks_and_cloud_mode(
+    tmp_path: Path,
+) -> None:
+    cases = (
+        {"branch": "main"},
+        {"head_repository": "attacker/fork"},
+        {"cloud_deployment_enabled": "true"},
+    )
+    for index, overrides in enumerate(cases):
+        result, output = _run_migration_gate(tmp_path / str(index), **overrides)
+        assert result.returncode == 0, result.stderr
+        assert "eligible=false" in output
+
+
+def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -> None:
+    caller = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+    migration = DATABASE_MIGRATIONS.read_text()
+    assert "branches: [preprod]" in caller
+    assert "github_environment: preprod" in caller
+    assert "release_ref: preprod" in caller
+    assert "source_ref: dev" in caller
+    assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in caller
+    assert "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in caller
+    assert "environment: staging" in caller
+    assert (
+        "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in migration
+    )
+    production = (ROOT / ".github" / "workflows" / "deploy-production.yml").read_text()
+    assert "branches: [main]" in production
+    assert "github_environment: production" in production
+    assert "release_ref: main" in production
+    assert "source_ref: preprod" in production
 
 
 def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
     for filename in ("deploy-dev.yml", "deploy-staging.yml", "deploy-production.yml"):
         caller = (ROOT / ".github" / "workflows" / filename).read_text()
-        assert (
-            "jobs:\n  release:\n    if: vars.CLOUD_DEPLOYMENT_ENABLED == 'true'\n"
-            in caller
-        )
+        assert "vars.CLOUD_DEPLOYMENT_ENABLED == 'true'" in caller
         assert "uses: ./.github/workflows/_deploy.yml" in caller
         assert "secrets: inherit" in caller
 
     for filename in ("deploy-staging.yml", "deploy-production.yml"):
         caller = (ROOT / ".github" / "workflows" / filename).read_text()
-        assert "workflow_dispatch:" in caller
+        assert "types: [closed]" in caller
+        assert "pull_request.merged == true" in caller
+        assert "pull_request.head.repo.full_name == github.repository" in caller
         assert "release_sha:" in caller
-        assert "image_digest:" in caller
+        assert "workflow_dispatch:" not in caller
 
     reusable = WORKFLOW.read_text()
     assert "Validate release configuration" in reusable
     assert "for name in GCP_PROJECT_ID" in reusable
+    assert "persist-credentials: false" in reusable
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}"' in reusable
+    assert (
+        reusable.count('gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}"')
+        == 2
+    )
+    assert reusable.index(
+        "Recheck release ref before the release script"
+    ) < reusable.index("Migrate and deploy the release digest")
+    assert "git ls-remote origin" not in reusable
+    stale_check = reusable.split("- name: Reject stale release", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "GH_TOKEN: ${{ github.token }}" in stale_check
 
 
 def test_smoke_failure_does_not_deploy_or_record(tmp_path: Path) -> None:

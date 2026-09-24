@@ -48,5 +48,7 @@ jobs:
         run: python app/manage.py migrate --no-input
       - name: Check migration state
         run: python app/manage.py makemigrations --check --dry-run
+      - name: Rehearse concurrent migration-leaf conflict
+        run: python scripts/rehearse-migration-conflict.py
       - name: Run tests
         run: pytest

@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -79,15 +80,34 @@ def _factor(value: object, field: str) -> Decimal:
 
 
 def _payload_parts(
-    payload: object,
+    payload: object, *, expected_status: str
 ) -> tuple[int, list[object], list[object], list[object]]:
     """Validate envelope fields and return the three raw collections."""
     if not isinstance(payload, dict):
         raise CommandError("Catalog payload must be a JSON object.")
-    if payload.get("status") != "DRAFT":
+    if expected_status not in {"DRAFT", "APPROVED"}:
+        raise CommandError("Catalog status must be DRAFT or APPROVED.")
+    if payload.get("status") != expected_status:
         raise CommandError(
-            "Only status=DRAFT catalog data is accepted by this provisional importer."
+            f"Only status={expected_status} catalog data is accepted by this importer."
         )
+    if expected_status == "APPROVED":
+        approval = payload.get("approval")
+        if not isinstance(approval, dict):
+            raise CommandError("APPROVED catalog data requires approval metadata.")
+        _text(approval.get("approved_by"), "approval.approved_by", maximum=150)
+        _text(approval.get("reference"), "approval.reference", maximum=200)
+        approved_at = _text(
+            approval.get("approved_at"), "approval.approved_at", maximum=40
+        )
+        try:
+            approval_time = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise CommandError(
+                "approval.approved_at must be an aware ISO-8601 timestamp."
+            ) from error
+        if approval_time.utcoffset() is None:
+            raise CommandError("approval.approved_at must include a timezone offset.")
     version = payload.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise CommandError("schema_version must be a positive integer.")
@@ -228,22 +248,40 @@ def _validate_clans(raw_clans: list[object]) -> list[dict[str, Any]]:
     return clans
 
 
-def validate_catalog(payload: object) -> CatalogData:
+def validate_catalog(payload: object, *, expected_status: str = "DRAFT") -> CatalogData:
     """Validate every field before opening a write transaction."""
-    version, raw_categories, raw_actions, raw_clans = _payload_parts(payload)
+    version, raw_categories, raw_actions, raw_clans = _payload_parts(
+        payload, expected_status=expected_status
+    )
     categories, category_codes = _validate_categories(raw_categories)
     actions = _validate_actions(raw_actions, category_codes)
     clans = _validate_clans(raw_clans)
     return CatalogData(version, tuple(categories), tuple(actions), tuple(clans))
 
 
-def load_catalog_file(path: Path) -> CatalogData:
+def load_catalog_content(
+    content: str | bytes,
+    *,
+    source: str,
+    expected_status: str = "DRAFT",
+) -> CatalogData:
+    """Parse and validate catalog content before any database mutation."""
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CommandError(f"Could not parse catalog file {source}: {error}") from error
+    return validate_catalog(payload, expected_status=expected_status)
+
+
+def load_catalog_file(path: Path, *, expected_status: str = "DRAFT") -> CatalogData:
     """Read and validate a JSON catalog before any database mutation."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        content = path.read_bytes()
+    except OSError as error:
         raise CommandError(f"Could not read catalog file {path}: {error}") from error
-    return validate_catalog(payload)
+    return load_catalog_content(
+        content, source=str(path), expected_status=expected_status
+    )
 
 
 def ensure_local_database() -> None:
@@ -289,74 +327,7 @@ class Command(BaseCommand):
         ensure_local_database()
 
         with transaction.atomic():
-            categories: dict[str, ActionCategory] = {}
-            created = 0
-            preserved = 0
-            for item in catalog.categories:
-                category, was_created = ActionCategory.objects.get_or_create(
-                    code=item["code"],
-                    defaults={
-                        "id": stable_reference_id("category", item["code"]),
-                        "name": item["name"],
-                        "description": item["description"],
-                        "icon": item["icon"],
-                    },
-                )
-                if not was_created and category.pk != stable_reference_id(
-                    "category", item["code"]
-                ):
-                    raise CommandError(
-                        "Catalog category identity collision; existing row was preserved."
-                    )
-                categories[item["code"]] = category
-                created += was_created
-                preserved += not was_created
-
-            for item in catalog.actions:
-                action, was_created = ActionMaster.objects.get_or_create(
-                    code=item["code"],
-                    defaults={
-                        "id": stable_reference_id("action", item["code"]),
-                        "category": categories[item["category_code"]],
-                        "name": item["name"],
-                        "description": item["description"],
-                        "points": item["points"],
-                        "daily_limit": item["daily_limit"],
-                        "validation_type": item["validation_type"],
-                        "co2_kg_factor": item["co2_kg_factor"],
-                        "water_liters_factor": item["water_liters_factor"],
-                        "plastic_kg_factor": item["plastic_kg_factor"],
-                        "is_active": item["is_active"],
-                    },
-                )
-                if not was_created and action.pk != stable_reference_id(
-                    "action", item["code"]
-                ):
-                    raise CommandError(
-                        "Catalog action identity collision; existing row was preserved."
-                    )
-                created += was_created
-                preserved += not was_created
-
-            for item in catalog.clans:
-                clan, was_created = Clan.objects.get_or_create(
-                    pk=stable_reference_id("institutional-clan", item["key"]),
-                    defaults={
-                        "name": item["name"],
-                        "description": f"{item['description']} Career key: {item['career']}",
-                        "type": Clan.ClanType.INSTITUTIONAL,
-                        "privacy": Clan.Privacy.PUBLIC,
-                    },
-                )
-                if not was_created and (
-                    clan.type != Clan.ClanType.INSTITUTIONAL
-                    or clan.privacy != Clan.Privacy.PUBLIC
-                ):
-                    raise CommandError(
-                        "Catalog clan identity collision; existing row was preserved."
-                    )
-                created += was_created
-                preserved += not was_created
+            created, preserved = load_catalog_data(catalog)
 
         message = (
             f"Loaded DRAFT catalog v{catalog.version}: {len(catalog.categories)} categories, "
@@ -364,3 +335,75 @@ class Command(BaseCommand):
             f"({created} created, {preserved} preserved)."
         )
         return message
+
+
+def load_catalog_data(catalog: CatalogData) -> tuple[int, int]:
+    """Import validated catalog rows inside the caller's transaction."""
+    categories: dict[str, ActionCategory] = {}
+    created = 0
+    preserved = 0
+    for item in catalog.categories:
+        category, was_created = ActionCategory.objects.get_or_create(
+            code=item["code"],
+            defaults={
+                "id": stable_reference_id("category", item["code"]),
+                "name": item["name"],
+                "description": item["description"],
+                "icon": item["icon"],
+            },
+        )
+        if not was_created and category.pk != stable_reference_id(
+            "category", item["code"]
+        ):
+            raise CommandError(
+                "Catalog category identity collision; existing row was preserved."
+            )
+        categories[item["code"]] = category
+        created += was_created
+        preserved += not was_created
+
+    for item in catalog.actions:
+        action, was_created = ActionMaster.objects.get_or_create(
+            code=item["code"],
+            defaults={
+                "id": stable_reference_id("action", item["code"]),
+                "category": categories[item["category_code"]],
+                "name": item["name"],
+                "description": item["description"],
+                "points": item["points"],
+                "daily_limit": item["daily_limit"],
+                "validation_type": item["validation_type"],
+                "co2_kg_factor": item["co2_kg_factor"],
+                "water_liters_factor": item["water_liters_factor"],
+                "plastic_kg_factor": item["plastic_kg_factor"],
+                "is_active": item["is_active"],
+            },
+        )
+        if not was_created and action.pk != stable_reference_id("action", item["code"]):
+            raise CommandError(
+                "Catalog action identity collision; existing row was preserved."
+            )
+        created += was_created
+        preserved += not was_created
+
+    for item in catalog.clans:
+        clan, was_created = Clan.objects.get_or_create(
+            pk=stable_reference_id("institutional-clan", item["key"]),
+            defaults={
+                "name": item["name"],
+                "description": f"{item['description']} Career key: {item['career']}",
+                "type": Clan.ClanType.INSTITUTIONAL,
+                "privacy": Clan.Privacy.PUBLIC,
+            },
+        )
+        if not was_created and (
+            clan.type != Clan.ClanType.INSTITUTIONAL
+            or clan.privacy != Clan.Privacy.PUBLIC
+        ):
+            raise CommandError(
+                "Catalog clan identity collision; existing row was preserved."
+            )
+        created += was_created
+        preserved += not was_created
+
+    return created, preserved

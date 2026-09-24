@@ -105,6 +105,9 @@ def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> No
         status=ActionLog.Status.REJECTED, points_awarded__gt=0
     ).exists()
     assert ActionLogMissionContribution.objects.count() > 0
+    assert not ActionLogMissionContribution.objects.exclude(
+        action_log__status=ActionLog.Status.APPROVED
+    ).exists()
     assert User.objects.filter(firebase_uid__isnull=True).count() == 20
     assert ActionMaster.objects.filter(code="unrelated-local").exists()
     assert not ActionLog.objects.filter(action__code="unrelated-local").exists()
@@ -112,10 +115,24 @@ def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> No
         status=ActionLog.Status.REJECTED, points_awarded__lte=0
     ).exists()
     assert sum(UserProfile.objects.values_list("total_points", flat=True)) == sum(
-        ActionLog.objects.exclude(status=ActionLog.Status.REJECTED).values_list(
+        ActionLog.objects.filter(status=ActionLog.Status.APPROVED).values_list(
             "points_awarded", flat=True
         )
     )
+    for profile in UserProfile.objects.select_related("user"):
+        assert profile.total_points == sum(
+            ActionLog.objects.filter(
+                user=profile.user, status=ActionLog.Status.APPROVED
+            ).values_list("points_awarded", flat=True)
+        )
+        assert profile.available_points == profile.total_points
+    for clan in Clan.objects.all():
+        logs = ActionLog.objects.filter(status=ActionLog.Status.APPROVED)
+        if clan.type == Clan.ClanType.INSTITUTIONAL:
+            logs = logs.filter(institutional_clan=clan)
+        else:
+            logs = logs.filter(credited_private_clan=clan)
+        assert clan.total_points == sum(logs.values_list("points_awarded", flat=True))
 
 
 @pytest.mark.django_db(transaction=True)

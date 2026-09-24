@@ -42,9 +42,9 @@ rechaza un `DATABASE_URL` cuyo host no sea local (`127.0.0.1`, `localhost`,
 `::1` o el servicio Compose `db`) y verifica que la conexión PostgreSQL no use
 TLS. Esta segunda comprobación evita que un alias local hacia un proxy o túnel
 remoto permita escribir por accidente en Neon. La carga también falla si un
-código o ID determinista ya pertenece a un registro con otra identidad. En esos
-ambientes solo una carga futura con datos aprobados y un procedimiento de
-release podrá ser habilitada por el equipo responsable.
+código o ID determinista ya pertenece a un registro con otra identidad. Para
+Neon dev existe un comando separado, descrito abajo; esta ruta DRAFT nunca se
+habilita para bases compartidas.
 
 ## Demo sintético (T12)
 
@@ -68,6 +68,52 @@ archivos reales.
 `--as-of` fija el reloj de la campaña para que una demo repetible no dependa de
 la fecha actual. Si se omite, se usa la hora actual para una ventana relativa
 de 30 días.
+
+## Datos sintéticos en Neon dev (opt-in, T11/T12)
+
+El catálogo DRAFT y `bootstrap_dev` siguen siendo exclusivamente locales. La
+única ruta para Neon es `seed_neon_dev`, invocada manualmente **después de que
+Producto ratifique el catálogo**. No hay una fixture aprobada en el repositorio
+hasta que esa decisión exista; por tanto, el comando falla por archivo ausente.
+El comando sólo lee la ruta fija y versionada
+`app/green_iteso/actions/fixtures/catalog_approved.json`, sin aceptar un archivo
+arbitrario por argumento. El archivo debe estar marcado `status: APPROVED` e
+incluir `approval.approved_by`, `approval.reference` y `approval.approved_at`
+como timestamp ISO-8601 con zona horaria. Esos campos son trazabilidad, no una
+prueba independiente de la ratificación: la fixture debe añadirse mediante un
+PR revisado que vincule la decisión de Producto. Los tests usan un payload
+aprobado sintético sólo como fixture; eso no representa ratificación.
+Además, un operador autorizado sólo podrá habilitar la carga después de que
+Producto registre esa aprobación: deberá fijar
+`NEON_DEV_APPROVED_CATALOG_SHA256` en el entorno GitHub `dev` con el SHA-256
+exacto del archivo aprobado. El comando compara ese pin externo antes de abrir
+la transacción; no existe hoy una fixture ni un pin aprobado, y no se deben
+configurar hasta que exista la evidencia de Producto.
+
+Usa únicamente el endpoint pooled canónico `dev`, TLS `verify-full` y el rol
+`greeniteso_dev_app`. Mantén la URL en el entorno de ejecución o secreto
+aprobado; no la guardes en el repo ni uses `DATABASE_URL_UNPOOLED`:
+
+```sh
+DJANGO_ENV=dev \
+DJANGO_DEPLOYED=true \
+DJANGO_CONNECTION_ROLE=app \
+NEON_DEV_APPROVED_CATALOG_SHA256="$APPROVED_CATALOG_SHA256" \
+DATABASE_URL="$NEON_DEV_DATABASE_URL" \
+python app/manage.py seed_neon_dev \
+  --confirm-target dev \
+  --as-of 2030-01-15T12:00:00+00:00
+```
+
+El comando comprueba el ambiente, host, rol, TLS configurado y TLS de la
+conexión; exige `--confirm-target dev`; valida el catálogo completo antes de
+escribir; y carga catálogo y demo en una transacción. Los usuarios sintéticos
+son `STUDENT` (nunca `ADMIN`/`STAFF`), con correo `example.invalid` y sin
+identidad Firebase ni contraseña. IDs y claves son deterministas, los choques
+se rechazan y una segunda ejecución es idempotente. Esta operación no forma
+parte de la migración al merge ni de un deploy automático. No se cargan semillas
+en staging/preprod ni en production. **El comando se implementó y probó sólo con
+PostgreSQL 18 local; no se ejecutó contra Neon.**
 
 ## Identidad y Admin local
 

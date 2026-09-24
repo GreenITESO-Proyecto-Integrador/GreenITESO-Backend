@@ -10,6 +10,8 @@ from django.db.models import F, Q
 
 
 class Campaign(models.Model):
+    """A time-bounded campaign that groups missions and participants."""
+
     class Scope(models.TextChoices):
         GLOBAL = "GLOBAL", "Global"
         PRIVATE = "PRIVATE", "Private clan"
@@ -45,6 +47,7 @@ class Campaign(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "campaigns_campaign"
         constraints = [
             models.CheckConstraint(
                 condition=Q(end_date__gt=F("start_date")),
@@ -77,6 +80,8 @@ class Campaign(models.Model):
 
 
 class Mission(models.Model):
+    """A measurable action objective belonging to a campaign."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(
         Campaign, on_delete=models.PROTECT, related_name="missions"
@@ -90,6 +95,7 @@ class Mission(models.Model):
     target_count = models.PositiveIntegerField()
 
     class Meta:
+        db_table = "campaigns_mission"
         constraints = [
             models.CheckConstraint(
                 condition=Q(target_count__gt=0), name="mission_target_positive"
@@ -101,6 +107,8 @@ class Mission(models.Model):
 
 
 class CampaignParticipant(models.Model):
+    """Records a user's participation in a campaign and when it began."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(
         Campaign, on_delete=models.PROTECT, related_name="participants"
@@ -113,6 +121,7 @@ class CampaignParticipant(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "campaigns_campaign_participant"
         constraints = [
             models.UniqueConstraint(
                 fields=["campaign", "user"], name="campaign_participant_unique"
@@ -124,6 +133,8 @@ class CampaignParticipant(models.Model):
 
 
 class UserMissionProgress(models.Model):
+    """Tracks one user's current progress toward one mission."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -138,6 +149,7 @@ class UserMissionProgress(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "campaigns_user_mission_progress"
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "mission"], name="user_mission_progress_unique"

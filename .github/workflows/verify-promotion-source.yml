@@ -1,0 +1,35 @@
+name: Verify promotion source
+
+on:
+  pull_request:
+    branches:
+      - preprod
+      - prod
+
+jobs:
+  verify:
+    name: Enforce promotion chain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check head branch matches the promotion chain
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$BASE_REF" in
+            preprod)
+              expected="dev"
+              ;;
+            prod)
+              expected="preprod"
+              ;;
+            *)
+              echo "::error::Unexpected base branch '$BASE_REF'."
+              exit 1
+              ;;
+          esac
+
+          if [ "$HEAD_REF" != "$expected" ]; then
+            echo "::error::$BASE_REF can only be updated via a promotion PR from '$expected' (got '$HEAD_REF'). Merge through the Promote workflow instead."
+            exit 1
+          fi

@@ -486,6 +486,7 @@ def _run_migration_gate(
     head_repository: str = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
     cloud_deployment_enabled: str = "",
     associated_prs: list[dict[str, object]] | None = None,
+    associated_prs_response: str | None = None,
     api_failure: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     event_path = tmp_path / "event.json"
@@ -538,7 +539,11 @@ def _run_migration_gate(
         "GITHUB_OUTPUT": str(output_path),
         "GITHUB_REPOSITORY": repository,
         "CLOUD_DEPLOYMENT_ENABLED": cloud_deployment_enabled,
-        "FAKE_ASSOCIATED_PRS": json.dumps(associated_prs),
+        "FAKE_ASSOCIATED_PRS": (
+            associated_prs_response
+            if associated_prs_response is not None
+            else json.dumps(associated_prs)
+        ),
         "FAKE_API_FAILURE": "true" if api_failure else "false",
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
@@ -623,6 +628,26 @@ def test_migration_gate_fails_if_github_cannot_confirm_associated_pr(
     result, output = _run_migration_gate(tmp_path, api_failure=True)
     assert result.returncode != 0
     assert "migration eligibility is unknown" in result.stderr
+    assert output == ""
+
+
+def test_migration_gate_fails_closed_on_malformed_github_json(
+    tmp_path: Path,
+) -> None:
+    result, output = _run_migration_gate(tmp_path, associated_prs_response="not-json")
+    assert result.returncode != 0
+    assert "invalid pull-request response" in result.stderr
+    assert output == ""
+
+
+def test_migration_gate_fails_closed_on_unexpected_github_response_shape(
+    tmp_path: Path,
+) -> None:
+    result, output = _run_migration_gate(
+        tmp_path, associated_prs_response='{"prs": []}'
+    )
+    assert result.returncode != 0
+    assert "unexpected pull-request response" in result.stderr
     assert output == ""
 
 

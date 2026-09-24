@@ -237,7 +237,9 @@ def _provenance_repo(tmp_path: Path) -> tuple[Path, str, str]:
     _git(repo, "commit", "-m", "source release")
     source_sha = _git(repo, "rev-parse", "HEAD")
     source_tree = _git(repo, "rev-parse", "HEAD^{tree}")
-    target_sha = _git(repo, "commit-tree", source_tree, "-p", source_sha, "-m", "merged target")
+    target_sha = _git(
+        repo, "commit-tree", source_tree, "-p", source_sha, "-m", "merged target"
+    )
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "origin", f"{source_sha}:refs/heads/dev")
     _git(repo, "push", "origin", f"{target_sha}:refs/heads/preprod")
@@ -251,8 +253,7 @@ def _run_promotion_provenance(
     fake_bin.mkdir(exist_ok=True)
     gh = fake_bin / "gh"
     record = (
-        f"environment=dev\nrelease_sha={source_sha}\n"
-        f"image_digest=sha256:{'a' * 64}\n"
+        f"environment=dev\nrelease_sha={source_sha}\nimage_digest=sha256:{'a' * 64}\n"
     )
     quoted_record = shlex.quote(record)
     gh.write_text(
@@ -399,7 +400,9 @@ def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
     assert "release_ref: main" in production
     assert "source_ref: preprod" in production
     assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in production
-    assert "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in production
+    assert (
+        "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in production
+    )
     assert "github_environment: production" in production
     assert "main" in promote
     assert "preprod" in promote
@@ -409,7 +412,9 @@ def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
     assert "contents: write" not in promote
 
 
-def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates() -> None:
+def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates() -> (
+    None
+):
     workflow = DATABASE_MIGRATIONS.read_text()
     tests_workflow = (ROOT / ".github" / "workflows" / "tests.yaml").read_text()
     assert 'workflows: ["Django tests"]' in workflow
@@ -421,13 +426,20 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "pull_request:" not in workflow
     assert "workflow_dispatch:" not in workflow
     assert "environment: ${{ github.event.workflow_run.head_branch }}" in workflow
-    assert "group: neon-migration-${{ github.event.workflow_run.head_branch }}" in workflow
+    assert (
+        "group: neon-migration-${{ github.event.workflow_run.head_branch }}" in workflow
+    )
     assert "DATABASE_URL_UNPOOLED" in workflow
     assert "DATABASE_URL" in workflow
     assert "db_smoke" in workflow
-    assert "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}" in workflow
+    assert (
+        "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in workflow
+    )
     assert "production" not in workflow
-    assert workflow.index("Apply committed migrations") < workflow.index("Verify access through the pooled application role")
+    assert workflow.index("Apply committed migrations") < workflow.index(
+        "Verify access through the pooled application role"
+    )
     assert "cancel-in-progress: false" in workflow
     assert "continue-on-error" not in workflow
     assert "scripts/rehearse-migration-conflict.py" in tests_workflow
@@ -443,7 +455,10 @@ def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -
     assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in caller
     assert "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in caller
     assert "environment: staging" in caller
-    assert "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}" in migration
+    assert (
+        "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in migration
+    )
     production = (ROOT / ".github" / "workflows" / "deploy-production.yml").read_text()
     assert "branches: [main]" in production
     assert "github_environment: production" in production

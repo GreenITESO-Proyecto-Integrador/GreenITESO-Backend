@@ -5,9 +5,12 @@ T8 de recuperación de PostgreSQL. Trabaja con la base que ya está configurada
 para Django y solo registra metadatos agregados:
 
 - el conjunto exacto de migraciones aplicadas y las migraciones de código pendientes;
-- el conteo de las tablas del esquema actual, incluida `ClanMembership`;
+- el conteo y una huella SHA-256 del contenido completo de cada tabla del
+  esquema actual, incluida `ClanMembership` y los clanes con soft-delete (solo
+  se guarda el digest, nunca los valores de las filas);
 - los conteos y puntos de `ActionLog` agrupados por estado y atribución de clan;
-- una huella SHA-256 por registro histórico, construida con IDs, estado y puntos;
+- una huella SHA-256 del contenido completo de `ActionLog`, incluyendo sus
+  snapshots, claves de idempotencia/evidencia y metadatos de revisión;
 - los conteos de referencias foráneas huérfanas de `ActionLog`;
 - la presencia de dos IDs sintéticos de marcador.
 

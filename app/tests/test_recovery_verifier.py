@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 from stat import S_IMODE
@@ -11,9 +12,11 @@ from unittest.mock import MagicMock
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import DatabaseError, connection
+from django.utils import timezone
 
 from green_iteso.accounts.management.commands import db_recovery_verify
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 
 
@@ -47,6 +50,17 @@ def _create_history() -> ActionLog:
 
 def _capture_baseline(tmp_path: Path) -> tuple[Path, ActionLog, str]:
     marker = _create_history()
+    Clan.all_objects.create(
+        name="Soft-deleted recovery verifier clan",
+        type=Clan.ClanType.INSTITUTIONAL,
+        deleted_at=timezone.now(),
+    )
+    UserProfile.objects.create(
+        user=marker.user,
+        career="Recovery verifier career",
+        employee_id="synthetic-private-employee-id",
+        microsoft_group_ids=["synthetic-private-group-id"],
+    )
     post_marker_id = str(uuid.uuid4())
     baseline = tmp_path / "recovery-baseline.json"
     call_command(
@@ -117,6 +131,10 @@ def test_recovery_baseline_matches_unchanged_history(tmp_path: Path) -> None:
         ("count", "TABLE_COUNT_MISMATCH"),
         ("points", "ACTION_LOG_STATUS_POINTS_MISMATCH"),
         ("history", "ACTION_LOG_ATTRIBUTION_MISMATCH"),
+        ("same_count", "TABLE_CONTENT_MISMATCH"),
+        ("profile", "TABLE_CONTENT_MISMATCH"),
+        ("soft_deleted_clan", "TABLE_CONTENT_MISMATCH"),
+        ("idempotency", "ACTION_LOG_HISTORY_MISMATCH"),
     ],
 )
 def test_recovery_reports_count_points_and_history_mismatches(
@@ -130,6 +148,21 @@ def test_recovery_reports_count_points_and_history_mismatches(
     elif change == "points":
         marker.points_awarded = 99
         marker.save(update_fields=["points_awarded"])
+    elif change == "same_count":
+        category = ActionCategory.objects.get(code="recovery-verifier")
+        category.name = "Changed but row count is unchanged"
+        category.save(update_fields=["name"])
+    elif change == "profile":
+        profile = UserProfile.objects.get(user=marker.user)
+        profile.employee_id = "changed-same-count"
+        profile.save(update_fields=["employee_id"])
+    elif change == "soft_deleted_clan":
+        clan = Clan.all_objects.get(name="Soft-deleted recovery verifier clan")
+        clan.description = "Changed while remaining soft-deleted"
+        clan.save(update_fields=["description"])
+    elif change == "idempotency":
+        marker.idempotency_key = "recovery-pre-t-modified"
+        marker.save(update_fields=["idempotency_key"])
     else:
         second_clan = Clan.objects.create(
             name="Recovery verifier second clan", type=Clan.ClanType.INSTITUTIONAL
@@ -166,6 +199,8 @@ def test_recovery_baseline_contains_no_personal_fields(tmp_path: Path) -> None:
     rendered = json.dumps(content)
     assert "recovery-verifier@example.invalid" not in rendered
     assert "Synthetic recovery check action" not in rendered
+    assert "synthetic-private-employee-id" not in rendered
+    assert "synthetic-private-group-id" not in rendered
 
 
 @pytest.mark.django_db(transaction=True)
@@ -245,3 +280,87 @@ def test_recovery_does_not_overwrite_baseline_and_uses_private_mode(
             verbosity=0,
         )
     assert baseline.read_bytes() == original
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_snapshot_transaction_is_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def attempt_write(*_args: object) -> dict[str, object]:
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TEMP TABLE recovery_write_probe(id integer)")
+        return {}
+
+    monkeypatch.setattr(db_recovery_verify, "_snapshot", attempt_write)
+    with pytest.raises(DatabaseError):
+        db_recovery_verify._read_snapshot(
+            5,
+            expected=None,
+            pre_marker=str(uuid.uuid4()),
+            post_marker=str(uuid.uuid4()),
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_total_timeout_covers_baseline_file_io(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def slow_read(_path: Path) -> dict[str, object]:
+        time.sleep(0.2)
+        return {}
+
+    monkeypatch.setattr(db_recovery_verify, "_load_baseline", slow_read)
+    with pytest.raises(CommandError, match="diagnostico: TIMEOUT"):
+        call_command(
+            "db_recovery_verify",
+            baseline=tmp_path / "unused.json",
+            timeout=0.1,
+            verbosity=0,
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_total_timeout_covers_baseline_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    marker_ids = (str(uuid.uuid4()), str(uuid.uuid4()))
+    baseline_path = tmp_path / "interrupted-baseline.json"
+    monkeypatch.setattr(
+        db_recovery_verify,
+        "_read_snapshot",
+        lambda *_args: (
+            {"markers": {"pre_present": True, "post_present": False}},
+            [],
+        ),
+    )
+
+    real_fdopen = db_recovery_verify.os.fdopen
+
+    class SlowHandle:
+        def __init__(self, file_descriptor: int, mode: str, *, encoding: str) -> None:
+            self.handle = real_fdopen(file_descriptor, mode, encoding=encoding)
+
+        def __enter__(self) -> SlowHandle:
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.handle.__exit__(*args)
+
+        def write(self, payload: str) -> int:
+            self.handle.write(payload[:8])
+            self.handle.flush()
+            time.sleep(0.2)
+            return len(payload)
+
+    monkeypatch.setattr(db_recovery_verify.os, "fdopen", SlowHandle)
+    with pytest.raises(CommandError, match="diagnostico: TIMEOUT"):
+        call_command(
+            "db_recovery_verify",
+            write_baseline=baseline_path,
+            pre_marker_id=marker_ids[0],
+            post_marker_id=marker_ids[1],
+            timeout=0.1,
+            verbosity=0,
+        )
+    assert not baseline_path.exists()

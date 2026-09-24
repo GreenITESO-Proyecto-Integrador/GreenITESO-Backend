@@ -39,7 +39,7 @@ from green_iteso.campaigns.models import (
     UserMissionProgress,
 )
 
-BASELINE_VERSION = 1
+BASELINE_VERSION = 2
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_TIMEOUT_SECONDS = 60.0
 
@@ -56,17 +56,6 @@ TABLE_MODELS = (
     Mission,
     CampaignParticipant,
     UserMissionProgress,
-)
-
-HISTORY_FIELDS = (
-    "id",
-    "user_id",
-    "action_id",
-    "institutional_clan_id",
-    "credited_private_clan_id",
-    "campaign_id",
-    "status",
-    "points_awarded",
 )
 
 
@@ -93,9 +82,35 @@ def _pending_code_migrations(applied: list[str]) -> list[str]:
     return sorted(leaves - set(applied))
 
 
-def _table_counts() -> dict[str, int]:
-    """Count the core tables without selecting row data."""
-    return {model._meta.db_table: model.objects.count() for model in TABLE_MODELS}
+def _table_integrity() -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
+    """Fingerprint complete core-table contents without retaining row values."""
+    counts: dict[str, int] = {}
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for model in TABLE_MODELS:
+        field_names = [field.attname for field in model._meta.concrete_fields]
+        manager = Clan.all_objects if model is Clan else model.objects
+        rows = manager.values_list(*field_names).order_by("pk").iterator()
+        digest = sha256()
+        count = 0
+        for row in rows:
+            encoded = json.dumps(
+                row,
+                ensure_ascii=True,
+                default=str,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            digest.update(encoded)
+            digest.update(b"\n")
+            count += 1
+        table_name = model._meta.db_table
+        counts[table_name] = count
+        fingerprints[table_name] = {
+            "algorithm": "sha256",
+            "count": count,
+            "digest": digest.hexdigest(),
+        }
+    return counts, fingerprints
 
 
 def _status_totals() -> dict[str, dict[str, int]]:
@@ -134,27 +149,6 @@ def _attribution_totals() -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-
-
-def _history_fingerprint() -> dict[str, Any]:
-    """Hash each ActionLog's stable history fields, without retaining PII."""
-    row_hashes: list[str] = []
-    rows = ActionLog.objects.values(*HISTORY_FIELDS).order_by("id").iterator()
-    for row in rows:
-        normalized = {
-            field: str(row[field]) if row[field] is not None else None
-            for field in HISTORY_FIELDS
-        }
-        encoded = json.dumps(
-            normalized, ensure_ascii=True, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        row_hashes.append(sha256(encoded).hexdigest())
-    ordered = "\n".join(row_hashes).encode("ascii")
-    return {
-        "algorithm": "sha256",
-        "count": len(row_hashes),
-        "digest": sha256(ordered).hexdigest(),
-    }
 
 
 def _quoted_table(model: Any) -> str:
@@ -222,16 +216,18 @@ def _marker_presence(pre_id: str, post_id: str) -> dict[str, Any]:
 def _snapshot(pre_id: str, post_id: str) -> dict[str, Any]:
     """Build the complete metadata-only recovery snapshot."""
     applied = _migration_set()
+    table_counts, table_fingerprints = _table_integrity()
     return {
         "format": BASELINE_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "migrations": applied,
         "pending_code_migrations": _pending_code_migrations(applied),
-        "tables": _table_counts(),
+        "tables": table_counts,
+        "table_fingerprints": table_fingerprints,
         "action_logs": {
             "by_status": _status_totals(),
             "attribution": _attribution_totals(),
-            "history_fingerprint": _history_fingerprint(),
+            "history_fingerprint": table_fingerprints[ActionLog._meta.db_table],
             "fk_orphans": _fk_orphans(),
         },
         "markers": _marker_presence(pre_id, post_id),
@@ -270,10 +266,23 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
         )
 
     tables = snapshot.get("tables")
-    if not isinstance(tables, dict) or any(
-        not _is_nonnegative_integer(value) for value in tables.values()
+    expected_table_names = {model._meta.db_table for model in TABLE_MODELS}
+    if (
+        not isinstance(tables, dict)
+        or set(tables) != expected_table_names
+        or any(not _is_nonnegative_integer(value) for value in tables.values())
     ):
         raise CommandError(f"{label} no contiene conteos de tablas válidos.")
+    fingerprints = snapshot.get("table_fingerprints")
+    if (
+        not isinstance(fingerprints, dict)
+        or set(fingerprints) != expected_table_names
+        or any(
+            not _is_valid_fingerprint(value) or value["count"] != tables[table_name]
+            for table_name, value in fingerprints.items()
+        )
+    ):
+        raise CommandError(f"{label} no contiene las huellas completas de tablas.")
 
     markers = snapshot.get("markers")
     if not isinstance(markers, dict):
@@ -306,7 +315,10 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
             f"{label} contiene referencias foráneas huérfanas; no es evidencia íntegra."
         )
     history = action_logs.get("history_fingerprint")
-    if not _is_valid_history_fingerprint(history):
+    if (
+        not _is_valid_fingerprint(history)
+        or history["count"] != tables[ActionLog._meta.db_table]
+    ):
         raise CommandError(f"{label} no contiene la huella histórica requerida.")
 
 
@@ -320,8 +332,8 @@ def _is_zero_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value == 0
 
 
-def _is_valid_history_fingerprint(value: object) -> bool:
-    """Validate the public shape of the metadata-only history digest."""
+def _is_valid_fingerprint(value: object) -> bool:
+    """Validate the public shape of a metadata-only table digest."""
     if not isinstance(value, dict):
         return False
     digest = value.get("digest")
@@ -341,6 +353,8 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
         mismatches.append("MIGRATION_SET_MISMATCH")
     if expected.get("tables") != actual.get("tables"):
         mismatches.append("TABLE_COUNT_MISMATCH")
+    if expected.get("table_fingerprints") != actual.get("table_fingerprints"):
+        mismatches.append("TABLE_CONTENT_MISMATCH")
 
     expected_logs = expected.get("action_logs", {})
     actual_logs = actual.get("action_logs", {})
@@ -375,20 +389,19 @@ def _read_snapshot(
     post_marker: str | None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Capture one coherent read-only snapshot and optional comparison codes."""
-    with _deadline(timeout):
-        with transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                cursor.execute("SET TRANSACTION READ ONLY")
-                _set_transaction_bounds(cursor, timeout)
-            if expected is not None:
-                markers = expected["markers"]
-                actual = _snapshot(str(markers["pre_id"]), str(markers["post_id"]))
-                _validate_snapshot(actual, "El estado actual")
-                return actual, _compare(expected, actual)
-            actual = _snapshot(str(pre_marker), str(post_marker))
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("SET TRANSACTION READ ONLY")
+            _set_transaction_bounds(cursor, timeout)
+        if expected is not None:
+            markers = expected["markers"]
+            actual = _snapshot(str(markers["pre_id"]), str(markers["post_id"]))
             _validate_snapshot(actual, "El estado actual")
-            return actual, []
+            return actual, _compare(expected, actual)
+        actual = _snapshot(str(pre_marker), str(post_marker))
+        _validate_snapshot(actual, "El estado actual")
+        return actual, []
 
 
 def _parse_mode(
@@ -421,15 +434,24 @@ def _write_baseline(path: Path, snapshot: dict[str, Any]) -> None:
             "RECOVERY_VERIFY ERROR\ndiagnostico: MARKER_BASELINE_INVALID\n"
             "detalle: El baseline requiere marcador previo presente y posterior ausente."
         )
+    created = False
     try:
         payload = (
             json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         )
         file_descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
         with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
         os.chmod(path, 0o600)
-    except OSError:
+    except BaseException as error:
+        if created:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not isinstance(error, OSError):
+            raise
         raise CommandError(
             "RECOVERY_VERIFY ERROR\ndiagnostico: BASELINE_WRITE_FAILURE\n"
             "detalle: No se pudo escribir el baseline solicitado."
@@ -477,16 +499,41 @@ class Command(BaseCommand):
         typed_options = dict(options)
         baseline_path, write_path, pre_marker, post_marker = _parse_mode(typed_options)
 
-        expected: dict[str, Any] | None = None
-        if baseline_path is not None:
-            expected = _load_baseline(baseline_path)
-
-        bounded_options, original_options = _set_bounded_options(timeout)
+        bounded_options: dict[str, object] | None = None
+        original_options: dict[str, object] = {}
         try:
-            connection.close()
-            actual, mismatches = _read_snapshot(
-                timeout, expected, pre_marker, post_marker
-            )
+            with _deadline(timeout):
+                expected: dict[str, Any] | None = None
+                if baseline_path is not None:
+                    expected = _load_baseline(baseline_path)
+                bounded_options, original_options = _set_bounded_options(timeout)
+                try:
+                    connection.close()
+                    actual, mismatches = _read_snapshot(
+                        timeout, expected, pre_marker, post_marker
+                    )
+                    if write_path is not None:
+                        _write_baseline(write_path, actual)
+                        self.stdout.write("RECOVERY_VERIFY BASELINE_OK")
+                        self.stdout.write(
+                            "migrations: captured; tables: captured; action_logs: captured"
+                        )
+                        self.stdout.write("markers: pre=present; post=absent")
+                        return
+                    if mismatches:
+                        raise CommandError(
+                            "RECOVERY_VERIFY ERROR\n"
+                            "diagnostico: " + ",".join(mismatches) + "\n"
+                            "detalle: El estado recuperado no coincide con el baseline; revise la evidencia sin exponer datos."
+                        )
+                    self.stdout.write("RECOVERY_VERIFY OK")
+                    self.stdout.write(
+                        "migrations: match; tables: match; action_logs: match"
+                    )
+                    self.stdout.write("markers: pre=present; post=absent")
+                finally:
+                    if bounded_options is not None:
+                        _restore_bounded_options(bounded_options, original_options)
         except CommandError:
             raise
         except SmokeDeadlineExceededError:
@@ -514,25 +561,3 @@ class Command(BaseCommand):
                 "RECOVERY_VERIFY ERROR\ndiagnostico: RECOVERY_CHECK_FAILURE\n"
                 "detalle: No se pudo completar la verificación de recuperación."
             ) from None
-        finally:
-            _restore_bounded_options(bounded_options, original_options)
-
-        if write_path is not None:
-            _write_baseline(write_path, actual)
-            self.stdout.write("RECOVERY_VERIFY BASELINE_OK")
-            self.stdout.write(
-                "migrations: captured; tables: captured; action_logs: captured"
-            )
-            self.stdout.write("markers: pre=present; post=absent")
-            return
-
-        if mismatches:
-            raise CommandError(
-                "RECOVERY_VERIFY ERROR\n"
-                "diagnostico: " + ",".join(mismatches) + "\n"
-                "detalle: El estado recuperado no coincide con el baseline; revise la evidencia sin exponer datos."
-            )
-
-        self.stdout.write("RECOVERY_VERIFY OK")
-        self.stdout.write("migrations: match; tables: match; action_logs: match")
-        self.stdout.write("markers: pre=present; post=absent")

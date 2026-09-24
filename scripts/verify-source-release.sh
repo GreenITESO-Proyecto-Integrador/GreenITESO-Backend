@@ -44,7 +44,7 @@ if [ "$SOURCE_RELEASE_SHA" != "$RELEASE_SHA" ]; then
 fi
 
 source_run_id="$(gh run list --workflow "$SOURCE_WORKFLOW" \
-  --branch "$SOURCE_BRANCH" --commit "$SOURCE_RELEASE_SHA" --status completed \
+  --commit "$SOURCE_RELEASE_SHA" --status completed \
   --limit 50 --json databaseId,conclusion \
   --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty')"
 if [ -z "$source_run_id" ]; then

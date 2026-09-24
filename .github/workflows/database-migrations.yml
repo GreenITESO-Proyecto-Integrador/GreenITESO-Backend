@@ -76,6 +76,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted-gate/scripts/should-run-neon-migration.py
 
+      - name: Set up Python
+        if: steps.mode.outputs.eligible == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
       - name: Install Django dependencies
         if: steps.mode.outputs.eligible == 'true'
         working-directory: source

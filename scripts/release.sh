@@ -76,26 +76,32 @@ if [[ "${BUILD_IMAGE:-false}" == true ]]; then
   docker push "$IMAGE_BY_TAG"
 fi
 
-# Resolve the source release tag and, when promotion supplied a successful
-# source record, require that it still resolves to the recorded digest.
-IMAGE_DIGEST="$(gcloud artifacts docker images describe "$IMAGE_BY_TAG" \
-  --project="$IMAGE_PROJECT_ID" \
-  --format='value(image_summary.digest)' | tr -d '[:space:]')"
-if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "Artifact Registry did not return a valid digest for ${IMAGE_BY_TAG}" >&2
-  exit 1
-fi
+# Dev builds resolve the tag created from the tested source commit. Promotions
+# must resolve the immutable digest from the successful source release record;
+# their merge commit has a different SHA and therefore no image tag of its own.
 if [[ -n "${EXPECTED_IMAGE_DIGEST:-}" ]]; then
   if [[ ! "$EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "EXPECTED_IMAGE_DIGEST must be a sha256 digest" >&2
     exit 2
   fi
+  IMAGE_BY_DIGEST="${IMAGE}@${EXPECTED_IMAGE_DIGEST}"
+  IMAGE_DIGEST="$(gcloud artifacts docker images describe "$IMAGE_BY_DIGEST" \
+    --project="$IMAGE_PROJECT_ID" \
+    --format='value(image_summary.digest)' | tr -d '[:space:]')"
   if [[ "$IMAGE_DIGEST" != "$EXPECTED_IMAGE_DIGEST" ]]; then
-    echo "Source release digest ${EXPECTED_IMAGE_DIGEST} does not match registry digest ${IMAGE_DIGEST}" >&2
+    echo "Artifact Registry did not confirm the expected source digest ${EXPECTED_IMAGE_DIGEST}" >&2
     exit 1
   fi
+else
+  IMAGE_DIGEST="$(gcloud artifacts docker images describe "$IMAGE_BY_TAG" \
+    --project="$IMAGE_PROJECT_ID" \
+    --format='value(image_summary.digest)' | tr -d '[:space:]')"
+  if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Artifact Registry did not return a valid digest for ${IMAGE_BY_TAG}" >&2
+    exit 1
+  fi
+  IMAGE_BY_DIGEST="${IMAGE}@${IMAGE_DIGEST}"
 fi
-IMAGE_BY_DIGEST="${IMAGE}@${IMAGE_DIGEST}"
 
 # gcloud uses comma-separated KEY=VALUE pairs by default. The @ delimiter
 # preserves comma-separated ALLOWED_HOSTS values as one environment value.

@@ -61,7 +61,8 @@ def _fake_commands(
         "#!/bin/sh\n"
         f'echo gcloud "$@" >> {log}\n'
         'case "$*" in\n'
-        "  *'artifacts docker images describe'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
+        "  *'artifacts docker images describe'*'@sha256:'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
+        "  *'artifacts docker images describe'*':sha-'*) exit 1 ;;\n"
         "  *'run jobs describe'*) echo 'NOT_FOUND' >&2; exit 1 ;;\n"
         f"  *'run jobs execute'*'-smoke'*) exit {smoke_status} ;;\n"
         f"  *'run jobs execute'*) exit {migrate_status} ;;\n"
@@ -114,6 +115,26 @@ def test_success_uses_digest_and_deploys_after_migration(tmp_path: Path) -> None
     )
     assert "DATABASE_URL_UNPOOLED_SECRET" not in log
     assert "DJANGO_ALLOWED_HOSTS=greeniteso.example" in log
+    assert (
+        "images describe us-docker.pkg.dev/image-project/images/greeniteso@sha256:"
+        + "a" * 64
+    ) in log
+    assert ":sha-" not in log
+
+
+def test_promotion_uses_source_digest_without_looking_up_merge_commit_tag(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    env["RELEASE_SHA"] = "c" * 40
+    log = _fake_commands(tmp_path)
+    result = subprocess.run(
+        [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    rendered = log.read_text()
+    assert "@sha256:" + "a" * 64 in rendered
+    assert ":sha-" + "c" * 40 not in rendered
 
 
 def test_promotion_digest_mismatch_stops_before_migration(tmp_path: Path) -> None:
@@ -124,7 +145,7 @@ def test_promotion_digest_mismatch_stops_before_migration(tmp_path: Path) -> Non
         [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
     )
     assert result.returncode != 0
-    assert "does not match registry digest" in result.stderr
+    assert "did not confirm the expected source digest" in result.stderr
     assert "run jobs" not in log.read_text()
 
 
@@ -186,7 +207,10 @@ def _fake_provenance_gh(tmp_path: Path, record: str) -> Path:
     quoted_record = shlex.quote(record)
     gh.write_text(
         "#!/bin/sh\n"
-        'if [ "$2" = list ]; then echo 123; exit 0; fi\n'
+        'if [ "$2" = list ]; then\n'
+        '  [ "$5" = --commit ] && [ "$6" = "${SOURCE_RELEASE_SHA:-$RELEASE_SHA}" ] || exit 2\n'
+        "  echo 123; exit 0\n"
+        "fi\n"
         'if [ "$2" = download ]; then\n'
         '  mkdir -p "$7"\n'
         f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
@@ -260,7 +284,10 @@ def _run_promotion_provenance(
     quoted_record = shlex.quote(record)
     gh.write_text(
         "#!/bin/sh\n"
-        'if [ "$2" = list ]; then echo 123; exit 0; fi\n'
+        'if [ "$2" = list ]; then\n'
+        '  [ "$5" = --commit ] && [ "$6" = "$SOURCE_RELEASE_SHA" ] || exit 2\n'
+        "  echo 123; exit 0\n"
+        "fi\n"
         'if [ "$2" = download ]; then\n'
         '  mkdir -p "$7"\n'
         f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
@@ -429,6 +456,8 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "cancel-in-progress" not in workflow
     assert "secrets." not in workflow.split("  migrate:", 1)[0]
     assert "workflow_dispatch:" not in workflow
+    assert 'uses: actions/setup-python@v5' in workflow
+    assert 'python-version: "3.14"' in workflow
     assert "pull_request:" not in workflow
     assert "github.event.pull_request.merged" not in workflow
     assert "pull-requests: read" in workflow

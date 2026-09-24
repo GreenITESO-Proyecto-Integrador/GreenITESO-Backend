@@ -367,7 +367,8 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     workflow = WORKFLOW.read_text()
     promote = PROMOTE.read_text()
     assert "workflow_call" in workflow
-    assert "cancel-in-progress: false" in workflow
+    assert "group: db-release-${{ inputs.environment }}" in workflow
+    assert "queue: max" in workflow
     assert "migration" in workflow.lower()
     assert "actions/upload-artifact@v4" in workflow
     assert "verify-source-release.sh" in workflow
@@ -423,14 +424,19 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "types: [completed]" in workflow
     assert "branches: [dev, preprod]" in workflow
     assert "needs.gate.outputs.eligible == 'true'" in workflow
-    assert "scripts/should-run-neon-migration.py" in workflow
+    assert workflow.count("scripts/should-run-neon-migration.py") == 2
+    assert "steps.mode.outputs.eligible == 'true'" in workflow
+    assert "cancel-in-progress" not in workflow
+    assert "secrets." not in workflow.split("  migrate:", 1)[0]
     assert "pull_request:" not in workflow
     assert "workflow_dispatch:" not in workflow
     assert "head_sha" in workflow
     assert "environment: ${{ github.event.workflow_run.head_branch }}" in workflow
     assert (
-        "group: neon-migration-${{ github.event.workflow_run.head_branch }}" in workflow
+        "group: db-release-${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
+        in workflow
     )
+    assert "queue: max" in workflow
     assert "DATABASE_URL_UNPOOLED" in workflow
     assert "DATABASE_URL" in workflow
     assert "db_smoke" in workflow
@@ -442,9 +448,10 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert workflow.index("Apply committed migrations") < workflow.index(
         "Verify access through the pooled application role"
     )
-    assert "cancel-in-progress: false" in workflow
     assert "continue-on-error" not in workflow
     assert "scripts/rehearse-migration-conflict.py" in tests_workflow
+    assert "group: db-release-${{ inputs.environment }}" in WORKFLOW.read_text()
+    assert "queue: max" in WORKFLOW.read_text()
 
 
 def _run_migration_gate(

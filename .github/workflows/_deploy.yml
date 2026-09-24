@@ -37,8 +37,8 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.environment }}
-  cancel-in-progress: false
+  group: db-release-${{ inputs.environment }}
+  queue: max
 
 jobs:
   validate:

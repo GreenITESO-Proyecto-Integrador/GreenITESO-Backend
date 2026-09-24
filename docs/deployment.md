@@ -39,9 +39,15 @@ run caused by a push to protected `dev` or `preprod`. That push is the result of
 a merged PR; PR-close events (including unmerged closures) cannot trigger this
 workflow. A credential-free gate checks the workflow-run event, conclusion,
 branch, repository, and Cloud mode; only its tested eligible result starts the
-job with a Neon GitHub Environment. The migration job skips a queued SHA if
-the branch has advanced and serializes migrations separately per Git branch.
-Thus `dev` updates Neon `dev`, while Git `preprod` updates Neon `staging`.
+job with a Neon GitHub Environment. After waiting for the lock, the job checks
+eligibility again and skips a stale SHA if the branch has advanced. Neon
+migrations and Cloud Run releases share one database-release concurrency group
+per target Neon environment, with `queue: max`, so an in-flight Cloud-mode
+cutover cannot run both migration paths at once and out-of-order test finishes
+cannot replace the current commit's queued migration. The queue supports up to
+100 pending jobs; if it fills, rerun the latest successful test workflow after
+the queue drains. Thus `dev` updates Neon `dev`, while Git `preprod` updates
+Neon `staging`.
 
 The migrator uses only `DATABASE_URL_UNPOOLED` (direct URL); the post-migration
 `db_smoke` check uses only `DATABASE_URL` (pooled app URL). Django settings

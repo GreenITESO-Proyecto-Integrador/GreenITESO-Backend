@@ -292,6 +292,8 @@ def _run_promotion_provenance(
     source_environment: str = "dev",
     source_workflow: str = "deploy-dev.yml",
     run_head_sha: str | None = None,
+    run_ids: tuple[str, ...] = ("123",),
+    fail_run_list: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "promotion-bin"
     fake_bin.mkdir(exist_ok=True)
@@ -301,13 +303,14 @@ def _run_promotion_provenance(
     gh.write_text(
         "#!/bin/sh\n"
         'if [ "$1 $2" = "run list" ]; then\n'
+        f"  {'exit 29' if fail_run_list else ':'}\n"
         '  case " $* " in *" --commit "*) exit 2 ;; esac\n'
         f'  [ "$4" = "{source_workflow}" ] || exit 2\n'
-        f"  echo 123 # run head SHA is {run_head_sha or source_sha}\n"
+        f"  printf '%s\\n' {shlex.quote(chr(10).join(run_ids))} # run head SHA is {run_head_sha or source_sha}\n"
         "  exit 0\n"
         "fi\n"
         'if [ "$1" = api ]; then\n'
-        f"  [ \"$2\" = \"repos/GreenITESO-Proyecto-Integrador/GreenITESO-Backend/actions/runs/123/artifacts\" ] || exit 2\n"
+        '  case "$2" in */actions/runs/123/artifacts) ;; *) exit 0 ;; esac\n'
         '  [ "$3" = --jq ] || exit 2\n'
         '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
         "  exit 0\n"
@@ -406,6 +409,25 @@ def test_production_finds_staging_artifact_when_pull_request_run_head_differs(
     assert (tmp_path / "promotion-output").read_text() == (
         f"image_digest=sha256:{'a' * 64}\n"
     )
+
+
+def test_promotion_provenance_finds_artifact_on_an_older_successful_run(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, run_ids=("456", "123")
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_reports_run_list_failure(tmp_path: Path) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, fail_run_list=True
+    )
+    assert result.returncode != 0
+    assert "Unable to list successful deploy-dev.yml runs" in result.stderr
 
 
 def test_promotion_provenance_rejects_target_only_tree_change(tmp_path: Path) -> None:
@@ -514,7 +536,7 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "cancel-in-progress" not in workflow
     assert "secrets." not in workflow.split("  migrate:", 1)[0]
     assert "workflow_dispatch:" not in workflow
-    assert 'uses: actions/setup-python@v5' in workflow
+    assert "uses: actions/setup-python@v5" in workflow
     assert 'python-version: "3.14"' in workflow
     assert "pull_request:" not in workflow
     assert "github.event.pull_request.merged" not in workflow

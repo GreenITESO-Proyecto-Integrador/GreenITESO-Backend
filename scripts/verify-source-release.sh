@@ -48,6 +48,15 @@ artifact_name="release-digest-${SOURCE_ENV}-${SOURCE_RELEASE_SHA}"
 record_dir="$(mktemp -d)"
 trap 'rm -rf "$record_dir"' EXIT
 
+# Keep failures from gh run list visible. A process substitution would hide its
+# exit status and make API failures look like a successful empty search.
+if ! source_run_ids="$(gh run list --workflow "$SOURCE_WORKFLOW" --status completed \
+  --limit 1000 --json databaseId,conclusion \
+  --jq 'map(select(.conclusion == "success")) | .[].databaseId')"; then
+  echo "Unable to list successful ${SOURCE_WORKFLOW} runs; refusing ${RELEASE_ENVIRONMENT} release." >&2
+  exit 1
+fi
+
 # For pull_request workflows, GitHub may index a run by the PR head SHA even
 # though the release record describes the merged base-branch SHA. Find the
 # immutable artifact by its exact release SHA instead of assuming run.head_sha.
@@ -62,9 +71,7 @@ while IFS= read -r candidate_run_id; do
     source_run_id="$candidate_run_id"
     break
   fi
-done < <(gh run list --workflow "$SOURCE_WORKFLOW" --status completed \
-  --limit 1000 --json databaseId,conclusion \
-  --jq 'map(select(.conclusion == "success")) | .[].databaseId')
+done <<< "$source_run_ids"
 
 if [ -z "$source_run_id" ]; then
   echo "No successful ${SOURCE_WORKFLOW} run contains artifact ${artifact_name}; refusing ${RELEASE_ENVIRONMENT} release." >&2

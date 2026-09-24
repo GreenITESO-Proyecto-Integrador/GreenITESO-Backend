@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from django.core.management.base import CommandError
+from django.db import OperationalError
 
 from green_iteso.core import database
 
@@ -33,6 +34,7 @@ def test_client_tls_state_is_unknown_without_raw_connection() -> None:
         (True, False, False),
         (False, True, False),
         (None, True, False),
+        (None, False, False),
     ],
 )
 def test_require_connection_tls_fails_closed_on_mismatch_or_unknown(
@@ -57,3 +59,19 @@ def test_require_connection_tls_fails_closed_on_mismatch_or_unknown(
                 inspection_error="inspection failed",
                 mismatch_error="TLS required",
             )
+
+
+def test_require_connection_tls_reports_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_connection() -> None:
+        raise OperationalError("connection unavailable")
+
+    monkeypatch.setattr(database.connection, "ensure_connection", fail_connection)
+
+    with pytest.raises(CommandError, match="inspection failed"):
+        database.require_connection_tls(
+            encrypted=True,
+            inspection_error="inspection failed",
+            mismatch_error="TLS required",
+        )

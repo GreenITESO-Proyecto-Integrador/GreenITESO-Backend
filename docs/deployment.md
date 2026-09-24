@@ -44,10 +44,12 @@ pushes without an associated merged PR. Both gate evaluations use the
 default-branch copy of the verifier rather than the version in the tested
 commit. Because `dev` is also the default branch, review controls on privileged
 workflow changes are essential. As of 2026-09-24, branch protection requires
-the `test` status and code-owner approval on both `dev` and `preprod`, with
-admin enforcement enabled. The existing `.github/CODEOWNERS` file names the
-three maintainers; recheck this policy if the ownership roster or release
-topology changes. Only an eligible result starts the job with a Neon GitHub
+the `test` status and code-owner approval on both `dev` and `preprod`, dismisses
+stale approvals, and enforces rules for admins. `dev` also requires two
+approvals; `preprod` retains a zero numeric threshold but still requires its
+code-owner approval. The existing `.github/CODEOWNERS` file names the three
+maintainers; recheck this policy if the ownership roster or release topology
+changes. Only an eligible result starts the job with a Neon GitHub
 Environment. After waiting for the lock, the job verifies eligibility again
 and skips a stale SHA if the branch has advanced. Neon
 migrations and Cloud Run releases share one database-release concurrency group

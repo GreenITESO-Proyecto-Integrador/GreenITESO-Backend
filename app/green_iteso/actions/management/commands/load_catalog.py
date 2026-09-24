@@ -13,10 +13,11 @@ from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db import IntegrityError, transaction
 
 from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionCategory, ActionMaster
+from green_iteso.core.database import require_connection_tls
 
 CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,49}$")
 REFERENCE_NAMESPACE = uuid.UUID("b486b2ae-0e5b-4a78-9f6f-2f8df2c53f5e")
@@ -291,18 +292,17 @@ def ensure_local_database() -> None:
         raise CommandError(
             "The DRAFT catalog requires a local PostgreSQL host; refusing a non-local database target."
         )
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
-            row = cursor.fetchone()
-    except DatabaseError:
-        raise CommandError(
-            "Cannot verify an unencrypted local PostgreSQL connection; refusing a shared database target."
-        ) from None
-    if row is None or row[0] is not False:
-        raise CommandError(
-            "The DRAFT catalog requires an unencrypted local PostgreSQL connection; refusing a shared database target."
-        )
+    require_connection_tls(
+        encrypted=False,
+        inspection_error=(
+            "Cannot verify an unencrypted local PostgreSQL connection; "
+            "refusing a shared database target."
+        ),
+        mismatch_error=(
+            "The DRAFT catalog requires an unencrypted local PostgreSQL connection; "
+            "refusing a shared database target."
+        ),
+    )
 
 
 class Command(BaseCommand):

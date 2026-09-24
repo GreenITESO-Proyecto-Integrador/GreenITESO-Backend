@@ -11,7 +11,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.management import BaseCommand, CommandError
-from django.db import DatabaseError, connection, transaction
+from django.db import transaction
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     parse_as_of,
@@ -22,6 +22,7 @@ from green_iteso.actions.management.commands.load_catalog import (
     load_catalog_content,
     load_catalog_data,
 )
+from green_iteso.core.database import require_connection_tls
 from green_iteso.settings.neon_endpoints import canonical_neon_host
 
 APPROVED_CATALOG = (
@@ -89,16 +90,13 @@ def ensure_neon_dev_target() -> None:
 
 def ensure_tls_connection() -> None:
     """Verify the actual database connection is encrypted before writes."""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
-            row = cursor.fetchone()
-    except DatabaseError:
-        raise CommandError(
+    require_connection_tls(
+        encrypted=True,
+        inspection_error=(
             "Cannot verify the Neon dev TLS connection; refusing shared seed writes."
-        ) from None
-    if row is None or row[0] is not True:
-        raise CommandError("seed_neon_dev requires an encrypted PostgreSQL connection.")
+        ),
+        mismatch_error="seed_neon_dev requires an encrypted PostgreSQL connection.",
+    )
 
 
 class Command(BaseCommand):

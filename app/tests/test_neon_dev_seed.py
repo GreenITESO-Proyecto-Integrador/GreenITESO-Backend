@@ -17,7 +17,7 @@ from django.db import connection, transaction
 from green_iteso.accounts.management.commands import seed_neon_dev
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     create_demo_users,
-    refresh_demo_totals,
+    refresh_clan_totals,
     seed_demo_data,
 )
 from green_iteso.accounts.models import Clan, User, UserProfile
@@ -310,7 +310,7 @@ def test_shared_dev_clan_total_uses_atomic_increment() -> None:
         total_points=11,
     )
 
-    refresh_demo_totals({}, [clan], [], {}, {clan.pk: 7}, shared_dev=True)
+    refresh_clan_totals([], [clan], {clan.pk: 7}, shared_dev=True)
 
     clan.refresh_from_db()
     assert clan.total_points == 18

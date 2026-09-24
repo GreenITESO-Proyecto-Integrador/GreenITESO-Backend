@@ -55,6 +55,25 @@ LEGACY_DEMO_CAMPAIGN_DESCRIPTION = (
 
 
 @dataclass(frozen=True)
+class CampaignSeedContext:
+    """Campaign fixture inputs shared by the demo seed stages."""
+
+    campaign: Campaign
+    missions: list[Mission]
+    as_of: datetime
+
+
+@dataclass(frozen=True)
+class DemoSeedMetadata:
+    """Catalog and mode metadata used after fixture creation."""
+
+    institutional_clans: list[Clan]
+    user_created: int
+    campaign_created: bool
+    shared_dev: bool
+
+
+@dataclass(frozen=True)
 class LogSeedContext:
     """Inputs shared by the action-log and contribution fixture builders."""
 
@@ -62,9 +81,29 @@ class LogSeedContext:
     profiles: dict[uuid.UUID, UserProfile]
     private_clans: list[Clan]
     actions: list[ActionMaster]
-    campaign: Campaign
-    missions: list[Mission]
-    as_of: datetime
+    campaign: CampaignSeedContext
+    metadata: DemoSeedMetadata
+
+
+@dataclass(frozen=True)
+class DemoActionIdentity:
+    """Identity and attribution fields for one deterministic demo log."""
+
+    user: User
+    action: ActionMaster
+    status: str
+    institutional_clan: Clan | None
+    credited_private_clan: Clan
+
+
+@dataclass(frozen=True)
+class SeededActionLog:
+    """An idempotently created log plus its point-attribution inputs."""
+
+    index: int
+    log: ActionLog
+    was_created: bool
+    identity: DemoActionIdentity
 
 
 @dataclass(frozen=True)
@@ -355,88 +394,131 @@ def add_mission_contribution(
         )
 
 
+def create_demo_action_log(
+    index: int, context: LogSeedContext, demo_reviewer: User | None
+) -> SeededActionLog:
+    """Create or validate one stable synthetic action log."""
+    user = context.users[index % len(context.users)]
+    action = context.actions[index % len(context.actions)]
+    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
+    idempotency_key = f"demo-action-{index:02d}"
+    institutional_clan = context.profiles[user.pk].institutional_clan
+    credited_private_clan = context.private_clans[index % len(context.private_clans)]
+    log, was_created = ActionLog.objects.get_or_create(
+        pk=demo_id("action-log", str(index)),
+        defaults={
+            "user": user,
+            "action": action,
+            "institutional_clan": institutional_clan,
+            "credited_private_clan": credited_private_clan,
+            "campaign": context.campaign.campaign if index < 12 else None,
+            "idempotency_key": idempotency_key,
+            # Keep the awarded snapshot on rejected rows. The rejected
+            # status makes net totals zero; changing this erases history.
+            "points_awarded": action.points,
+            "co2_kg_factor_snapshot": action.co2_kg_factor,
+            "water_liters_factor_snapshot": action.water_liters_factor,
+            "plastic_kg_factor_snapshot": action.plastic_kg_factor,
+            "status": status,
+            "evidence_object_key": f"demo-only/action-{index:02d}.jpg"
+            if action.validation_type == ActionMaster.ValidationType.PHOTO
+            else "",
+            "reviewed_by": demo_reviewer
+            if status == ActionLog.Status.REJECTED
+            else None,
+            "reviewed_at": context.campaign.as_of
+            if status == ActionLog.Status.REJECTED and demo_reviewer is not None
+            else None,
+            "rejection_reason": "Synthetic rejected example"
+            if status == ActionLog.Status.REJECTED
+            else "",
+        },
+    )
+    expected_identity = (
+        idempotency_key,
+        user.pk,
+        action.pk,
+        getattr(institutional_clan, "pk", None),
+        credited_private_clan.pk,
+    )
+    existing_identity = (
+        log.idempotency_key,
+        log.user_id,
+        log.action_id,
+        log.institutional_clan_id,
+        log.credited_private_clan_id,
+    )
+    if not was_created and existing_identity != expected_identity:
+        raise CommandError(
+            "Demo action-log identity collision; existing row was preserved."
+        )
+    return SeededActionLog(
+        index,
+        log,
+        was_created,
+        DemoActionIdentity(
+            user,
+            action,
+            status,
+            institutional_clan,
+            credited_private_clan,
+        ),
+    )
+
+
+def accumulate_approved_points(
+    seeded_log: SeededActionLog,
+    user_points: dict[uuid.UUID, int],
+    clan_points: dict[uuid.UUID, int],
+) -> None:
+    """Collect only newly created approved-log points for projection updates."""
+    if (
+        not seeded_log.was_created
+        or seeded_log.identity.status != ActionLog.Status.APPROVED
+    ):
+        return
+    user_points[seeded_log.identity.user.pk] = (
+        user_points.get(seeded_log.identity.user.pk, 0)
+        + seeded_log.identity.action.points
+    )
+    for clan in (
+        seeded_log.identity.institutional_clan,
+        seeded_log.identity.credited_private_clan,
+    ):
+        if clan is not None:
+            clan_points[clan.pk] = (
+                clan_points.get(clan.pk, 0) + seeded_log.identity.action.points
+            )
+
+
 def create_action_logs(
     context: LogSeedContext,
 ) -> tuple[int, dict[uuid.UUID, int], dict[uuid.UUID, int]]:
     """Create varied audit logs and exact mission contributions."""
-    users = context.users
-    profiles = context.profiles
-    private_clans = context.private_clans
-    actions = context.actions
-    campaign = context.campaign
-    missions = context.missions
-    as_of = context.as_of
     created_count = 0
-    newly_approved_points: dict[uuid.UUID, int] = {}
-    newly_approved_clan_points: dict[uuid.UUID, int] = {}
+    user_points: dict[uuid.UUID, int] = {}
+    clan_points: dict[uuid.UUID, int] = {}
     demo_reviewer = next(
         (
             candidate
-            for candidate in users
+            for candidate in context.users
             if candidate.role in {User.Role.ADMIN, User.Role.STAFF}
         ),
         None,
     )
     for index in range(24):
-        user = users[index % len(users)]
-        action = actions[index % len(actions)]
-        status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-        idempotency_key = f"demo-action-{index:02d}"
-        institutional_clan = profiles[user.pk].institutional_clan
-        credited_private_clan = private_clans[index % len(private_clans)]
-        log, was_created = ActionLog.objects.get_or_create(
-            pk=demo_id("action-log", str(index)),
-            defaults={
-                "user": user,
-                "action": action,
-                "institutional_clan": institutional_clan,
-                "credited_private_clan": credited_private_clan,
-                "campaign": campaign if index < 12 else None,
-                "idempotency_key": idempotency_key,
-                # Keep the awarded snapshot on rejected rows. The rejected
-                # status makes net totals zero; changing this erases history.
-                "points_awarded": action.points,
-                "co2_kg_factor_snapshot": action.co2_kg_factor,
-                "water_liters_factor_snapshot": action.water_liters_factor,
-                "plastic_kg_factor_snapshot": action.plastic_kg_factor,
-                "status": status,
-                "evidence_object_key": f"demo-only/action-{index:02d}.jpg"
-                if action.validation_type == ActionMaster.ValidationType.PHOTO
-                else "",
-                "reviewed_by": demo_reviewer
-                if status == ActionLog.Status.REJECTED
-                else None,
-                "reviewed_at": as_of
-                if status == ActionLog.Status.REJECTED and demo_reviewer is not None
-                else None,
-                "rejection_reason": "Synthetic rejected example"
-                if status == ActionLog.Status.REJECTED
-                else "",
-            },
-        )
-        if not was_created and (
-            log.idempotency_key != idempotency_key
-            or log.user_id != user.pk
-            or log.action_id != action.pk
-            or log.institutional_clan_id != getattr(institutional_clan, "pk", None)
-            or log.credited_private_clan_id != credited_private_clan.pk
-        ):
-            raise CommandError(
-                "Demo action-log identity collision; existing row was preserved."
+        seeded_log = create_demo_action_log(index, context, demo_reviewer)
+        created_count += seeded_log.was_created
+        if seeded_log.was_created:
+            add_mission_contribution(
+                seeded_log.index,
+                seeded_log.identity.status,
+                seeded_log.log,
+                seeded_log.identity.action,
+                context.campaign.missions,
             )
-        created_count += was_created
-        if was_created:
-            add_mission_contribution(index, status, log, action, missions)
-            if status == ActionLog.Status.APPROVED:
-                newly_approved_points[user.pk] = (
-                    newly_approved_points.get(user.pk, 0) + action.points
-                )
-                for clan in {institutional_clan, credited_private_clan}:
-                    if clan is not None:
-                        newly_approved_clan_points[clan.pk] = (
-                            newly_approved_clan_points.get(clan.pk, 0) + action.points
-                        )
-    return created_count, newly_approved_points, newly_approved_clan_points
+            accumulate_approved_points(seeded_log, user_points, clan_points)
+    return created_count, user_points, clan_points
 
 
 def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
@@ -456,18 +538,14 @@ def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
             )
 
 
-def refresh_demo_totals(
+def refresh_profile_totals(
     profiles: dict[uuid.UUID, UserProfile],
-    institutional_clans: list[Clan],
-    private_clans: list[Clan],
-    newly_approved_points: dict[uuid.UUID, int],
-    newly_approved_clan_points: dict[uuid.UUID, int],
-    *,
+    approved_points: dict[uuid.UUID, int],
     shared_dev: bool,
 ) -> None:
-    """Refresh point projections without overwriting concurrent shared-dev writes."""
+    """Refresh user projections without overwriting shared-dev API writes."""
     for profile in profiles.values():
-        available_points = newly_approved_points.get(profile.user_id, 0)
+        available_points = approved_points.get(profile.user_id, 0)
         if shared_dev:
             UserProfile.objects.filter(pk=profile.pk).update(
                 total_points=F("total_points") + available_points,
@@ -484,9 +562,17 @@ def refresh_demo_totals(
                     available_points=F("available_points") + available_points
                 )
 
-    for clan in [*institutional_clans, *private_clans]:
+
+def refresh_clan_totals(
+    institutional_clans: list[Clan],
+    private_clans: list[Clan],
+    approved_points: dict[uuid.UUID, int],
+    shared_dev: bool,
+) -> None:
+    """Refresh clan totals atomically in shared dev and from logs locally."""
+    for clan in (*institutional_clans, *private_clans):
         if shared_dev:
-            points = newly_approved_clan_points.get(clan.pk, 0)
+            points = approved_points.get(clan.pk, 0)
             if points:
                 Clan.objects.filter(pk=clan.pk).update(
                     total_points=F("total_points") + points
@@ -503,10 +589,27 @@ def refresh_demo_totals(
         Clan.objects.filter(pk=clan.pk).update(total_points=sum(points))
 
 
-def seed_demo_data(
-    catalog: CatalogData, as_of: datetime, *, shared_dev: bool = False
-) -> DemoSeedResult:
-    """Write the complete demo graph inside the caller's transaction."""
+def refresh_demo_totals(
+    context: LogSeedContext,
+    approved_user_points: dict[uuid.UUID, int],
+    approved_clan_points: dict[uuid.UUID, int],
+) -> None:
+    """Refresh point projections without overwriting concurrent shared-dev writes."""
+    refresh_profile_totals(
+        context.profiles, approved_user_points, context.metadata.shared_dev
+    )
+    refresh_clan_totals(
+        context.metadata.institutional_clans,
+        context.private_clans,
+        approved_clan_points,
+        context.metadata.shared_dev,
+    )
+
+
+def create_log_seed_context(
+    catalog: CatalogData, as_of: datetime, shared_dev: bool
+) -> LogSeedContext:
+    """Resolve the catalog and deterministic fixtures needed by the seed."""
     users, user_created = create_demo_users(shared_dev=shared_dev)
     institutional_clans = get_catalog_institutional_clans(catalog)
     private_clans = create_private_clans(users)
@@ -525,37 +628,38 @@ def seed_demo_data(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    (
-        created_logs,
-        newly_approved_points,
-        newly_approved_clan_points,
-    ) = create_action_logs(
-        LogSeedContext(
-            users,
-            profiles,
-            private_clans,
-            actions,
-            campaign,
-            missions,
-            as_of,
-        )
+    return LogSeedContext(
+        users=users,
+        profiles=profiles,
+        private_clans=private_clans,
+        actions=actions,
+        campaign=CampaignSeedContext(campaign, missions, as_of),
+        metadata=DemoSeedMetadata(
+            institutional_clans,
+            user_created,
+            campaign_created,
+            shared_dev,
+        ),
     )
-    create_mission_progress(users, missions)
-    refresh_demo_totals(
-        profiles,
-        institutional_clans,
-        private_clans,
-        newly_approved_points,
-        newly_approved_clan_points,
-        shared_dev=shared_dev,
+
+
+def seed_demo_data(
+    catalog: CatalogData, as_of: datetime, *, shared_dev: bool = False
+) -> DemoSeedResult:
+    """Write the complete demo graph inside the caller's transaction."""
+    context = create_log_seed_context(catalog, as_of, shared_dev)
+    created_logs, approved_user_points, approved_clan_points = create_action_logs(
+        context
     )
+    create_mission_progress(context.users, context.campaign.missions)
+    refresh_demo_totals(context, approved_user_points, approved_clan_points)
     return DemoSeedResult(
-        user_count=len(users),
-        user_created=user_created,
-        private_clan_count=len(private_clans),
-        mission_count=len(missions),
+        user_count=len(context.users),
+        user_created=context.metadata.user_created,
+        private_clan_count=len(context.private_clans),
+        mission_count=len(context.campaign.missions),
         created_logs=created_logs,
-        campaign_created=campaign_created,
+        campaign_created=context.metadata.campaign_created,
     )
 
 

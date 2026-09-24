@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -222,20 +223,9 @@ def test_neon_dev_seed_rejects_unencrypted_runtime_connection(
         ensure_tls_connection,
     )
 
-    class UnencryptedCursor:
-        def __enter__(self) -> UnencryptedCursor:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def execute(self, _query: str) -> None:
-            return None
-
-        def fetchone(self) -> tuple[bool]:
-            return (False,)
-
-    monkeypatch.setattr(connection, "cursor", lambda: UnencryptedCursor())
+    raw_connection = SimpleNamespace(pgconn=SimpleNamespace(ssl_in_use=False))
+    monkeypatch.setattr(connection, "ensure_connection", lambda: None)
+    monkeypatch.setattr(connection, "connection", raw_connection)
 
     with pytest.raises(CommandError, match="encrypted PostgreSQL connection"):
         ensure_tls_connection()

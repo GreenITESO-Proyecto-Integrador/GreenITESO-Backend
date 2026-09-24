@@ -7,12 +7,23 @@ from django.db import DatabaseError, connection
 def require_connection_tls(
     *, encrypted: bool, inspection_error: str, mismatch_error: str
 ) -> None:
-    """Require the active database connection to match its TLS policy."""
+    """Require the client-to-proxy PostgreSQL connection to match TLS policy."""
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
-            row = cursor.fetchone()
+        connection.ensure_connection()
+        ssl_in_use = client_tls_state(connection.connection)
     except DatabaseError:
         raise CommandError(inspection_error) from None
-    if row is None or row[0] is not encrypted:
+    if ssl_in_use is not encrypted:
         raise CommandError(mismatch_error)
+
+
+def client_tls_state(raw_connection: object | None) -> bool | None:
+    """Return libpq's client-side TLS state, or None when unavailable."""
+    if raw_connection is None:
+        return None
+    pgconn = getattr(raw_connection, "pgconn", None)
+    ssl_in_use = getattr(pgconn, "ssl_in_use", None)
+    if ssl_in_use is None:
+        info = getattr(raw_connection, "info", None)
+        ssl_in_use = getattr(info, "ssl_in_use", None)
+    return ssl_in_use if isinstance(ssl_in_use, bool) else None

@@ -12,7 +12,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 
 from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionCategory, ActionMaster
@@ -247,11 +247,23 @@ def load_catalog_file(path: Path) -> CatalogData:
 
 
 def ensure_local_database() -> None:
-    """Keep local-only DRAFT writes away from shared cloud databases."""
+    """Keep local-only DRAFT writes off cloud endpoints and TLS tunnels."""
     host = str(settings.DATABASES["default"].get("HOST", "")).lower()
     if host not in LOCAL_DATABASE_HOSTS:
         raise CommandError(
             "The DRAFT catalog requires a local PostgreSQL host; refusing a non-local database target."
+        )
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+            row = cursor.fetchone()
+    except DatabaseError:
+        raise CommandError(
+            "Cannot verify an unencrypted local PostgreSQL connection; refusing a shared database target."
+        ) from None
+    if row is None or row[0] is not False:
+        raise CommandError(
+            "The DRAFT catalog requires an unencrypted local PostgreSQL connection; refusing a shared database target."
         )
 
 
@@ -290,12 +302,18 @@ class Command(BaseCommand):
                         "icon": item["icon"],
                     },
                 )
+                if not was_created and category.pk != stable_reference_id(
+                    "category", item["code"]
+                ):
+                    raise CommandError(
+                        "Catalog category identity collision; existing row was preserved."
+                    )
                 categories[item["code"]] = category
                 created += was_created
                 preserved += not was_created
 
             for item in catalog.actions:
-                _, was_created = ActionMaster.objects.get_or_create(
+                action, was_created = ActionMaster.objects.get_or_create(
                     code=item["code"],
                     defaults={
                         "id": stable_reference_id("action", item["code"]),
@@ -311,11 +329,17 @@ class Command(BaseCommand):
                         "is_active": item["is_active"],
                     },
                 )
+                if not was_created and action.pk != stable_reference_id(
+                    "action", item["code"]
+                ):
+                    raise CommandError(
+                        "Catalog action identity collision; existing row was preserved."
+                    )
                 created += was_created
                 preserved += not was_created
 
             for item in catalog.clans:
-                _, was_created = Clan.objects.get_or_create(
+                clan, was_created = Clan.objects.get_or_create(
                     pk=stable_reference_id("institutional-clan", item["key"]),
                     defaults={
                         "name": item["name"],
@@ -324,6 +348,13 @@ class Command(BaseCommand):
                         "privacy": Clan.Privacy.PUBLIC,
                     },
                 )
+                if not was_created and (
+                    clan.type != Clan.ClanType.INSTITUTIONAL
+                    or clan.privacy != Clan.Privacy.PUBLIC
+                ):
+                    raise CommandError(
+                        "Catalog clan identity collision; existing row was preserved."
+                    )
                 created += was_created
                 preserved += not was_created
 

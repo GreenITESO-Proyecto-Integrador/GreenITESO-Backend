@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 
+from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.actions.management.commands.load_catalog import stable_reference_id
 from green_iteso.actions.models import (
     ActionCategory,
     ActionLog,
@@ -176,6 +180,83 @@ def test_catalog_guard_rejects_deployed_environment(
 
 
 @pytest.mark.django_db(transaction=True)
+def test_catalog_guard_rejects_non_local_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(settings.DATABASES["default"], "HOST", "shared.neon.tech")
+
+    with pytest.raises(CommandError, match="local PostgreSQL host"):
+        call_command("load_catalog", verbosity=0)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("kind", ["category", "action", "clan"])
+def test_catalog_rejects_fixture_code_with_unrelated_id(kind: str) -> None:
+    if kind == "clan":
+        Clan.objects.create(
+            id=stable_reference_id("institutional-clan", "draft-engineering"),
+            name="Unrelated private clan",
+            type=Clan.ClanType.INSTITUTIONAL,
+            privacy=Clan.Privacy.PRIVATE_INVITE,
+        )
+        with pytest.raises(CommandError, match="identity collision"):
+            call_command("load_catalog", verbosity=0)
+        return
+
+    category = ActionCategory.objects.create(
+        id=(
+            uuid.uuid4()
+            if kind == "category"
+            else stable_reference_id("category", "draft-mobility")
+        ),
+        code="draft-mobility",
+        name="Draft mobility",
+    )
+    if kind == "action":
+        ActionMaster.objects.create(
+            id=uuid.uuid4(),
+            code="draft-bike-trip",
+            category=category,
+            name="Unrelated action",
+            description="Must not be adopted by the draft fixture.",
+            points=1,
+            daily_limit=1,
+            validation_type=ActionMaster.ValidationType.NONE,
+        )
+
+    with pytest.raises(CommandError, match="identity collision"):
+        call_command("load_catalog", verbosity=0)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("command_name", ["load_catalog", "bootstrap_dev"])
+def test_seed_commands_reject_tls_even_when_host_looks_local(
+    monkeypatch: pytest.MonkeyPatch, command_name: str
+) -> None:
+    class EncryptedCursor:
+        def __enter__(self) -> EncryptedCursor:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _query: str) -> None:
+            return None
+
+        def fetchone(self) -> tuple[bool]:
+            return (True,)
+
+    monkeypatch.setitem(settings.DATABASES["default"], "HOST", "db")
+    monkeypatch.setattr(connection, "cursor", lambda: EncryptedCursor())
+    if command_name == "bootstrap_dev":
+        monkeypatch.setenv("DJANGO_ENV", "dev")
+        monkeypatch.setattr(settings, "DEPLOYED", False)
+
+    with pytest.raises(CommandError, match="unencrypted local PostgreSQL"):
+        call_command(command_name, verbosity=0)
+
+
+@pytest.mark.django_db(transaction=True)
 def test_demo_guard_rejects_non_local_database(monkeypatch: pytest.MonkeyPatch) -> None:
     """An explicit dev flag cannot turn a shared cloud target into a demo DB."""
     monkeypatch.setitem(settings.DATABASES["default"], "HOST", "shared.neon.tech")
@@ -194,6 +275,30 @@ def test_bootstrap_rejects_unrelated_identity_collisions(collision: str) -> None
     before = (User.objects.count(), Clan.objects.count())
     with pytest.raises(CommandError, match="collision"):
         call_command("bootstrap_dev", verbosity=0)
+    assert (User.objects.count(), Clan.objects.count()) == before
+    assert ActionCategory.objects.count() == 0
+    assert ActionLog.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("collision", ["user", "clan"])
+def test_bootstrap_rejects_deterministic_id_collisions(collision: str) -> None:
+    if collision == "user":
+        User.objects.create_user(
+            id=demo_id("user", "1"), email="unrelated@example.invalid"
+        )
+    else:
+        Clan.objects.create(
+            id=demo_id("clan", "private-01"),
+            name="Unrelated private clan",
+            type=Clan.ClanType.PRIVATE,
+            privacy=Clan.Privacy.PRIVATE_INVITE,
+        )
+
+    before = (User.objects.count(), Clan.objects.count())
+    with pytest.raises(CommandError, match="identity collision"):
+        call_command("bootstrap_dev", verbosity=0)
+
     assert (User.objects.count(), Clan.objects.count()) == before
     assert ActionCategory.objects.count() == 0
     assert ActionLog.objects.count() == 0

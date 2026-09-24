@@ -39,6 +39,12 @@ DEMO_STATUSES = (
     ActionLog.Status.PENDING_AUDIT,
     ActionLog.Status.REJECTED,
 )
+DEMO_PRIVATE_CLAN_DESCRIPTION = (
+    "Synthetic local-only demo clan; not an institutional catalog value."
+)
+DEMO_CAMPAIGN_DESCRIPTION = (
+    "Synthetic campaign for local development; no product values are implied."
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,10 @@ def get_or_create_demo_user(index: int, role: str) -> tuple[User, bool]:
     identifier = demo_id("user", str(index))
     user = User.objects.filter(pk=identifier).first()
     if user is not None:
+        if user.email != email:
+            raise CommandError(
+                "Demo user identity collision; existing user was preserved."
+            )
         return user, False
     if User.objects.filter(email=email).exists():
         raise CommandError("Demo user identity collision; existing user was preserved.")
@@ -132,6 +142,12 @@ def get_or_create_demo_clan(
     """Use deterministic IDs while retaining edits made through local admin."""
     clan = Clan.objects.filter(pk=demo_id("clan", key)).first()
     if clan is not None:
+        if clan.type != clan_type or not clan.description.startswith(
+            DEMO_PRIVATE_CLAN_DESCRIPTION
+        ):
+            raise CommandError(
+                "Demo clan identity collision; existing clan was preserved."
+            )
         return clan, False
     if Clan.objects.filter(name=name).exists():
         raise CommandError("Demo clan identity collision; existing clan was preserved.")
@@ -139,7 +155,7 @@ def get_or_create_demo_clan(
         Clan.objects.create(
             id=demo_id("clan", key),
             name=name,
-            description="Synthetic local-only demo clan; not an institutional catalog value.",
+            description=DEMO_PRIVATE_CLAN_DESCRIPTION,
             type=clan_type,
             privacy=privacy,
             created_by=created_by,
@@ -252,7 +268,7 @@ def create_campaign_and_missions(
         pk=demo_id("campaign", "active"),
         defaults={
             "title": "Draft local sustainability campaign",
-            "description": "Synthetic campaign for local development; no product values are implied.",
+            "description": DEMO_CAMPAIGN_DESCRIPTION,
             "scope": Campaign.Scope.GLOBAL,
             "status": Campaign.Status.IN_PROGRESS,
             "creator": users[0],
@@ -260,9 +276,16 @@ def create_campaign_and_missions(
             "end_date": as_of + timedelta(days=30),
         },
     )
+    if not campaign_created and (
+        campaign.creator_id != users[0].pk
+        or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+    ):
+        raise CommandError(
+            "Demo campaign identity collision; existing campaign was preserved."
+        )
     missions: list[Mission] = []
     for index, action in enumerate(actions[:2], start=1):
-        mission, _ = Mission.objects.get_or_create(
+        mission, was_created = Mission.objects.get_or_create(
             pk=demo_id("mission", str(index)),
             defaults={
                 "campaign": campaign,
@@ -270,6 +293,12 @@ def create_campaign_and_missions(
                 "target_count": index + 2,
             },
         )
+        if not was_created and (
+            mission.campaign_id != campaign.pk or mission.action_id != action.pk
+        ):
+            raise CommandError(
+                "Demo mission identity collision; existing mission was preserved."
+            )
         missions.append(mission)
     for user in users:
         CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
@@ -310,6 +339,7 @@ def create_action_logs(context: LogSeedContext) -> int:
         user = users[index % len(users)]
         action = actions[index % len(actions)]
         status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
+        idempotency_key = f"demo-action-{index:02d}"
         log, was_created = ActionLog.objects.get_or_create(
             pk=demo_id("action-log", str(index)),
             defaults={
@@ -318,7 +348,7 @@ def create_action_logs(context: LogSeedContext) -> int:
                 "institutional_clan": profiles[user.pk].institutional_clan,
                 "credited_private_clan": private_clans[index % len(private_clans)],
                 "campaign": campaign if index < 12 else None,
-                "idempotency_key": f"demo-action-{index:02d}",
+                "idempotency_key": idempotency_key,
                 # Keep the awarded snapshot on rejected rows. The rejected
                 # status makes net totals zero; changing this erases history.
                 "points_awarded": action.points,
@@ -338,6 +368,14 @@ def create_action_logs(context: LogSeedContext) -> int:
                 else "",
             },
         )
+        if not was_created and (
+            log.idempotency_key != idempotency_key
+            or log.user_id != user.pk
+            or log.action_id != action.pk
+        ):
+            raise CommandError(
+                "Demo action-log identity collision; existing row was preserved."
+            )
         created_count += was_created
         if was_created:
             add_mission_contribution(index, status, log, action, missions)

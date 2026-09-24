@@ -39,8 +39,10 @@ DRAFT, igual que sus puntos, límites y factores ambientales.
 La semilla provisional se rechaza cuando `DJANGO_DEPLOYED=true`, así que no
 puede cargar accidentalmente valores DRAFT en staging o producción. También
 rechaza un `DATABASE_URL` cuyo host no sea local (`127.0.0.1`, `localhost`,
-`::1` o el servicio Compose `db`), para evitar modificar una rama de Neon
-compartida por error. En esos
+`::1` o el servicio Compose `db`) y verifica que la conexión PostgreSQL no use
+TLS. Esta segunda comprobación evita que un alias local hacia un proxy o túnel
+remoto permita escribir por accidente en Neon. La carga también falla si un
+código o ID determinista ya pertenece a un registro con otra identidad. En esos
 ambientes solo una carga futura con datos aprobados y un procedimiento de
 release podrá ser habilitada por el equipo responsable.
 
@@ -57,7 +59,9 @@ python app/manage.py seed_demo --as-of 2030-01-15T12:00:00+00:00
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
 clanes privados, membresías, una campaña global activa, misiones, progreso y
 logs `APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
-deterministas; ejecutarlo varias veces conserva una sola copia. Las fotos son
+deterministas; ejecutarlo varias veces conserva una sola copia, pero si un ID
+determinista existente no coincide con la identidad demo esperada, el comando
+se detiene en vez de adoptar o modificar el registro. Las fotos son
 solo claves de objeto locales (`demo-only/...jpg`), nunca URLs firmadas ni
 archivos reales.
 

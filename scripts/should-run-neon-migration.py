@@ -44,11 +44,26 @@ def should_run_migration(
             text=True,
         )
         associated_prs = json.loads(response.stdout)
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
-        return False
+    except OSError:
+        raise RuntimeError(
+            "Could not run the GitHub CLI; migration eligibility is unknown."
+        ) from None
+    except subprocess.CalledProcessError:
+        raise RuntimeError(
+            "GitHub could not verify the associated pull request; "
+            "migration eligibility is unknown."
+        ) from None
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            "GitHub returned an invalid pull-request response; "
+            "migration eligibility is unknown."
+        ) from None
 
     if not isinstance(associated_prs, list):
-        return False
+        raise TypeError(
+            "GitHub returned an unexpected pull-request response; "
+            "migration eligibility is unknown."
+        )
     return any(
         isinstance(pr, dict)
         and pr.get("merged_at") is not None

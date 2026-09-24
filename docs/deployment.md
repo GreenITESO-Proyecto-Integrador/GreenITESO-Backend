@@ -49,7 +49,9 @@ stale approvals, and enforces rules for admins. `dev` also requires two
 approvals; `preprod` retains a zero numeric threshold but still requires its
 code-owner approval. The existing `.github/CODEOWNERS` file names the three
 maintainers; recheck this policy if the ownership roster or release topology
-changes. Only an eligible result starts the job with a Neon GitHub
+changes. A GitHub API/response failure leaves eligibility unknown and fails the
+gate job visibly; it is not treated as a clean ineligible skip. Only an eligible
+result starts the job with a Neon GitHub
 Environment. After waiting for the lock, the job verifies eligibility again
 and skips a stale SHA if the branch has advanced. Neon
 migrations and Cloud Run releases share one database-release concurrency group

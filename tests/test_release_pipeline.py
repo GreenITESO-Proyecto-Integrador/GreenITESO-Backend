@@ -486,6 +486,7 @@ def _run_migration_gate(
     head_repository: str = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
     cloud_deployment_enabled: str = "",
     associated_prs: list[dict[str, object]] | None = None,
+    api_failure: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     event_path = tmp_path / "event.json"
     output_path = tmp_path / "github-output"
@@ -497,7 +498,9 @@ def _run_migration_gate(
     fake_gh = fake_bin / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, os\n"
+        "import json, os, sys\n"
+        "if os.environ.get('FAKE_API_FAILURE') == 'true':\n"
+        "    sys.exit(1)\n"
         "print(os.environ['FAKE_ASSOCIATED_PRS'])\n",
         encoding="utf-8",
     )
@@ -536,6 +539,7 @@ def _run_migration_gate(
         "GITHUB_REPOSITORY": repository,
         "CLOUD_DEPLOYMENT_ENABLED": cloud_deployment_enabled,
         "FAKE_ASSOCIATED_PRS": json.dumps(associated_prs),
+        "FAKE_API_FAILURE": "true" if api_failure else "false",
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
     result = subprocess.run(
@@ -611,6 +615,15 @@ def test_migration_gate_requires_the_associated_merged_pr_result(
     result, output = _run_migration_gate(tmp_path, associated_prs=mismatched_commit)
     assert result.returncode == 0, result.stderr
     assert "eligible=false" in output
+
+
+def test_migration_gate_fails_if_github_cannot_confirm_associated_pr(
+    tmp_path: Path,
+) -> None:
+    result, output = _run_migration_gate(tmp_path, api_failure=True)
+    assert result.returncode != 0
+    assert "migration eligibility is unknown" in result.stderr
+    assert output == ""
 
 
 def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -> None:

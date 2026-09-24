@@ -428,10 +428,16 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "steps.mode.outputs.eligible == 'true'" in workflow
     assert "cancel-in-progress" not in workflow
     assert "secrets." not in workflow.split("  migrate:", 1)[0]
-    assert "pull_request:" not in workflow
     assert "workflow_dispatch:" not in workflow
+    assert "pull_request:" not in workflow
+    assert "github.event.pull_request.merged" not in workflow
+    assert "pull-requests: read" in workflow
     assert "head_sha" in workflow
     assert "environment: ${{ github.event.workflow_run.head_branch }}" in workflow
+    assert (
+        "commits/{commit_sha}/pulls"
+        in (ROOT / "scripts/should-run-neon-migration.py").read_text()
+    )
     assert (
         "group: db-release-${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
         in workflow
@@ -439,7 +445,9 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "queue: max" in workflow
     assert "DATABASE_URL_UNPOOLED" in workflow
     assert "DATABASE_URL" in workflow
-    assert workflow.count("persist-credentials: false") == 2
+    assert workflow.count("persist-credentials: false") == 3
+    assert "path: trusted-gate" in workflow
+    assert "python3 trusted-gate/scripts/should-run-neon-migration.py" in workflow
     assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_BRANCH}"' in workflow
     assert "git ls-remote origin" not in workflow
     assert (
@@ -473,21 +481,48 @@ def _run_migration_gate(
     *,
     event_name: str = "push",
     conclusion: str = "success",
-    branch: str = "dev",
+    merged: bool = True,
+    base_branch: str = "dev",
     head_repository: str = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
     cloud_deployment_enabled: str = "",
+    associated_prs: list[dict[str, object]] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     event_path = tmp_path / "event.json"
     output_path = tmp_path / "github-output"
+    fake_bin = tmp_path / "bin"
     tmp_path.mkdir(parents=True, exist_ok=True)
     repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+    commit_sha = "a" * 40
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os\n"
+        "print(os.environ['FAKE_ASSOCIATED_PRS'])\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    if associated_prs is None:
+        associated_prs = (
+            [
+                {
+                    "merged_at": "2026-01-01T00:00:00Z",
+                    "merge_commit_sha": commit_sha,
+                    "base": {"ref": base_branch},
+                    "head": {"repo": {"full_name": head_repository}},
+                }
+            ]
+            if merged
+            else []
+        )
     event_path.write_text(
         json.dumps(
             {
                 "workflow_run": {
                     "event": event_name,
                     "conclusion": conclusion,
-                    "head_branch": branch,
+                    "head_branch": base_branch,
+                    "head_sha": commit_sha,
                     "head_repository": {"full_name": head_repository},
                 }
             }
@@ -500,6 +535,8 @@ def _run_migration_gate(
         "GITHUB_OUTPUT": str(output_path),
         "GITHUB_REPOSITORY": repository,
         "CLOUD_DEPLOYMENT_ENABLED": cloud_deployment_enabled,
+        "FAKE_ASSOCIATED_PRS": json.dumps(associated_prs),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
     result = subprocess.run(
         ["python3", str(MIGRATION_GATE)],
@@ -514,23 +551,29 @@ def _run_migration_gate(
     ) if output_path.exists() else ""
 
 
-def test_migration_gate_allows_successful_pushes_to_nonproduction_tiers(
+def test_migration_gate_allows_only_successful_merged_pr_results(
     tmp_path: Path,
 ) -> None:
     for branch in ("dev", "preprod"):
-        result, output = _run_migration_gate(tmp_path / branch, branch=branch)
+        result, output = _run_migration_gate(tmp_path / branch, base_branch=branch)
         assert result.returncode == 0, result.stderr
         assert "eligible=true" in output
 
 
-def test_migration_gate_rejects_failed_tests_and_unmerged_pr_closures(
+def test_migration_gate_rejects_nonmerged_and_unsupported_events(
     tmp_path: Path,
 ) -> None:
-    for event_name, conclusion in (("push", "failure"), ("pull_request", "success")):
+    for index, overrides in enumerate(
+        (
+            {"event_name": "pull_request", "merged": False},
+            {"conclusion": "failure"},
+            {"merged": False},
+            {"base_branch": "main"},
+        )
+    ):
         result, output = _run_migration_gate(
-            tmp_path / f"{event_name}-{conclusion}",
-            event_name=event_name,
-            conclusion=conclusion,
+            tmp_path / str(index),
+            **overrides,
         )
         assert result.returncode == 0, result.stderr
         assert "eligible=false" in output
@@ -540,7 +583,7 @@ def test_migration_gate_rejects_unsupported_branch_forks_and_cloud_mode(
     tmp_path: Path,
 ) -> None:
     cases = (
-        {"branch": "main"},
+        {"base_branch": "main"},
         {"head_repository": "attacker/fork"},
         {"cloud_deployment_enabled": "true"},
     )
@@ -548,6 +591,26 @@ def test_migration_gate_rejects_unsupported_branch_forks_and_cloud_mode(
         result, output = _run_migration_gate(tmp_path / str(index), **overrides)
         assert result.returncode == 0, result.stderr
         assert "eligible=false" in output
+
+
+def test_migration_gate_requires_the_associated_merged_pr_result(
+    tmp_path: Path,
+) -> None:
+    mismatched_commit = [
+        {
+            "merged_at": "2026-01-01T00:00:00Z",
+            "merge_commit_sha": "b" * 40,
+            "base": {"ref": "dev"},
+            "head": {
+                "repo": {
+                    "full_name": "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+                }
+            },
+        }
+    ]
+    result, output = _run_migration_gate(tmp_path, associated_prs=mismatched_commit)
+    assert result.returncode == 0, result.stderr
+    assert "eligible=false" in output
 
 
 def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -> None:

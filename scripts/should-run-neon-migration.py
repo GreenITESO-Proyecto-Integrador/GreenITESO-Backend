@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,19 +12,53 @@ from typing import Any
 def should_run_migration(
     event: dict[str, Any], repository: str, cloud_deployment_enabled: str
 ) -> bool:
-    """Allow only successful same-repository pushes to dev/preprod."""
+    """Allow only a successful push that is exactly a merged PR result."""
     workflow_run = event.get("workflow_run")
     if not isinstance(workflow_run, dict):
         return False
 
+    target_branch = workflow_run.get("head_branch")
+    commit_sha = workflow_run.get("head_sha")
     head_repository = workflow_run.get("head_repository")
-    return (
+    if not (
         workflow_run.get("conclusion") == "success"
         and workflow_run.get("event") == "push"
-        and workflow_run.get("head_branch") in {"dev", "preprod"}
+        and target_branch in {"dev", "preprod"}
+        and isinstance(commit_sha, str)
+        and bool(commit_sha)
         and isinstance(head_repository, dict)
         and head_repository.get("full_name") == repository
         and cloud_deployment_enabled.strip().lower() != "true"
+    ):
+        return False
+
+    try:
+        response = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repository}/commits/{commit_sha}/pulls",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        associated_prs = json.loads(response.stdout)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return False
+
+    if not isinstance(associated_prs, list):
+        return False
+    return any(
+        isinstance(pr, dict)
+        and pr.get("merged_at") is not None
+        and pr.get("merge_commit_sha") == commit_sha
+        and isinstance(pr.get("base"), dict)
+        and pr["base"].get("ref") == target_branch
+        and isinstance(pr.get("head"), dict)
+        and isinstance(pr["head"].get("repo"), dict)
+        and pr["head"]["repo"].get("full_name") == repository
+        for pr in associated_prs
     )
 
 

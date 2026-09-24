@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       eligible: ${{ steps.evaluate.outputs.eligible }}
     steps:
@@ -28,11 +29,15 @@ jobs:
         env:
           CLOUD_DEPLOYMENT_ENABLED: ${{ vars.CLOUD_DEPLOYMENT_ENABLED }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/should-run-neon-migration.py
 
   migrate:
     needs: gate
     if: needs.gate.outputs.eligible == 'true'
+    permissions:
+      contents: read
+      pull-requests: read
     concurrency:
       group: db-release-${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}
       queue: max
@@ -53,16 +58,27 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
+          path: source
+
+      - name: Check out trusted migration gate code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted-gate
 
       - name: Recheck migration eligibility after waiting for the environment lock
         id: mode
         env:
           CLOUD_DEPLOYMENT_ENABLED: ${{ vars.CLOUD_DEPLOYMENT_ENABLED }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/should-run-neon-migration.py
+          GH_TOKEN: ${{ github.token }}
+        run: python3 trusted-gate/scripts/should-run-neon-migration.py
 
       - name: Install Django dependencies
         if: steps.mode.outputs.eligible == 'true'
+        working-directory: source
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip
           python -m pip install --disable-pip-version-check -r app/requirements.txt
@@ -88,6 +104,7 @@ jobs:
 
       - name: Require environment-scoped database settings
         if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
         env:
           APP_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           MIGRATOR_DATABASE_URL: ${{ secrets.DATABASE_URL_UNPOOLED }}
@@ -104,6 +121,7 @@ jobs:
 
       - name: Apply committed migrations with the direct migrator role
         if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
         env:
           DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
@@ -113,6 +131,7 @@ jobs:
 
       - name: Verify access through the pooled application role
         if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}

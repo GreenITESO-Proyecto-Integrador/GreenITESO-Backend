@@ -8,7 +8,8 @@ para Django y solo registra metadatos agregados:
 - el conteo y una huella SHA-256 del contenido completo de cada tabla del
   esquema actual, incluida `ClanMembership` y los clanes con soft-delete (solo
   se guarda el digest, nunca los valores de las filas);
-- los conteos y puntos de `ActionLog` agrupados por estado y atribución de clan;
+- los conteos y puntos de `ActionLog` agrupados por estado y atribución de clan,
+  usando fingerprints estables de los IDs de clan en vez de guardarlos en claro;
 - una huella SHA-256 del contenido completo de `ActionLog`, incluyendo sus
   snapshots, claves de idempotencia/evidencia y metadatos de revisión;
 - los conteos de referencias foráneas huérfanas de `ActionLog`;

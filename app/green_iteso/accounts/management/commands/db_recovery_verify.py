@@ -129,6 +129,11 @@ def _status_totals() -> dict[str, dict[str, int]]:
     }
 
 
+def _opaque_identifier(value: object) -> str:
+    """Replace a database identifier with a stable, non-reversible digest."""
+    return sha256(str(value).encode("utf-8")).hexdigest()
+
+
 def _attribution_totals() -> list[dict[str, Any]]:
     """Summarize frozen clan attribution using IDs and aggregate values only."""
     rows = (
@@ -138,9 +143,11 @@ def _attribution_totals() -> list[dict[str, Any]]:
     )
     return [
         {
-            "institutional_clan_id": str(row["institutional_clan_id"]),
-            "credited_private_clan_id": (
-                str(row["credited_private_clan_id"])
+            "institutional_clan_fingerprint": _opaque_identifier(
+                row["institutional_clan_id"]
+            ),
+            "credited_private_clan_fingerprint": (
+                _opaque_identifier(row["credited_private_clan_id"])
                 if row["credited_private_clan_id"] is not None
                 else None
             ),

@@ -26,6 +26,11 @@ def _create_history() -> ActionLog:
     clan = Clan.objects.create(
         name="Recovery verifier clan", type=Clan.ClanType.INSTITUTIONAL
     )
+    private_clan = Clan.objects.create(
+        name="Recovery verifier private clan",
+        type=Clan.ClanType.PRIVATE,
+        privacy=Clan.Privacy.PRIVATE_INVITE,
+    )
     category = ActionCategory.objects.create(
         code="recovery-verifier", name="Recovery verifier"
     )
@@ -42,6 +47,7 @@ def _create_history() -> ActionLog:
         user=user,
         action=action,
         institutional_clan=clan,
+        credited_private_clan=private_clan,
         idempotency_key="recovery-pre-t",
         points_awarded=7,
         status=ActionLog.Status.APPROVED,
@@ -194,13 +200,15 @@ def test_recovery_rejects_post_t_marker(tmp_path: Path) -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_recovery_baseline_contains_no_personal_fields(tmp_path: Path) -> None:
-    baseline, _marker, _post_marker_id = _capture_baseline(tmp_path)
+    baseline, marker, _post_marker_id = _capture_baseline(tmp_path)
     content = json.loads(baseline.read_text(encoding="utf-8"))
     rendered = json.dumps(content)
     assert "recovery-verifier@example.invalid" not in rendered
     assert "Synthetic recovery check action" not in rendered
     assert "synthetic-private-employee-id" not in rendered
     assert "synthetic-private-group-id" not in rendered
+    assert str(marker.institutional_clan_id) not in rendered
+    assert str(marker.credited_private_clan_id) not in rendered
 
 
 @pytest.mark.django_db(transaction=True)

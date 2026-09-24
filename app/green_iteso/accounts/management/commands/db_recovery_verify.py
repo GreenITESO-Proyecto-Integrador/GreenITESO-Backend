@@ -130,7 +130,7 @@ def _status_totals() -> dict[str, dict[str, int]]:
 
 
 def _opaque_identifier(value: object) -> str:
-    """Replace a database identifier with a stable, non-reversible digest."""
+    """Avoid storing a direct ID; the deterministic hash is pseudonymous, not anonymous."""
     return sha256(str(value).encode("utf-8")).hexdigest()
 
 

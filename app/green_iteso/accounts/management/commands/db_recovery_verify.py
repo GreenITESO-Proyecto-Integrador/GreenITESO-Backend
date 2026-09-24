@@ -531,7 +531,8 @@ class Command(BaseCommand):
                         raise CommandError(
                             "RECOVERY_VERIFY ERROR\n"
                             "diagnostico: " + ",".join(mismatches) + "\n"
-                            "detalle: El estado recuperado no coincide con el baseline; revise la evidencia sin exponer datos."
+                            "detalle: El estado recuperado no coincide con el baseline; "
+                            "revise la evidencia sin exponer datos."
                         )
                     self.stdout.write("RECOVERY_VERIFY OK")
                     self.stdout.write(

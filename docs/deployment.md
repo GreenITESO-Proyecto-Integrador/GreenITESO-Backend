@@ -29,8 +29,11 @@ intact until a separately approved cutover.
 
 ## Neon schema migration after merge
 
-PR checks continue to run migrations, `makemigrations --check`, and the Django
-suite against ephemeral PostgreSQL 18; they do not receive Neon credentials.
+PR checks continue to run migrations, `makemigrations --check`, the Django
+suite, and `scripts/rehearse-migration-conflict.py` against disposable
+PostgreSQL 18; the rehearsal injects parallel leaves, confirms Django rejects
+the unresolved graph, then applies a compatible merge migration. PR checks do
+not receive Neon credentials.
 The `Neon database migrations` workflow listens for a successful `Django tests`
 run caused by a push to protected `dev` or `preprod`. That push is the result of
 a merged PR; PR-close events (including unmerged closures) cannot trigger this

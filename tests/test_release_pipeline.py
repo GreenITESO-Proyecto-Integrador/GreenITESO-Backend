@@ -411,6 +411,7 @@ def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
 
 def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates() -> None:
     workflow = DATABASE_MIGRATIONS.read_text()
+    tests_workflow = (ROOT / ".github" / "workflows" / "tests.yaml").read_text()
     assert 'workflows: ["Django tests"]' in workflow
     assert "types: [completed]" in workflow
     assert "branches: [dev, preprod]" in workflow
@@ -429,6 +430,7 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert workflow.index("Apply committed migrations") < workflow.index("Verify access through the pooled application role")
     assert "cancel-in-progress: false" in workflow
     assert "continue-on-error" not in workflow
+    assert "scripts/rehearse-migration-conflict.py" in tests_workflow
 
 
 def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -> None:

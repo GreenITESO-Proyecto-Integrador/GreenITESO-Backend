@@ -357,7 +357,7 @@ def add_mission_contribution(
 
 def create_action_logs(
     context: LogSeedContext,
-) -> tuple[int, dict[uuid.UUID, int]]:
+) -> tuple[int, dict[uuid.UUID, int], dict[uuid.UUID, int]]:
     """Create varied audit logs and exact mission contributions."""
     users = context.users
     profiles = context.profiles
@@ -368,6 +368,7 @@ def create_action_logs(
     as_of = context.as_of
     created_count = 0
     newly_approved_points: dict[uuid.UUID, int] = {}
+    newly_approved_clan_points: dict[uuid.UUID, int] = {}
     demo_reviewer = next(
         (
             candidate
@@ -430,7 +431,12 @@ def create_action_logs(
                 newly_approved_points[user.pk] = (
                     newly_approved_points.get(user.pk, 0) + action.points
                 )
-    return created_count, newly_approved_points
+                for clan in {institutional_clan, credited_private_clan}:
+                    if clan is not None:
+                        newly_approved_clan_points[clan.pk] = (
+                            newly_approved_clan_points.get(clan.pk, 0) + action.points
+                        )
+    return created_count, newly_approved_points, newly_approved_clan_points
 
 
 def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
@@ -455,10 +461,11 @@ def refresh_demo_totals(
     institutional_clans: list[Clan],
     private_clans: list[Clan],
     newly_approved_points: dict[uuid.UUID, int],
+    newly_approved_clan_points: dict[uuid.UUID, int],
     *,
     shared_dev: bool,
 ) -> None:
-    """Recompute denormalized local projections without changing source logs."""
+    """Refresh point projections without overwriting concurrent shared-dev writes."""
     for profile in profiles.values():
         available_points = newly_approved_points.get(profile.user_id, 0)
         if shared_dev:
@@ -478,6 +485,13 @@ def refresh_demo_totals(
                 )
 
     for clan in [*institutional_clans, *private_clans]:
+        if shared_dev:
+            points = newly_approved_clan_points.get(clan.pk, 0)
+            if points:
+                Clan.objects.filter(pk=clan.pk).update(
+                    total_points=F("total_points") + points
+                )
+            continue
         queryset = ActionLog.objects.filter(
             institutional_clan=clan, status=ActionLog.Status.APPROVED
         )
@@ -511,7 +525,11 @@ def seed_demo_data(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    created_logs, newly_approved_points = create_action_logs(
+    (
+        created_logs,
+        newly_approved_points,
+        newly_approved_clan_points,
+    ) = create_action_logs(
         LogSeedContext(
             users,
             profiles,
@@ -528,6 +546,7 @@ def seed_demo_data(
         institutional_clans,
         private_clans,
         newly_approved_points,
+        newly_approved_clan_points,
         shared_dev=shared_dev,
     )
     return DemoSeedResult(

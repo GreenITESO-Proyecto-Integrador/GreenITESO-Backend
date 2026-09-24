@@ -17,6 +17,7 @@ from django.db import connection, transaction
 from green_iteso.accounts.management.commands import seed_neon_dev
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     create_demo_users,
+    refresh_demo_totals,
     seed_demo_data,
 )
 from green_iteso.accounts.models import Clan, User, UserProfile
@@ -299,6 +300,20 @@ def test_shared_dev_demo_seed_is_idempotent_and_uses_student_accounts() -> None:
             seed_demo_data(catalog, as_of, shared_dev=True)
         profile.refresh_from_db()
         assert profile.available_points == initial_available - 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_shared_dev_clan_total_uses_atomic_increment() -> None:
+    clan = Clan.objects.create(
+        name="Existing shared-dev points",
+        type=Clan.ClanType.INSTITUTIONAL,
+        total_points=11,
+    )
+
+    refresh_demo_totals({}, [clan], [], {}, {clan.pk: 7}, shared_dev=True)
+
+    clan.refresh_from_db()
+    assert clan.total_points == 18
 
 
 @pytest.mark.django_db(transaction=True)

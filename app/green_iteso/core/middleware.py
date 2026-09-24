@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
+from django.utils.cache import patch_vary_headers
 
 
 class DevelopmentCorsMiddleware:
@@ -25,8 +26,10 @@ class DevelopmentCorsMiddleware:
 
         if origin in allowed_origins:
             response["Access-Control-Allow-Origin"] = origin
-            response["Vary"] = "Origin"
+            patch_vary_headers(response, ["Origin"])
             response["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-            response["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            )
 
         return response

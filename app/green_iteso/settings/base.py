@@ -110,11 +110,18 @@ if CONNECTION_ROLE not in {"app", "direct"}:
     raise RuntimeError("DJANGO_CONNECTION_ROLE must be exactly app or direct.")
 DEBUG = False
 ALLOWED_HOSTS = csv_setting("DJANGO_ALLOWED_HOSTS")
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
-    if origin.strip()
-]
+
+# CORS origins: defaults to localhost in dev, required in staging/production.
+if os.environ.get("DJANGO_ENV") == "dev":
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in os.environ.get(
+            "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
+        ).split(",")
+        if origin.strip()
+    ]
+else:
+    CORS_ALLOWED_ORIGINS = csv_setting("CORS_ALLOWED_ORIGINS")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -189,13 +196,14 @@ SPECTACULAR_SETTINGS = {
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "green_iteso.core.middleware.DevelopmentCorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+if os.environ.get("DJANGO_ENV") == "dev":
+    MIDDLEWARE.insert(1, "green_iteso.core.middleware.DevelopmentCorsMiddleware")
 
 ROOT_URLCONF = "green_iteso.urls"
 TEMPLATES = [

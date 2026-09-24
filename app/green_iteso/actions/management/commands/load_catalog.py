@@ -13,7 +13,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DatabaseError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 
 from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionCategory, ActionMaster
@@ -387,15 +387,28 @@ def load_catalog_data(catalog: CatalogData) -> tuple[int, int]:
         preserved += not was_created
 
     for item in catalog.clans:
-        clan, was_created = Clan.objects.get_or_create(
-            pk=stable_reference_id("institutional-clan", item["key"]),
-            defaults={
-                "name": item["name"],
-                "description": f"{item['description']} Career key: {item['career']}",
-                "type": Clan.ClanType.INSTITUTIONAL,
-                "privacy": Clan.Privacy.PUBLIC,
-            },
-        )
+        clan_id = stable_reference_id("institutional-clan", item["key"])
+        try:
+            with transaction.atomic():
+                if Clan.objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
+                    raise CommandError(
+                        "Catalog clan name collision; existing row was preserved."
+                    )
+                clan, was_created = Clan.objects.get_or_create(
+                    pk=clan_id,
+                    defaults={
+                        "name": item["name"],
+                        "description": f"{item['description']} Career key: {item['career']}",
+                        "type": Clan.ClanType.INSTITUTIONAL,
+                        "privacy": Clan.Privacy.PUBLIC,
+                    },
+                )
+        except IntegrityError as error:
+            if Clan.objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
+                raise CommandError(
+                    "Catalog clan name collision; existing row was preserved."
+                ) from error
+            raise
         if not was_created and (
             clan.type != Clan.ClanType.INSTITUTIONAL
             or clan.privacy != Clan.Privacy.PUBLIC

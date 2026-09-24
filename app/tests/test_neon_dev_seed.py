@@ -175,11 +175,18 @@ def test_neon_dev_target_guard_accepts_only_canonical_pooled_app(
         CANONICAL_NEON_ENDPOINTS["dev"]["pooled"],
     )
     monkeypatch.setitem(settings.DATABASES["default"], "USER", "greeniteso_dev_app")
-    monkeypatch.setitem(
-        settings.DATABASES["default"], "OPTIONS", {"sslmode": "verify-full"}
-    )
+    for options in (
+        {"sslmode": "verify-full"},
+        {"sslmode": "require", "channel_binding": "require"},
+    ):
+        monkeypatch.setitem(settings.DATABASES["default"], "OPTIONS", options)
+        ensure_neon_dev_target()
 
-    ensure_neon_dev_target()
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "OPTIONS", {"sslmode": "require"}
+    )
+    with pytest.raises(CommandError, match="channel_binding=require"):
+        ensure_neon_dev_target()
 
 
 def test_approved_catalog_requires_explicit_approval_metadata() -> None:
@@ -255,6 +262,9 @@ def test_shared_dev_demo_seed_is_idempotent_and_uses_student_accounts() -> None:
     assert second.user_created == 0
     assert User.objects.count() == first_counts[0] == 20
     assert set(User.objects.values_list("role", flat=True)) == {User.Role.STUDENT}
+    assert not ActionLog.objects.filter(
+        status=ActionLog.Status.REJECTED, reviewed_by__isnull=False
+    ).exists()
     expected_careers = {
         stable_reference_id("institutional-clan", clan["key"]): clan["career"]
         for clan in payload["institutional_clans"]

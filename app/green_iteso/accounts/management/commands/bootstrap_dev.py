@@ -357,12 +357,7 @@ def add_mission_contribution(
 
 def create_action_logs(
     context: LogSeedContext,
-) -> tuple[
-    int,
-    dict[uuid.UUID, int],
-    dict[uuid.UUID, int],
-    dict[uuid.UUID, int],
-]:
+) -> tuple[int, dict[uuid.UUID, int]]:
     """Create varied audit logs and exact mission contributions."""
     users = context.users
     profiles = context.profiles
@@ -373,8 +368,14 @@ def create_action_logs(
     as_of = context.as_of
     created_count = 0
     newly_approved_points: dict[uuid.UUID, int] = {}
-    institutional_points: dict[uuid.UUID, int] = {}
-    private_points: dict[uuid.UUID, int] = {}
+    demo_reviewer = next(
+        (
+            candidate
+            for candidate in users
+            if candidate.role in {User.Role.ADMIN, User.Role.STAFF}
+        ),
+        None,
+    )
     for index in range(24):
         user = users[index % len(users)]
         action = actions[index % len(actions)]
@@ -401,10 +402,12 @@ def create_action_logs(
                 "evidence_object_key": f"demo-only/action-{index:02d}.jpg"
                 if action.validation_type == ActionMaster.ValidationType.PHOTO
                 else "",
-                "reviewed_by": users[1]
+                "reviewed_by": demo_reviewer
                 if status == ActionLog.Status.REJECTED
                 else None,
-                "reviewed_at": as_of if status == ActionLog.Status.REJECTED else None,
+                "reviewed_at": as_of
+                if status == ActionLog.Status.REJECTED and demo_reviewer is not None
+                else None,
                 "rejection_reason": "Synthetic rejected example"
                 if status == ActionLog.Status.REJECTED
                 else "",
@@ -427,22 +430,7 @@ def create_action_logs(
                 newly_approved_points[user.pk] = (
                     newly_approved_points.get(user.pk, 0) + action.points
                 )
-                institutional_clan_id = profiles[user.pk].institutional_clan_id
-                if institutional_clan_id is not None:
-                    institutional_points[institutional_clan_id] = (
-                        institutional_points.get(institutional_clan_id, 0)
-                        + action.points
-                    )
-                private_clan_id = private_clans[index % len(private_clans)].pk
-                private_points[private_clan_id] = (
-                    private_points.get(private_clan_id, 0) + action.points
-                )
-    return (
-        created_count,
-        newly_approved_points,
-        institutional_points,
-        private_points,
-    )
+    return created_count, newly_approved_points
 
 
 def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
@@ -467,8 +455,6 @@ def refresh_demo_totals(
     institutional_clans: list[Clan],
     private_clans: list[Clan],
     newly_approved_points: dict[uuid.UUID, int],
-    institutional_points: dict[uuid.UUID, int],
-    private_points: dict[uuid.UUID, int],
     *,
     shared_dev: bool,
 ) -> None:
@@ -492,17 +478,6 @@ def refresh_demo_totals(
                 )
 
     for clan in [*institutional_clans, *private_clans]:
-        new_points = (
-            private_points.get(clan.pk, 0)
-            if clan in private_clans
-            else institutional_points.get(clan.pk, 0)
-        )
-        if shared_dev:
-            if new_points:
-                Clan.objects.filter(pk=clan.pk).update(
-                    total_points=F("total_points") + new_points
-                )
-            continue
         queryset = ActionLog.objects.filter(
             institutional_clan=clan, status=ActionLog.Status.APPROVED
         )
@@ -511,8 +486,7 @@ def refresh_demo_totals(
                 credited_private_clan=clan, status=ActionLog.Status.APPROVED
             )
         points = queryset.values_list("points_awarded", flat=True)
-        clan.total_points = sum(points)
-        clan.save(update_fields=["total_points"])
+        Clan.objects.filter(pk=clan.pk).update(total_points=sum(points))
 
 
 def seed_demo_data(
@@ -537,12 +511,7 @@ def seed_demo_data(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    (
-        created_logs,
-        newly_approved_points,
-        institutional_points,
-        private_points,
-    ) = create_action_logs(
+    created_logs, newly_approved_points = create_action_logs(
         LogSeedContext(
             users,
             profiles,
@@ -559,8 +528,6 @@ def seed_demo_data(
         institutional_clans,
         private_clans,
         newly_approved_points,
-        institutional_points,
-        private_points,
         shared_dev=shared_dev,
     )
     return DemoSeedResult(

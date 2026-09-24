@@ -73,8 +73,18 @@ def ensure_neon_dev_target() -> None:
     if str(database.get("USER", "")) != "greeniteso_dev_app":
         raise CommandError("seed_neon_dev requires the greeniteso_dev_app role.")
     options = database.get("OPTIONS", {})
-    if not isinstance(options, dict) or options.get("sslmode") != "verify-full":
-        raise CommandError("seed_neon_dev requires verified TLS for Neon dev.")
+    verified_tls = isinstance(options, dict) and (
+        options.get("sslmode") == "verify-full"
+        or (
+            options.get("sslmode") == "require"
+            and options.get("channel_binding") == "require"
+        )
+    )
+    if not verified_tls:
+        raise CommandError(
+            "seed_neon_dev requires sslmode=verify-full or "
+            "sslmode=require with channel_binding=require for Neon dev."
+        )
 
 
 def ensure_tls_connection() -> None:

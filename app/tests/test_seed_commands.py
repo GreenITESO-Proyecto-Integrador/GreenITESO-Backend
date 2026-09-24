@@ -246,6 +246,22 @@ def test_catalog_rejects_fixture_code_with_unrelated_id(kind: str) -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+def test_catalog_rejects_clan_name_collision_with_a_different_id() -> None:
+    Clan.objects.create(
+        id=uuid.uuid4(),
+        name="Draft Engineering",
+        type=Clan.ClanType.INSTITUTIONAL,
+        privacy=Clan.Privacy.PUBLIC,
+    )
+
+    with pytest.raises(CommandError, match="Catalog clan name collision"):
+        call_command("load_catalog", verbosity=0)
+
+    assert ActionCategory.objects.count() == 0
+    assert ActionMaster.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("command_name", ["load_catalog", "bootstrap_dev"])
 def test_seed_commands_reject_tls_even_when_host_looks_local(
     monkeypatch: pytest.MonkeyPatch, command_name: str

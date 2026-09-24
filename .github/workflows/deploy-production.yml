@@ -1,22 +1,17 @@
 name: Release - production
 
 on:
-  push:
+  pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      release_sha:
-        description: "Full approved commit SHA"
-        required: true
-        type: string
-      image_digest:
-        description: "Digest from a successful staging release"
-        required: true
-        type: string
+    types: [closed]
 
 jobs:
   release:
-    if: vars.CLOUD_DEPLOYMENT_ENABLED == 'true'
+    if: >-
+      vars.CLOUD_DEPLOYMENT_ENABLED == 'true' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'preprod' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       actions: read
@@ -24,8 +19,10 @@ jobs:
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: production
-      release_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
-      source_ref: main
-      image_digest: ${{ github.event_name == 'workflow_dispatch' && inputs.image_digest || '' }}
+      github_environment: production
+      release_sha: ${{ github.event.pull_request.merge_commit_sha }}
+      release_ref: main
+      source_ref: preprod
+      source_release_sha: ${{ github.event.pull_request.head.sha }}
       build: false
     secrets: inherit

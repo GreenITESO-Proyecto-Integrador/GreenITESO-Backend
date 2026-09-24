@@ -1,23 +1,61 @@
-# Deployment: three-environment release pipeline
+# Deployment and database release pipeline
 
 The proposed promotion path has three deployed environments:
 
 ```
-feature branch --PR--> dev --(promote)--> staging --(promote)--> main [production]
+feature branch --PR--> dev --promotion PR--> preprod --promotion PR--> main [production]
 ```
 
-The Git branch names are `dev`, `staging`, and `main`, following Notion diagram 5. The corresponding GitHub Environments and Neon branches are `dev`, `staging`, and `production`. This repository change
-does not create or rename remote branches. GitHub now has application Environments `dev`, `staging`, and `production` (`copilot` is tooling). Staging allows only Git `staging`; production allows only Git `main` and requires review by Fernando (`luci-efe`). The `staging` Git branch, branch protections, GCP configuration and secrets remain setup work.
+Git uses `dev`, `preprod`, and `main`. GitHub Environments are `dev`, `preprod`,
+and `production`; these map to Neon branches `dev`, `staging`, and
+`production`, respectively. There is no Git `staging` branch. The legacy Git
+`prod` branch remains protected but no longer triggers a deployment. This
+change does not create or rename remote branches. `main` does not yet exist;
+the production environment already requires approval and allows `main`, so a
+separate branch cutover must create and protect `main` before production
+promotion is possible. The duplicate GitHub `staging` environment is not used.
 
-The three replacement release callers are opt-in through the repository
-variable `CLOUD_DEPLOYMENT_ENABLED`. It is currently unset, so pushes and
-manual dispatches skip the release job before a runner, GitHub Environment,
-or deployment secret is made available. The caller guard is intentionally
-outside the reusable workflow; setting the variable to `true` still runs all
-release validation, source provenance checks, migration checks, and the
-fail-closed GCP configuration check.
+Cloud Run deployment remains opt-in through the repository variable
+`CLOUD_DEPLOYMENT_ENABLED`; it is unset, and GCP project configuration is not
+available. Do not enable it until the GCP configuration, environment secrets,
+and deployment acceptance checks are complete. The production workflow is
+triggered only by a successfully merged `preprod` → `main` PR and remains
+behind the production GitHub Environment approval.
 
-Before enabling promotion, create the `staging` Git branch at the reviewed release commit and verify `main` can advance by fast-forward. Retain legacy `test`, `preprod`, and `prod` branches until the team explicitly retires them. Promotion deliberately requires existing target branches and fast-forward history.
+The `Promote` workflow only opens PRs (`dev` → `preprod`, then `preprod` →
+`main`); it never updates protected refs directly. It refuses a target branch
+that does not exist. Keep the legacy `prod` branch and unused GitHub environment
+intact until a separately approved cutover.
+
+## Neon schema migration after merge
+
+PR checks continue to run migrations, `makemigrations --check`, and the Django
+suite against ephemeral PostgreSQL 18; they do not receive Neon credentials.
+The `Neon database migrations` workflow listens for a successful `Django tests`
+run caused by a push to protected `dev` or `preprod`. That push is the result of
+a merged PR; PR-close events (including unmerged closures) cannot trigger this
+workflow. The job also requires the test run to be successful, skips a queued
+SHA if the branch has advanced, and serializes migrations separately per Git
+branch. Thus `dev` updates Neon `dev`, while Git `preprod` updates Neon
+`staging`.
+
+The migrator uses only `DATABASE_URL_UNPOOLED` (direct URL); the post-migration
+`db_smoke` check uses only `DATABASE_URL` (pooled app URL). Django settings
+enforce SSL, canonical environment host, and role-specific pooling. A failed
+migration or smoke check fails the job. There is deliberately no automatic
+production Neon migration in this workflow; production remains gated on the
+Cloud Run release path and explicit production readiness authorization.
+The standalone Neon workflow runs only while `CLOUD_DEPLOYMENT_ENABLED` is not
+`true`. Once Cloud Run is enabled, its serialized one-shot migration job is the
+single migration path, avoiding concurrent duplicate jobs against the same
+branch.
+
+Add these environment-scoped secrets to both GitHub Environments `dev` and
+`preprod` before relying on automatic migration: `DATABASE_URL` (pooled app
+role), `DATABASE_URL_UNPOOLED` (direct migrator role), `DJANGO_SECRET_KEY`, and
+`DJANGO_ALLOWED_HOSTS`. The preprod URLs must connect to Neon `staging`, not a
+Git branch named `staging`. Secret values must never enter the repository,
+workflow logs, or issue comments. They are not configured by this change.
 
 ## Release behavior
 
@@ -27,22 +65,27 @@ that tag to an Artifact Registry digest and writes a release record only after
 the service deploy succeeds. Staging and production reuse the recorded digest;
 they do not rebuild the image.
 
-`.github/workflows/promote.yml` advances the target branch through the GitHub
-API and explicitly dispatches the target release workflow with the approved
-commit SHA. It does not rely on a `GITHUB_TOKEN` branch push to trigger another
-workflow. The target release checks that its branch still points to the
-approved SHA immediately before migration. A promotion also looks up a
-successful source release run for that exact SHA, downloads its post-deploy
-digest record, and passes that digest to the target. The target verifies the
-recorded digest still matches Artifact Registry before migration. Per-environment
-releases are serialized with `cancel-in-progress: false`; a stale queued
-release fails before it can run a migration.
+Successful promotion PR merges pass the merge commit as the target release SHA
+and the PR head as the source-image SHA. The target branch must still point at
+the merge SHA; the previous environment must have a successful release record
+for the source SHA. Before reusing that image, the workflow fetches both commits
+and requires identical Git trees, so merge/squash/rebase metadata cannot make a
+different code tree masquerade as the tested image. Each release is serialized
+with `cancel-in-progress: false`; stale releases fail before migration.
+The source branch must still point at the source SHA when the job runs; a
+newer source commit requires a fresh promotion PR.
+Promotion is intentionally linear: if a target-only fix or conflict resolution
+changes the tree, the release aborts. Move/review that fix in the preceding
+environment and open a fresh promotion PR; do not bypass the tree check or
+deploy a digest whose source tree differs from the tested target.
 
-The same provenance check runs inside the reusable workflow for every staging
-and production entry point, including a direct branch push or manual dispatch.
-An empty or user-supplied digest cannot bypass the successful source-release
-check. Non-dev invocations of `scripts/release.sh` also fail closed without a
-verified expected digest.
+The provenance check maps Git `dev` to the `staging` release input, then Git
+`preprod` to the `production` release input. An empty or user-supplied digest
+cannot bypass the successful source-release check. Non-dev invocations of
+`scripts/release.sh` fail closed without a verified expected digest. This
+provenance handoff is contract-tested locally but has not been exercised on
+GitHub Actions or GCP; keep cloud releases disabled until that validation is
+completed.
 
 Every release first runs the PostgreSQL 18 migration/test workflow against the exact approved SHA. The release job depends on that successful check before accessing GCP.
 

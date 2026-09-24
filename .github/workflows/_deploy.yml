@@ -4,16 +4,28 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: "Target GitHub Environment / Cloud Run environment"
+        description: "Django/Neon environment (dev, staging, production)"
+        required: true
+        type: string
+      github_environment:
+        description: "GitHub Environment that holds secrets and protections"
         required: true
         type: string
       release_sha:
         description: "Full commit SHA approved for this release"
         required: true
         type: string
-      source_ref:
-        description: "Branch whose current tip must still equal release_sha"
+      release_ref:
+        description: "Target branch whose current tip must still equal release_sha"
         required: true
+        type: string
+      source_ref:
+        description: "Branch that produced the source release image"
+        required: false
+        type: string
+      source_release_sha:
+        description: "Exact SHA of the previous environment's released image"
+        required: false
         type: string
       build:
         description: "Build and push the immutable commit image (dev only)"
@@ -40,7 +52,7 @@ jobs:
     needs: validate
     name: Migrate and release ${{ inputs.environment }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.github_environment }}
     permissions:
       contents: read
       actions: read
@@ -56,18 +68,18 @@ jobs:
       - name: Reject stale release before migration
         env:
           RELEASE_SHA: ${{ inputs.release_sha }}
-          SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_REF: ${{ inputs.release_ref }}
         run: |
           set -euo pipefail
           # checkout persists the authenticated origin credential helper; keep
           # the token out of command arguments and process listings.
-          current_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          current_sha="$(git ls-remote origin "refs/heads/${RELEASE_REF}" | awk '{print $1}')"
           if [ -z "$current_sha" ]; then
-            echo "Source ref '${SOURCE_REF}' does not exist; refusing release." >&2
+            echo "Release ref '${RELEASE_REF}' does not exist; refusing release." >&2
             exit 1
           fi
           if [ "$current_sha" != "$RELEASE_SHA" ]; then
-            echo "Stale release: ${SOURCE_REF} is ${current_sha}, requested ${RELEASE_SHA}." >&2
+            echo "Stale release: ${RELEASE_REF} is ${current_sha}, requested ${RELEASE_SHA}." >&2
             exit 1
           fi
 
@@ -78,6 +90,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ inputs.release_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_RELEASE_SHA: ${{ inputs.source_release_sha }}
           REQUESTED_IMAGE_DIGEST: ${{ inputs.image_digest }}
         run: scripts/verify-source-release.sh
 
@@ -129,6 +143,7 @@ jobs:
           CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ inputs.release_sha }}
+          SOURCE_RELEASE_SHA: ${{ inputs.source_release_sha }}
           EXPECTED_IMAGE_DIGEST: ${{ inputs.image_digest || steps.provenance.outputs.image_digest }}
           BUILD_IMAGE: ${{ inputs.build }}
           DJANGO_SECRET_KEY_SECRET: ${{ secrets.DJANGO_SECRET_KEY_SECRET }}

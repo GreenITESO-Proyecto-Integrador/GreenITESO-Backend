@@ -185,6 +185,7 @@ def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "RELEASE_ENVIRONMENT": "staging",
         "RELEASE_SHA": "a" * 40,
+        "GITHUB_REPOSITORY": "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
         "GITHUB_OUTPUT": str(output),
     }
     result = subprocess.run(
@@ -207,11 +208,15 @@ def _fake_provenance_gh(tmp_path: Path, record: str) -> Path:
     quoted_record = shlex.quote(record)
     gh.write_text(
         "#!/bin/sh\n"
-        'if [ "$2" = list ]; then\n'
-        '  [ "$5" = --commit ] && [ "$6" = "${SOURCE_RELEASE_SHA:-$RELEASE_SHA}" ] || exit 2\n'
+        'if [ "$1 $2" = "run list" ]; then\n'
+        '  case " $* " in *" --commit "*) exit 2 ;; esac\n'
         "  echo 123; exit 0\n"
         "fi\n"
-        'if [ "$2" = download ]; then\n'
+        'if [ "$1" = api ]; then\n'
+        '  printf \'{"artifacts":[{"id":456,"name":"%s","expired":false}]}\\n\' "$EXPECTED_ARTIFACT_NAME"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1 $2" = "run download" ]; then\n'
         '  mkdir -p "$7"\n'
         f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
         "  exit 0\n"
@@ -230,6 +235,9 @@ def _run_provenance(tmp_path: Path, record: str) -> subprocess.CompletedProcess[
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "RELEASE_ENVIRONMENT": "staging",
         "RELEASE_SHA": "a" * 40,
+        "SOURCE_ENV": "dev",
+        "GITHUB_REPOSITORY": "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
+        "EXPECTED_ARTIFACT_NAME": f"release-digest-dev-{'a' * 40}",
         "GITHUB_OUTPUT": str(output),
     }
     return subprocess.run(
@@ -273,22 +281,36 @@ def _provenance_repo(tmp_path: Path) -> tuple[Path, str, str]:
 
 
 def _run_promotion_provenance(
-    tmp_path: Path, repo: Path, source_sha: str, release_sha: str
+    tmp_path: Path,
+    repo: Path,
+    source_sha: str,
+    release_sha: str,
+    *,
+    release_environment: str = "staging",
+    source_ref: str = "dev",
+    source_environment: str = "dev",
+    source_workflow: str = "deploy-dev.yml",
+    run_head_sha: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "promotion-bin"
     fake_bin.mkdir(exist_ok=True)
     gh = fake_bin / "gh"
-    record = (
-        f"environment=dev\nrelease_sha={source_sha}\nimage_digest=sha256:{'a' * 64}\n"
-    )
+    record = f"environment={source_environment}\nrelease_sha={source_sha}\nimage_digest=sha256:{'a' * 64}\n"
     quoted_record = shlex.quote(record)
     gh.write_text(
         "#!/bin/sh\n"
-        'if [ "$2" = list ]; then\n'
-        '  [ "$5" = --commit ] && [ "$6" = "$SOURCE_RELEASE_SHA" ] || exit 2\n'
-        "  echo 123; exit 0\n"
+        'if [ "$1 $2" = "run list" ]; then\n'
+        '  case " $* " in *" --commit "*) exit 2 ;; esac\n'
+        f'  [ "$4" = "{source_workflow}" ] || exit 2\n'
+        f"  echo 123 # run head SHA is {run_head_sha or source_sha}\n"
+        "  exit 0\n"
         "fi\n"
-        'if [ "$2" = download ]; then\n'
+        'if [ "$1" = api ]; then\n'
+        f"  [ \"$2\" = \"repos/GreenITESO-Proyecto-Integrador/GreenITESO-Backend/actions/runs/123/artifacts\" ] || exit 2\n"
+        '  printf \'{"artifacts":[{"id":456,"name":"%s","expired":false}]}\\n\' "$EXPECTED_ARTIFACT_NAME"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1 $2" = "run download" ]; then\n'
         '  mkdir -p "$7"\n'
         f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
         "  exit 0\n"
@@ -299,10 +321,13 @@ def _run_promotion_provenance(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "RELEASE_ENVIRONMENT": "staging",
+        "RELEASE_ENVIRONMENT": release_environment,
         "RELEASE_SHA": release_sha,
-        "SOURCE_REF": "dev",
+        "SOURCE_REF": source_ref,
         "SOURCE_RELEASE_SHA": source_sha,
+        "SOURCE_ENV": source_environment,
+        "GITHUB_REPOSITORY": "GreenITESO-Proyecto-Integrador/GreenITESO-Backend",
+        "EXPECTED_ARTIFACT_NAME": f"release-digest-{source_environment}-{source_sha}",
         "GITHUB_OUTPUT": str(tmp_path / "promotion-output"),
     }
     return subprocess.run(
@@ -348,6 +373,37 @@ def test_promotion_provenance_accepts_different_merge_sha_with_identical_tree(
     repo, source_sha, release_sha = _provenance_repo(tmp_path)
     result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
     assert result.returncode == 0, result.stderr
+
+
+def test_production_finds_staging_artifact_when_pull_request_run_head_differs(
+    tmp_path: Path,
+) -> None:
+    repo, dev_sha, preprod_sha = _provenance_repo(tmp_path)
+    tree = _git(repo, "rev-parse", f"{preprod_sha}^{{tree}}")
+    production_sha = _git(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        preprod_sha,
+        "-m",
+        "merged production release",
+    )
+    result = _run_promotion_provenance(
+        tmp_path,
+        repo,
+        preprod_sha,
+        production_sha,
+        release_environment="production",
+        source_ref="preprod",
+        source_environment="staging",
+        source_workflow="deploy-staging.yml",
+        run_head_sha=dev_sha,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "promotion-output").read_text() == (
+        f"image_digest=sha256:{'a' * 64}\n"
+    )
 
 
 def test_promotion_provenance_rejects_target_only_tree_change(tmp_path: Path) -> None:

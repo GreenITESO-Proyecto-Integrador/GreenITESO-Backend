@@ -43,18 +43,36 @@ if [ "$SOURCE_RELEASE_SHA" != "$RELEASE_SHA" ]; then
   fi
 fi
 
-source_run_id="$(gh run list --workflow "$SOURCE_WORKFLOW" \
-  --commit "$SOURCE_RELEASE_SHA" --status completed \
-  --limit 50 --json databaseId,conclusion \
-  --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty')"
+artifact_name="release-digest-${SOURCE_ENV}-${SOURCE_RELEASE_SHA}"
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+record_dir="$(mktemp -d)"
+trap 'rm -rf "$record_dir"' EXIT
+
+# For pull_request workflows, GitHub may index a run by the PR head SHA even
+# though the release record describes the merged base-branch SHA. Find the
+# immutable artifact by its exact release SHA instead of assuming run.head_sha.
+source_run_id=""
+while IFS= read -r candidate_run_id; do
+  [[ "$candidate_run_id" =~ ^[0-9]+$ ]] || continue
+  artifacts_json="$(gh api \
+    "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts")"
+  artifact_id="$(printf '%s' "$artifacts_json" | jq -r \
+    --arg name "$artifact_name" \
+    '.artifacts[]? | select(.name == $name and .expired == false) | .id' \
+    | head -n 1)"
+  if [ -n "$artifact_id" ]; then
+    source_run_id="$candidate_run_id"
+    break
+  fi
+done < <(gh run list --workflow "$SOURCE_WORKFLOW" --status completed \
+  --limit 1000 --json databaseId,conclusion \
+  --jq 'map(select(.conclusion == "success")) | .[].databaseId')
+
 if [ -z "$source_run_id" ]; then
-  echo "No successful ${SOURCE_WORKFLOW} run exists for ${SOURCE_RELEASE_SHA}; refusing ${RELEASE_ENVIRONMENT} release." >&2
+  echo "No successful ${SOURCE_WORKFLOW} run contains artifact ${artifact_name}; refusing ${RELEASE_ENVIRONMENT} release." >&2
   exit 1
 fi
 
-artifact_name="release-digest-${SOURCE_ENV}-${SOURCE_RELEASE_SHA}"
-record_dir="$(mktemp -d)"
-trap 'rm -rf "$record_dir"' EXIT
 gh run download "$source_run_id" --name "$artifact_name" --dir "$record_dir"
 record_file="$record_dir/release-record.txt"
 if [ ! -f "$record_file" ]; then

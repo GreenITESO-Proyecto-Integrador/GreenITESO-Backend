@@ -439,6 +439,20 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "queue: max" in workflow
     assert "DATABASE_URL_UNPOOLED" in workflow
     assert "DATABASE_URL" in workflow
+    assert workflow.count("persist-credentials: false") == 2
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_BRANCH}"' in workflow
+    assert "git ls-remote origin" not in workflow
+    assert (
+        workflow.index("Install Django dependencies")
+        < workflow.index("Skip a stale queued migration")
+        < workflow.index("Require environment-scoped database settings")
+    )
+    migration_tip_check = (
+        workflow.split("- name: Recheck migration eligibility", 1)[1]
+        .split("- name: Skip a stale queued migration", 1)[1]
+        .split("- name:", 1)[0]
+    )
+    assert "GH_TOKEN: ${{ github.token }}" in migration_tip_check
     assert "db_smoke" in workflow
     assert (
         "DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}"
@@ -575,6 +589,20 @@ def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
     reusable = WORKFLOW.read_text()
     assert "Validate release configuration" in reusable
     assert "for name in GCP_PROJECT_ID" in reusable
+    assert "persist-credentials: false" in reusable
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}"' in reusable
+    assert (
+        reusable.count('gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}"')
+        == 2
+    )
+    assert reusable.index(
+        "Recheck release ref before the release script"
+    ) < reusable.index("Migrate and deploy the release digest")
+    assert "git ls-remote origin" not in reusable
+    stale_check = reusable.split("- name: Reject stale release", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "GH_TOKEN: ${{ github.token }}" in stale_check
 
 
 def test_smoke_failure_does_not_deploy_or_record(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
+          persist-credentials: false
       - name: Evaluate migration event without database credentials
         id: evaluate
         env:
@@ -51,6 +52,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Recheck migration eligibility after waiting for the environment lock
         id: mode
@@ -59,6 +61,12 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 scripts/should-run-neon-migration.py
 
+      - name: Install Django dependencies
+        if: steps.mode.outputs.eligible == 'true'
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check -r app/requirements.txt
+
       - name: Skip a stale queued migration
         id: current
         if: steps.mode.outputs.eligible == 'true'
@@ -66,7 +74,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          current_sha="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_BRANCH}" --jq '.commit.sha')"
           if [ -z "$current_sha" ]; then
             echo "Target branch '${TARGET_BRANCH}' no longer exists; refusing migration." >&2
             exit 1
@@ -93,12 +101,6 @@ jobs:
               exit 2
             fi
           done
-
-      - name: Install Django dependencies
-        if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
-        run: |
-          python -m pip install --disable-pip-version-check --upgrade pip
-          python -m pip install --disable-pip-version-check -r app/requirements.txt
 
       - name: Apply committed migrations with the direct migrator role
         if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'

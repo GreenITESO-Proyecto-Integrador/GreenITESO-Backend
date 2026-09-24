@@ -64,16 +64,17 @@ jobs:
         with:
           ref: ${{ inputs.release_sha }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Reject stale release before migration
         env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_SHA: ${{ inputs.release_sha }}
           RELEASE_REF: ${{ inputs.release_ref }}
         run: |
           set -euo pipefail
-          # checkout persists the authenticated origin credential helper; keep
-          # the token out of command arguments and process listings.
-          current_sha="$(git ls-remote origin "refs/heads/${RELEASE_REF}" | awk '{print $1}')"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}" --jq '.commit.sha')"
           if [ -z "$current_sha" ]; then
             echo "Release ref '${RELEASE_REF}' does not exist; refusing release." >&2
             exit 1
@@ -132,6 +133,24 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Recheck release ref before the release script
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}" --jq '.commit.sha')"
+          if [ -z "$current_sha" ]; then
+            echo "Release ref '${RELEASE_REF}' no longer exists; refusing release." >&2
+            exit 1
+          fi
+          if [ "$current_sha" != "$RELEASE_SHA" ]; then
+            echo "Release ref '${RELEASE_REF}' advanced during validation; refusing stale release." >&2
+            exit 1
+          fi
 
       - name: Migrate and deploy the release digest
         env:

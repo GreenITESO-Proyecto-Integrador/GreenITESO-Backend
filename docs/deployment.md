@@ -49,6 +49,13 @@ cannot replace the current commit's queued migration. The queue supports up to
 the queue drains. Thus `dev` updates Neon `dev`, while Git `preprod` updates
 Neon `staging`.
 
+The standalone workflow checks the target branch tip after installing
+dependencies and immediately before requesting database settings. A queued SHA
+that is already stale is skipped; if a later merge lands after this final
+check, the already-tested migration may finish and the later commit is handled
+under the same serialized lock. GitHub Actions cannot atomically freeze branch
+updates with a database transaction.
+
 The migrator uses only `DATABASE_URL_UNPOOLED` (direct URL); the post-migration
 `db_smoke` check uses only `DATABASE_URL` (pooled app URL). Django settings
 enforce SSL, canonical environment host, and role-specific pooling. A failed
@@ -81,7 +88,11 @@ the merge SHA; the previous environment must have a successful release record
 for the source SHA. Before reusing that image, the workflow fetches both commits
 and requires identical Git trees, so merge/squash/rebase metadata cannot make a
 different code tree masquerade as the tested image. Each release is serialized
-with `cancel-in-progress: false`; stale releases fail before migration.
+with `queue: max`; stale releases fail before migration. The reusable release
+checks its branch at job start and checks again immediately before the combined
+migration/deploy command. If the branch advances after that last check, that
+already-approved release may complete before the queued newer release; branch
+updates themselves are not locked by Actions concurrency.
 The source branch must still point at the source SHA when the job runs; a
 newer source commit requires a fresh promotion PR.
 Promotion is intentionally linear: if a target-only fix or conflict resolution

@@ -294,6 +294,7 @@ def _run_promotion_provenance(
     run_head_sha: str | None = None,
     run_ids: tuple[str, ...] = ("123",),
     fail_run_list: bool = False,
+    download_run_id: str = "123",
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "promotion-bin"
     fake_bin.mkdir(exist_ok=True)
@@ -316,6 +317,7 @@ def _run_promotion_provenance(
         "  exit 0\n"
         "fi\n"
         'if [ "$1 $2" = "run download" ]; then\n'
+        f'  [ "$3" = "{download_run_id}" ] || exit 2\n'
         '  mkdir -p "$7"\n'
         f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
         "  exit 0\n"
@@ -416,7 +418,12 @@ def test_promotion_provenance_finds_artifact_on_an_older_successful_run(
 ) -> None:
     repo, source_sha, release_sha = _provenance_repo(tmp_path)
     result = _run_promotion_provenance(
-        tmp_path, repo, source_sha, release_sha, run_ids=("456", "123")
+        tmp_path,
+        repo,
+        source_sha,
+        release_sha,
+        run_ids=("456", "123"),
+        download_run_id="123",
     )
     assert result.returncode == 0, result.stderr
 

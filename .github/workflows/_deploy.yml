@@ -98,6 +98,7 @@ jobs:
 
       - name: Validate release configuration
         env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -119,7 +120,7 @@ jobs:
           set -euo pipefail
           for name in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT ARTIFACT_REGISTRY_LOCATION ARTIFACT_REGISTRY_REPO IMAGE_PROJECT_ID CLOUD_RUN_SERVICE DJANGO_SECRET_KEY_SECRET DATABASE_URL_SECRET DATABASE_URL_UNPOOLED_SECRET DJANGO_ALLOWED_HOSTS MIGRATION_JOB_NAME RUNTIME_SERVICE_ACCOUNT MIGRATION_SERVICE_ACCOUNT CLOUD_RUN_MAX_INSTANCES CLOUD_RUN_CONCURRENCY; do
             if [ -z "${!name:-}" ]; then
-              echo "${name} is required in the '${{ inputs.environment }}' GitHub Environment." >&2
+              echo "${name} is required in the '${TARGET_ENVIRONMENT}' GitHub Environment." >&2
               exit 2
             fi
           done

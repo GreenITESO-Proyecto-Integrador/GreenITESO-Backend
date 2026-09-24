@@ -652,6 +652,8 @@ def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
     reusable = WORKFLOW.read_text()
     assert "Validate release configuration" in reusable
     assert "for name in GCP_PROJECT_ID" in reusable
+    assert "TARGET_ENVIRONMENT: ${{ inputs.environment }}" in reusable
+    assert "'${{ inputs.environment }}' GitHub Environment" not in reusable
     assert "persist-credentials: false" in reusable
     assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${RELEASE_REF}"' in reusable
     assert (

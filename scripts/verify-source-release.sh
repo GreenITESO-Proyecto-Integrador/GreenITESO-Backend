@@ -54,11 +54,9 @@ trap 'rm -rf "$record_dir"' EXIT
 source_run_id=""
 while IFS= read -r candidate_run_id; do
   [[ "$candidate_run_id" =~ ^[0-9]+$ ]] || continue
-  artifacts_json="$(gh api \
-    "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts")"
-  artifact_id="$(printf '%s' "$artifacts_json" | jq -r \
-    --arg name "$artifact_name" \
-    '.artifacts[]? | select(.name == $name and .expired == false) | .id' \
+  artifact_id="$(gh api \
+    "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts" \
+    --jq ".artifacts[]? | select(.name == \"${artifact_name}\" and .expired == false) | .id" \
     | head -n 1)"
   if [ -n "$artifact_id" ]; then
     source_run_id="$candidate_run_id"

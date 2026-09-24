@@ -213,7 +213,8 @@ def _fake_provenance_gh(tmp_path: Path, record: str) -> Path:
         "  echo 123; exit 0\n"
         "fi\n"
         'if [ "$1" = api ]; then\n'
-        '  printf \'{"artifacts":[{"id":456,"name":"%s","expired":false}]}\\n\' "$EXPECTED_ARTIFACT_NAME"\n'
+        '  [ "$3" = --jq ] || exit 2\n'
+        '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
         "  exit 0\n"
         "fi\n"
         'if [ "$1 $2" = "run download" ]; then\n'
@@ -307,7 +308,8 @@ def _run_promotion_provenance(
         "fi\n"
         'if [ "$1" = api ]; then\n'
         f"  [ \"$2\" = \"repos/GreenITESO-Proyecto-Integrador/GreenITESO-Backend/actions/runs/123/artifacts\" ] || exit 2\n"
-        '  printf \'{"artifacts":[{"id":456,"name":"%s","expired":false}]}\\n\' "$EXPECTED_ARTIFACT_NAME"\n'
+        '  [ "$3" = --jq ] || exit 2\n'
+        '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
         "  exit 0\n"
         "fi\n"
         'if [ "$1 $2" = "run download" ]; then\n'

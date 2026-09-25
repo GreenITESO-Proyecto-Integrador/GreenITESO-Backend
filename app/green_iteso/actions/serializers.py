@@ -58,3 +58,23 @@ class ActionLogSerializer(serializers.Serializer):
     def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""
         raise NotImplementedError
+
+
+class ActionLogAuditSerializer(serializers.Serializer):
+    """Serializer to validate action log audit data from admins."""
+
+    status = serializers.ChoiceField(choices=["APPROVED", "REJECTED"])
+    rejection_reason = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if attrs.get("status") == "REJECTED" and not attrs.get("rejection_reason"):
+            raise serializers.ValidationError(
+                {"rejection_reason": "Se requiere un motivo al rechazar la evidencia."}
+            )
+        return attrs
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        raise NotImplementedError

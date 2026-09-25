@@ -7,7 +7,8 @@ approved ERD is the Notion page [9. Modelo de datos v2 (ERD con cambios
 propuestos)](https://app.notion.com/p/4e7135974884836e9ac9813ca020965f), fetched
 2026-09-11. It establishes the schema shape, frozen `ActionLog` clan FKs,
 nullable campaign context, and `podium_snapshot`; service policy, API details,
-P10/P11 behavior, and catalog values remain unresolved.
+P11 behavior and catalog values remain unresolved; P10 was ratified on
+2026-09-25 for local calendar-day boundaries and all submitted statuses.
 
 ## Ownership and migration graph
 
@@ -67,7 +68,7 @@ UUID primary keys follow the approved ERD. Django Admin is exposed only when loc
 | `ActionMaster.code` | varchar 50, required, unique | Stable action key. |
 | `ActionMaster.category` | FK Category, PROTECT | Catalog ownership. |
 | `ActionMaster.points` | positive integer | Proposed catalog value; must be greater than zero. |
-| `ActionMaster.daily_limit` | positive integer | Proposed per-local-day limit; rolling 24-hour versus calendar-day semantics are unresolved. |
+| `ActionMaster.daily_limit` | positive integer | Fernando ratified calendar-day limits in `America/Mexico_City` on 2026-09-25; the implementation counts every submitted log for that action, including rejected and pending logs, per his follow-up decision. The weekly rule is deferred. |
 | `ActionMaster.validation_type` | `NONE` / `PHOTO` | Approved ERD name/value. QR is excluded from T9a and remains a separate scope decision. |
 | `ActionMaster.co2_kg_factor`, `.water_liters_factor`, `.plastic_kg_factor` | Decimal(12,3), nonnegative | Provisional exact-decimal factors; no values are ratified by this migration. |
 | `ActionMaster.is_active` | bool | Catalog availability. |
@@ -115,7 +116,7 @@ UUID primary keys follow the approved ERD. Django Admin is exposed only when loc
 - **P3 (approved schema shape):** retain both frozen clan FKs plus campaign context and mission contribution rows. The schema does not make columns immutable against privileged SQL; the service/admin policy must do so.
 - **P8 (approved schema reservation):** retain nullable `podium_snapshot` for frozen results. Whether late rejection changes published standings remains a service/product policy.
 - **P9 (approved nullable field):** retain nullable explicit `ActionLog.campaign`. One-campaign-per-record semantics and whether free actions advance campaigns remain service policy.
-- **P10 (unanswered):** the draft indexes `(user, action, created_at)` and stores server timestamps. The proposed query policy is local calendar day in `America/Mexico_City`; rolling 24-hour semantics remain open.
+- **P10 (ratified 2026-09-25):** the index `(user, action, created_at)` and server timestamps support the selected calendar-day query in `America/Mexico_City`, converted to a half-open UTC interval. Fernando confirmed that every submitted log, including `REJECTED`, consumes the daily allowance. The separate weekly rule remains deferred.
 - **P11 (unanswered):** the draft uses one partial-unique `ClanMembership.is_active_private` source per user. The proposed authority is user selection; leader membership management remains a service rule.
 - **Catalog approval (unanswered):** `code`, positive points/limits, validation mode and exact-decimal factors are schema requirements. Seed values, environmental mappings and institutional approval are intentionally absent.
 

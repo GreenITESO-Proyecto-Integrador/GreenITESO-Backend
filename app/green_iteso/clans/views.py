@@ -46,8 +46,14 @@ class ClanViewSet(
         )
 
     @action(detail=True, methods=["post"], url_path="select-active")
-    def select_active(self, request: Request, pk: str | None = None) -> Response:
-        """Set this clan as the caller's active private clan (T2-35)."""
+    def select_active(self, request: Request, **kwargs: object) -> Response:
+        """Set this clan as the caller's active private clan (T2-35).
+
+        Takes ``**kwargs`` rather than a named ``pk`` because the value is
+        never read directly here: ``self.get_object()`` already resolves it
+        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
+        queryset and permissions in the process.
+        """
         clan = self.get_object()
         try:
             membership = select_active_private_clan_service(

@@ -33,6 +33,13 @@ that does not exist. The `Enforce promotion chain` check requires the matching
 source branch to belong to this repository; a fork with the same branch name
 does not qualify. Keep the legacy `prod` branch and unused GitHub environment
 intact until a separately approved cutover.
+For `dev` → `preprod`, Promote first requires evidence that the **exact dev
+SHA** passed Django tests and then its dev database migration plus app-role
+smoke, either through the standalone Neon job or (after GCP activation) the
+Cloud Run release job. Run Promote only after that evidence is published; an
+early run fails without opening a PR. If an already-open promotion PR tracks a
+new dev tip before evidence is ready, its required check safely fails; rerun
+the check or update the PR after the successful dev release publishes evidence.
 
 ## Neon schema migration after merge
 
@@ -53,8 +60,8 @@ commit. Because `dev` is also the default branch, review controls on privileged
 workflow changes are essential. As of 2026-09-24, branch protection requires
 the `test` status and code-owner approval on both `dev` and `preprod`, dismisses
 stale approvals, and enforces rules for admins. `dev` also requires two
-approvals; `preprod` retains a zero numeric threshold but still requires its
-code-owner approval. The existing `.github/CODEOWNERS` file names the three
+approvals. The `preprod` numeric threshold was raised from zero to one on
+2026-09-25; code-owner review remains required. The existing `.github/CODEOWNERS` file names the three
 maintainers; recheck this policy if the ownership roster or release topology
 changes. A GitHub API/response failure leaves eligibility unknown and fails the
 gate job visibly; it is not treated as a clean ineligible skip. Only an eligible
@@ -86,6 +93,15 @@ The standalone Neon workflow runs only while `CLOUD_DEPLOYMENT_ENABLED` is not
 `true`. Once Cloud Run is enabled, its serialized one-shot migration job is the
 single migration path, avoiding concurrent duplicate jobs against the same
 branch.
+`db_smoke --check-grants` requires schema USAGE without CREATE; table
+SELECT/INSERT/UPDATE/DELETE without TRUNCATE on every public table; sequence
+USAGE; and presence of every managed Django table. A database owner or
+superuser is **not** a valid app credential. Grant defaults must be established
+for the direct migrator role so future migration-created tables/sequences are
+usable by the app role. The current all-table grant includes DML on
+`django_migrations`; that is an observed least-privilege exception to revisit
+before production, not a claim that the app role is minimally scoped. See
+[the smoke contract](database-smoke.md).
 
 Add these environment-scoped secrets to both GitHub Environments `dev` and
 `preprod` before relying on automatic migration: `DATABASE_URL` (pooled app
@@ -93,6 +109,11 @@ role), `DATABASE_URL_UNPOOLED` (direct migrator role), `DJANGO_SECRET_KEY`, and
 `DJANGO_ALLOWED_HOSTS`. The preprod URLs must connect to Neon `staging`, not a
 Git branch named `staging`. Secret values must never enter the repository,
 workflow logs, or issue comments. They are not configured by this change.
+Both deployed URLs must use `sslmode=verify-full` and a trusted CA that libpq
+can actually load (for example, a validated `sslrootcert` path in the runtime).
+The local macOS read-only smoke needed `/etc/ssl/cert.pem`; that path is not a
+portable Cloud Run or GitHub setting. Validate the runtime trust store before
+activating the environment secret, without printing the URL.
 
 Do not add a `preprod`-only deployment-branch rule to the GitHub `preprod`
 Environment without changing and retesting this trigger. GitHub matches

@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 APP_DIR = Path(__file__).resolve().parents[3]
 
 _BASE_ENV = {
@@ -106,18 +108,24 @@ def test_development_cors_middleware_is_local_only() -> None:
     assert "['http://localhost:3000']" in result.stdout
 
 
-def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
+@pytest.mark.parametrize(
+    ("environment_name", "pooler_host"),
+    [
+        ("dev", "ep-lively-brook-ax4n0pys-pooler.c-4.us-east-2.aws.neon.tech"),
+        ("staging", "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech"),
+    ],
+)
+def test_development_cors_middleware_is_not_loaded_when_deployed(
+    environment_name: str, pooler_host: str
+) -> None:
     environment = {
         **_BASE_ENV,
-        "DJANGO_ENV": "staging",
+        "DJANGO_ENV": environment_name,
         "DJANGO_DEPLOYED": "true",
         "DJANGO_CONNECTION_ROLE": "app",
         "MICROSOFT_AUTH_MODE": "entra",
-        "DATABASE_URL": (
-            "postgresql://user:password@"
-            "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech:5432/db"
-            "?sslmode=verify-full"
-        ),
+        "CORS_ALLOWED_ORIGINS": "http://localhost:3000",
+        "DATABASE_URL": f"postgresql://user:password@{pooler_host}:5432/db?sslmode=verify-full",
     }
     result = subprocess.run(
         [
@@ -125,7 +133,8 @@ def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
             "-c",
             (
                 "import green_iteso.settings.base as settings; "
-                "print('DevelopmentCorsMiddleware' in settings.MIDDLEWARE); "
+                "print('green_iteso.core.middleware.DevelopmentCorsMiddleware' "
+                "in settings.MIDDLEWARE); "
                 "print(settings.CORS_ALLOWED_ORIGINS)"
             ),
         ],

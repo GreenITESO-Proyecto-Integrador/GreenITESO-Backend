@@ -1,50 +1,46 @@
-"""DRF views for the actions catalog.
-
-Equipo: Equipo 1 - Acciones, Puntos y Gamificación
-Última modificación: 2026-09-18
-"""
+"""DRF views for the actions domain."""
 
 from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import QuerySet
-from rest_framework import mixins, permissions, status, views, viewsets
+from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from .models import ActionCategory, ActionLog, ActionMaster
-from .selectors import list_active_actions, list_categories_with_active_actions
+from .selectors import list_active_action_categories, list_active_actions
 from .serializers import (
-    ActionCategoryWithActionsSerializer,
+    ActionCategorySerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
 )
 
 
-class ActionMasterViewSet(
-    mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
+class ActionCategoryViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
 ):
-    """List and retrieve active catalog actions under /api/v1/actions/.
+    """List and retrieve action categories under /api/v1/action-categories/."""
 
-    The catalog is admin-curated public data (BR-02) without personal information,
-    so reads are allowed anonymously; the frontend loads it before any login.
-    """
+    serializer_class = ActionCategorySerializer
+
+    def get_queryset(self) -> QuerySet[ActionCategory]:
+        return list_active_action_categories()
+
+
+class ActionMasterViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """List and retrieve action definitions under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
-    permission_classes = [permissions.AllowAny]
 
     def get_queryset(self) -> QuerySet[ActionMaster]:
         return list_active_actions()
-
-
-class ActionCategoryViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """List categories with their active actions under /api/v1/actions/categories/."""
-
-    serializer_class = ActionCategoryWithActionsSerializer
-    permission_classes = [permissions.AllowAny]
-
-    def get_queryset(self) -> QuerySet[ActionCategory]:
-        return list_categories_with_active_actions()
 
 
 class ActionLogCreateView(views.APIView):
@@ -95,8 +91,15 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
+                # pylint: disable=fixme
+                # TODO: Transactionalize point changes to avoid race conditions
+                # available_points is the spendable balance introduced by T2-02
+                # (see UserProfile.available_points); it accrues alongside
+                # total_points and only total_points is drawn down separately
+                # by the (future) redemption flow.
                 profile.total_points += action.points
-                profile.save(update_fields=["total_points"])
+                profile.available_points += action.points
+                profile.save(update_fields=["total_points", "available_points"])
 
                 if institutional_clan:
                     institutional_clan.total_points += action.points

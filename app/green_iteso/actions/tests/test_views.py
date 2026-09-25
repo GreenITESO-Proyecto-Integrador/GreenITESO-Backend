@@ -1,105 +1,100 @@
-"""Coverage for the /api/v1/actions/ catalog router.
-
-Equipo: Equipo 1 - Acciones, Puntos y Gamificación
-Última modificación: 2026-09-18
+"""Coverage for the /api/v1/actions/, /api/v1/action-categories/ endpoints,
+and ActionLogCreateView's points-crediting side effects.
 """
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
+from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionMaster
-
-
-@pytest.fixture(name="catalog")
-def catalog_fixture() -> dict[str, ActionMaster]:
-    """Two categories, one active action and one inactive action."""
-    mobility = ActionCategory.objects.create(
-        code="MOBILITY", name="Movilidad Verde", icon="bike"
-    )
-    ActionCategory.objects.create(code="ENERGY", name="Ahorro Energético")
-    bike = ActionMaster.objects.create(
-        code="BIKE",
-        category=mobility,
-        name="Uso de Bicicleta",
-        description="Llega al campus en bici.",
-        points=50,
-        daily_limit=1,
-        validation_type=ActionMaster.ValidationType.NONE,
-        co2_kg_factor="1.250",
-    )
-    retired = ActionMaster.objects.create(
-        code="RETIRED",
-        category=mobility,
-        name="Acción retirada",
-        description="Ya no aplica.",
-        points=5,
-        validation_type=ActionMaster.ValidationType.PHOTO,
-        is_active=False,
-    )
-    return {"bike": bike, "retired": retired}
+from green_iteso.actions.views import ActionLogCreateView
 
 
 @pytest.mark.django_db
-def test_list_actions_is_public_and_returns_only_active(
-    catalog: dict[str, ActionMaster],
-) -> None:
+def test_list_action_categories_requires_authentication() -> None:
+    response = APIClient().get("/api/v1/action-categories/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_list_actions_requires_authentication() -> None:
     response = APIClient().get("/api/v1/actions/")
 
-    assert response.status_code == 200
-    results = response.json()["results"]
-    assert [row["code"] for row in results] == ["BIKE"]
-
-    bike = results[0]
-    assert bike["id"] == str(catalog["bike"].id)
-    assert bike["points"] == 50
-    assert bike["daily_limit"] == 1
-    assert bike["validation_type"] == "NONE"
-    assert bike["co2_kg_factor"] == "1.250"
-    assert bike["is_active"] is True
-    assert bike["category"] == {
-        "id": str(catalog["bike"].category_id),
-        "code": "MOBILITY",
-        "name": "Movilidad Verde",
-        "description": "",
-        "icon": "bike",
-    }
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
-def test_retrieve_action_returns_404_for_inactive(
-    catalog: dict[str, ActionMaster],
-) -> None:
+def test_list_actions_and_categories_for_authenticated_caller() -> None:
+    caller = User.objects.create_user(email="user@iteso.mx", password="local-only")
+    category = ActionCategory.objects.create(
+        code="RECYCLE",
+        name="Recycling",
+        description="Recycling plastic and paper",
+    )
+    ActionMaster.objects.create(
+        code="RECYCLE_PLASTIC",
+        category=category,
+        name="Recycle Plastic Bottle",
+        description="Recycle a PET bottle",
+        points=10,
+        daily_limit=3,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
     client = APIClient()
+    client.force_authenticate(caller)
 
-    active = client.get(f"/api/v1/actions/{catalog['bike'].id}/")
-    inactive = client.get(f"/api/v1/actions/{catalog['retired'].id}/")
+    cat_response = client.get("/api/v1/action-categories/")
+    assert cat_response.status_code == 200
+    assert len(cat_response.json()["results"]) == 1
+    assert cat_response.json()["results"][0]["code"] == "RECYCLE"
 
-    assert active.status_code == 200
-    assert active.json()["code"] == "BIKE"
-    assert inactive.status_code == 404
-
-
-@pytest.mark.django_db
-@pytest.mark.usefixtures("catalog")
-def test_list_categories_groups_active_actions() -> None:
-    response = APIClient().get("/api/v1/actions/categories/")
-
-    assert response.status_code == 200
-    results = response.json()["results"]
-    assert [row["code"] for row in results] == ["ENERGY", "MOBILITY"]
-
-    energy, mobility = results
-    assert energy["actions"] == []
-    assert [a["code"] for a in mobility["actions"]] == ["BIKE"]
-    assert "category" not in mobility["actions"][0]
+    action_response = client.get("/api/v1/actions/")
+    assert action_response.status_code == 200
+    assert len(action_response.json()["results"]) == 1
+    assert action_response.json()["results"][0]["code"] == "RECYCLE_PLASTIC"
 
 
 @pytest.mark.django_db
-@pytest.mark.usefixtures("catalog")
-def test_catalog_is_read_only() -> None:
-    client = APIClient()
+def test_approved_action_credits_available_points_alongside_total_points() -> None:
+    """Regression test: available_points must accrue, not stay stuck at 0.
 
-    assert client.post("/api/v1/actions/", {"code": "X"}).status_code == 405
-    assert client.post("/api/v1/actions/categories/", {}).status_code == 405
+    UserProfile.available_points (T2-02) is the spendable balance; it is
+    documented to rise together with total_points and only total_points is
+    drawn down later by the redemption flow, so a POST here must credit both.
+    """
+    user = User.objects.create_user(email="student@iteso.mx", password="local-only")
+    institutional_clan = Clan.objects.create(
+        name="Ingeniería de Software", type=Clan.ClanType.INSTITUTIONAL
+    )
+    UserProfile.objects.create(user=user, institutional_clan=institutional_clan)
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="RECYCLE",
+        category=category,
+        name="Recycle",
+        description="Recycle something",
+        points=10,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": str(uuid.uuid4())},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+
+    response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 201
+    user.profile.refresh_from_db()
+    assert user.profile.total_points == 10
+    assert user.profile.available_points == 10

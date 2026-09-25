@@ -9,7 +9,11 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from .models import ActionCategory, ActionLog, ActionMaster
-from .selectors import list_active_action_categories, list_active_actions
+from .selectors import (
+    count_user_action_logs_for_local_day,
+    list_active_action_categories,
+    list_active_actions,
+)
 from .serializers import (
     ActionCategorySerializer,
     ActionLogSerializer,
@@ -68,6 +72,18 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
+            # Serialize this user's submissions so concurrent requests cannot
+            # both pass the daily count before either inserts its log.
+            user = type(user).objects.select_for_update().get(pk=user.pk)
+            if (
+                count_user_action_logs_for_local_day(user.id, action.id)
+                >= action.daily_limit
+            ):
+                return Response(
+                    {"error": "Daily limit reached for this action."},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
             profile = user.profile
             institutional_clan = profile.institutional_clan
 

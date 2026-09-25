@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
 from django.conf import settings
 from django.db import connection
+from django.utils import timezone as django_timezone
 
 from green_iteso.security import redact_database_url
 from green_iteso.settings.base import database_from_url
@@ -22,6 +24,15 @@ def test_timezone_contract() -> None:
     """Business timestamps use the Mexico City timezone while remaining aware."""
     assert settings.TIME_ZONE == "America/Mexico_City"
     assert settings.USE_TZ is True
+
+
+def test_local_calendar_date_changes_at_mexico_city_midnight() -> None:
+    """UTC timestamps on either side of local midnight belong to distinct days."""
+    before_midnight = datetime(2026, 9, 24, 5, 59, 59, tzinfo=timezone.utc)
+    at_midnight = datetime(2026, 9, 24, 6, 0, 0, tzinfo=timezone.utc)
+
+    assert django_timezone.localdate(before_midnight) == date(2026, 9, 23)
+    assert django_timezone.localdate(at_midnight) == date(2026, 9, 24)
 
 
 def test_database_is_postgresql() -> None:

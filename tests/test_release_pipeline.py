@@ -11,6 +11,7 @@ import json
 import os
 import shlex
 import subprocess
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -534,11 +535,33 @@ def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
     assert "- preprod" in workflow
     assert "- main" in workflow
     assert "- prod" not in workflow
-    assert "preprod)" in workflow
-    assert 'expected="dev"' in workflow
-    assert "main)" in workflow
-    assert 'expected="preprod"' in workflow
-    assert "\n            prod)\n" not in workflow
+    assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
+    script = textwrap.dedent(workflow.split("        run: |\n", 1)[1])
+    repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+    cases = (
+        ("preprod", "dev", repository, 0),
+        ("main", "preprod", repository, 0),
+        ("preprod", "feature", repository, 1),
+        ("main", "dev", repository, 1),
+        ("main", "preprod", "other/GreenITESO-Backend", 1),
+        ("preprod", "dev", "other/GreenITESO-Backend", 1),
+        ("prod", "preprod", repository, 1),
+    )
+    for base_ref, head_ref, head_repo, expected_code in cases:
+        result = subprocess.run(
+            ["bash", "-e", "-c", script],
+            env={
+                **os.environ,
+                "BASE_REF": base_ref,
+                "HEAD_REF": head_ref,
+                "BASE_REPO": repository,
+                "HEAD_REPO": head_repo,
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == expected_code, (base_ref, head_ref, head_repo)
 
 
 def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates() -> (

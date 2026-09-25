@@ -15,7 +15,14 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "::error::Promotion must use a branch from this repository."
+            exit 1
+          fi
+
           case "$BASE_REF" in
             preprod)
               expected="dev"

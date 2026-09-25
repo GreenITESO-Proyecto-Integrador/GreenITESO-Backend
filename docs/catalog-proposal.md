@@ -37,11 +37,11 @@ privacidad/retención y un flujo de auditoría antes de activarla. Se propone
 Activarlas más tarde requerirá nueva aprobación, nueva versión de fixture/pin
 y un mecanismo de actualización revisado; el comando actual rechaza cambios
 de filas existentes. Las dos acciones declarativas admiten abuso. P10 fue
-ratificada por Fernando el 2026-09-25 **solo en cuanto a la ventana de día
-calendario `America/Mexico_City`**; su implementación local aún no está
-fusionada ni desplegada, y sigue por decidir si los registros `REJECTED`
-consumen el límite. No activar acciones que otorguen puntos hasta probar ese
-control en el release objetivo.
+ratificada por Fernando el 2026-09-25 para la ventana de día calendario
+`America/Mexico_City` y para contar **todos** los registros enviados,
+incluidos `REJECTED`; su implementación local aún no está fusionada ni
+desplegada. No activar acciones que otorguen puntos hasta probar ese control
+en el release objetivo.
 
 Clanes institucionales propuestos (públicos):
 
@@ -60,8 +60,10 @@ cambiarlos luego no es una simple corrección de etiqueta.
 
 El onboarding actual crea clanes institucionales a partir de carrera en texto
 libre. Eso permite duplicados y puede causar colisiones con los tres clanes
-propuestos. E2 y Product deben definir el mapeo canónico, el tratamiento de
-otras carreras y variantes ortográficas antes de liberar clanes compartidos.
+propuestos. Fernando decidió el 2026-09-25 **esperar el mapeo canónico** con
+E2/Product: los nombres anteriores son candidatos documentados, no filas
+para la primera fixture compartida. Hasta esa decisión, la fixture inicial
+debería tener `institutional_clans: []` y no se ejecutará seed de clanes.
 
 Antes de aprobar: Product debe confirmar los nombres de acciones, puntos,
 límites, validaciones, estado inactivo inicial, representación de factores

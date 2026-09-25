@@ -12,11 +12,13 @@ from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connection
+from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands import release_catalog
 from green_iteso.actions.management.commands.load_catalog import (
+    load_catalog_content,
     load_catalog_file,
     stable_reference_id,
 )
@@ -449,7 +451,8 @@ def test_release_catalog_is_idempotent_and_catalog_only(
     monkeypatch.setattr(release_catalog, "ensure_tls_connection", lambda: None)
 
     call_command("release_catalog", confirm_target="dev", verbosity=0)
-    call_command("release_catalog", confirm_target="dev", verbosity=0)
+    second = call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert "0 created, 2 unchanged" in second
     assert ActionCategory.objects.filter(code="approved-mobility").count() == 1
     assert ActionMaster.objects.filter(code="approved-bike").count() == 1
     assert User.objects.count() == 0
@@ -540,6 +543,79 @@ def test_release_catalog_rolls_back_if_row_changes_after_preflight(
     assert not ActionCategory.objects.filter(code="approved-water").exists()
 
 
+def test_approved_catalog_requires_explicit_clan_details() -> None:
+    """An approved institutional clan cannot inherit local draft placeholders."""
+    payload = {
+        "schema_version": 1,
+        "status": "APPROVED",
+        "approval": {
+            "approved_by": "Synthetic test only",
+            "reference": "test-payload-not-product-approval",
+            "approved_at": "2026-01-01T00:00:00Z",
+        },
+        "categories": [],
+        "actions": [],
+        "institutional_clans": [
+            {
+                "key": "test-career",
+                "name": "Test career",
+                "type": "INSTITUTIONAL",
+                "privacy": "PUBLIC",
+            }
+        ],
+    }
+    with pytest.raises(CommandError, match="description"):
+        load_catalog_content(
+            json.dumps(payload), source="test", expected_status="APPROVED"
+        )
+    payload["institutional_clans"][0]["description"] = "Test description"
+    with pytest.raises(CommandError, match="career"):
+        load_catalog_content(
+            json.dumps(payload), source="test", expected_status="APPROVED"
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_rejects_soft_deleted_clan_identity() -> None:
+    """A hidden soft-deleted row is still an identity collision, not a new clan."""
+    clan_key = "test-career"
+    clan_id = stable_reference_id("institutional-clan", clan_key)
+    Clan.all_objects.create(
+        id=clan_id,
+        name="Test career",
+        description="Test description Career key: test-career",
+        type=Clan.ClanType.INSTITUTIONAL,
+        privacy=Clan.Privacy.PUBLIC,
+        deleted_at=timezone.now(),
+    )
+    payload = {
+        "schema_version": 1,
+        "status": "APPROVED",
+        "approval": {
+            "approved_by": "Synthetic test only",
+            "reference": "test-payload-not-product-approval",
+            "approved_at": "2026-01-01T00:00:00Z",
+        },
+        "categories": [],
+        "actions": [],
+        "institutional_clans": [
+            {
+                "key": clan_key,
+                "name": "Test career",
+                "description": "Test description",
+                "career": "test-career",
+                "type": "INSTITUTIONAL",
+                "privacy": "PUBLIC",
+            }
+        ],
+    }
+    catalog = load_catalog_content(
+        json.dumps(payload), source="test", expected_status="APPROVED"
+    )
+    with pytest.raises(CommandError, match="differs"):
+        release_catalog.reject_existing_drift(catalog)
+
+
 @pytest.mark.parametrize("environment", ["dev", "staging", "production"])
 def test_release_catalog_target_guard_checks_role_host_tls_configuration(
     monkeypatch: pytest.MonkeyPatch, environment: str
@@ -588,4 +664,12 @@ def test_release_catalog_target_guard_checks_role_host_tls_configuration(
     )
     monkeypatch.setenv("DJANGO_ENV", "wrong")
     with pytest.raises(CommandError, match="DJANGO_ENV"):
+        release_catalog.ensure_release_target(environment)
+    monkeypatch.setenv("DJANGO_ENV", environment)
+    monkeypatch.setattr(settings, "DEPLOYED", False)
+    with pytest.raises(CommandError, match="DJANGO_DEPLOYED"):
+        release_catalog.ensure_release_target(environment)
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(settings, "CONNECTION_ROLE", "direct")
+    with pytest.raises(CommandError, match="pooled app"):
         release_catalog.ensure_release_target(environment)

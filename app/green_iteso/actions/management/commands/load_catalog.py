@@ -214,7 +214,9 @@ def _validate_actions(
     return actions
 
 
-def _validate_clans(raw_clans: list[object]) -> list[dict[str, Any]]:
+def _validate_clans(
+    raw_clans: list[object], *, require_details: bool = False
+) -> list[dict[str, Any]]:
     """Validate institutional clan reference rows."""
     clan_keys: set[str] = set()
     clans: list[dict[str, Any]] = []
@@ -238,9 +240,19 @@ def _validate_clans(raw_clans: list[object]) -> list[dict[str, Any]]:
                 "name": _text(
                     item.get("name"), f"institutional_clans[{index}].name", maximum=100
                 ),
-                "description": str(item.get("description", "")).strip(),
+                "description": (
+                    _text(
+                        item.get("description"),
+                        f"institutional_clans[{index}].description",
+                        maximum=10000,
+                    )
+                    if require_details
+                    else str(item.get("description", "")).strip()
+                ),
                 "career": _text(
-                    item.get("career", "Draft career"),
+                    item.get("career")
+                    if require_details
+                    else item.get("career", "Draft career"),
                     f"institutional_clans[{index}].career",
                     maximum=150,
                 ),
@@ -256,7 +268,7 @@ def validate_catalog(payload: object, *, expected_status: str = "DRAFT") -> Cata
     )
     categories, category_codes = _validate_categories(raw_categories)
     actions = _validate_actions(raw_actions, category_codes)
-    clans = _validate_clans(raw_clans)
+    clans = _validate_clans(raw_clans, require_details=expected_status == "APPROVED")
     return CatalogData(version, tuple(categories), tuple(actions), tuple(clans))
 
 
@@ -390,11 +402,15 @@ def load_catalog_data(catalog: CatalogData) -> tuple[int, int]:
         clan_id = stable_reference_id("institutional-clan", item["key"])
         try:
             with transaction.atomic():
-                if Clan.objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
+                if (
+                    Clan.all_objects.filter(name=item["name"])
+                    .exclude(pk=clan_id)
+                    .exists()
+                ):
                     raise CommandError(
                         "Catalog clan name collision; existing row was preserved."
                     )
-                clan, was_created = Clan.objects.get_or_create(
+                clan, was_created = Clan.all_objects.get_or_create(
                     pk=clan_id,
                     defaults={
                         "name": item["name"],
@@ -404,13 +420,14 @@ def load_catalog_data(catalog: CatalogData) -> tuple[int, int]:
                     },
                 )
         except IntegrityError as error:
-            if Clan.objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
+            if Clan.all_objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
                 raise CommandError(
                     "Catalog clan name collision; existing row was preserved."
                 ) from error
             raise
         if not was_created and (
-            clan.type != Clan.ClanType.INSTITUTIONAL
+            clan.deleted_at is not None
+            or clan.type != Clan.ClanType.INSTITUTIONAL
             or clan.privacy != Clan.Privacy.PUBLIC
         ):
             raise CommandError(

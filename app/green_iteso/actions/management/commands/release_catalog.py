@@ -161,18 +161,21 @@ def reject_existing_drift(catalog: CatalogData) -> None:
 
     for item in catalog.clans:
         clan_id = stable_reference_id("institutional-clan", item["key"])
-        row = Clan.objects.filter(pk=clan_id).first()
+        row = Clan.all_objects.filter(pk=clan_id).first()
         expected = (
             item["name"],
             f"{item['description']} Career key: {item['career']}",
             Clan.ClanType.INSTITUTIONAL,
             Clan.Privacy.PUBLIC,
         )
-        if row and (row.name, row.description, row.type, row.privacy) != expected:
+        if row and (
+            row.deleted_at is not None
+            or (row.name, row.description, row.type, row.privacy) != expected
+        ):
             raise CommandError(
                 f"Approved catalog clan {item['key']} differs from fixture."
             )
-        if Clan.objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
+        if Clan.all_objects.filter(name=item["name"]).exclude(pk=clan_id).exists():
             raise CommandError(
                 f"Approved catalog clan {item['key']} identity collision."
             )

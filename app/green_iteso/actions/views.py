@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -91,23 +91,22 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
-                # pylint: disable=fixme
-                # TODO: Transactionalize point changes to avoid race conditions
-                # available_points is the spendable balance introduced by T2-02
-                # (see UserProfile.available_points); it accrues alongside
-                # total_points and only total_points is drawn down separately
-                # by the (future) redemption flow.
-                profile.total_points += action.points
-                profile.available_points += action.points
-                profile.save(update_fields=["total_points", "available_points"])
+                # Use database-side increments so concurrent approved actions
+                # and a shared-dev seed cannot overwrite each other's balance.
+                type(profile).objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action.points,
+                    available_points=F("available_points") + action.points,
+                )
 
                 if institutional_clan:
-                    institutional_clan.total_points += action.points
-                    institutional_clan.save(update_fields=["total_points"])
+                    type(institutional_clan).objects.filter(
+                        pk=institutional_clan.pk
+                    ).update(total_points=F("total_points") + action.points)
 
                 if private_clan:
-                    private_clan.total_points += action.points
-                    private_clan.save(update_fields=["total_points"])
+                    type(private_clan).objects.filter(pk=private_clan.pk).update(
+                        total_points=F("total_points") + action.points
+                    )
 
         return Response(
             {

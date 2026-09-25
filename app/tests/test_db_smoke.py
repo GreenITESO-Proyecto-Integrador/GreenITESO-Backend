@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import traceback
+import uuid
 from collections.abc import Callable
 from io import StringIO
 from typing import Any
@@ -35,6 +36,32 @@ def test_grant_smoke_rejects_a_missing_managed_model_table() -> None:
     ):
         with pytest.raises(AppGrantMismatchError):
             _check_app_grants(cursor)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_grant_smoke_accepts_a_restricted_postgres_app_role() -> None:
+    """Exercise the SQL privilege checks with an actual NOLOGIN role."""
+    role = f"smoke_app_{uuid.uuid4().hex}"
+    with connection.cursor() as cursor:
+        cursor.execute(f'CREATE ROLE "{role}" NOLOGIN')
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+            cursor.execute(
+                f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{role}"'
+            )
+            cursor.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
+            cursor.execute(f'SET ROLE "{role}"')
+            try:
+                table_count, sequence_count = _check_app_grants(cursor)
+            finally:
+                cursor.execute("RESET ROLE")
+        assert table_count >= 23
+        assert sequence_count >= 9
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute(f'DROP OWNED BY "{role}"')
+            cursor.execute(f'DROP ROLE "{role}"')
 
 
 @pytest.mark.django_db(transaction=True)

@@ -6,11 +6,13 @@ on:
       - ".github/workflows/**"
       - "scripts/**"
       - "tests/test_release_pipeline.py"
+      - "tests/test_dev_migration_evidence.py"
   pull_request:
     paths:
       - ".github/workflows/**"
       - "scripts/**"
       - "tests/test_release_pipeline.py"
+      - "tests/test_dev_migration_evidence.py"
 
 jobs:
   release-contract:
@@ -26,4 +28,4 @@ jobs:
       - name: Shell syntax check
         run: bash -n scripts/release.sh scripts/verify-source-release.sh
       - name: Run mocked release tests
-        run: python -m pytest -c /dev/null -p no:cacheprovider -p no:django -q tests/test_release_pipeline.py
+        run: python -m pytest -c /dev/null -p no:cacheprovider -p no:django -q tests/test_release_pipeline.py tests/test_dev_migration_evidence.py

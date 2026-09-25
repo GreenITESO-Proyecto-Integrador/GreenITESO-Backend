@@ -13,6 +13,7 @@ SOURCE_SHA = "a" * 40
 STAGING_SHA = "b" * 40
 TEST_RUN_ID = "100"
 MIGRATION_RUN_ID = 200
+CLOUD_RELEASE_RUN_ID = 300
 
 spec = importlib.util.spec_from_file_location("dev_evidence", SCRIPT)
 assert spec is not None and spec.loader is not None
@@ -36,6 +37,17 @@ class FakeGitHub:
             gate.SMOKE_STEP: "success",
         }
         self.artifact_names = [f"{gate.EVIDENCE_PREFIX}{source_sha}-{TEST_RUN_ID}"]
+        self.cloud_artifact_names: list[str] = []
+        self.cloud_release = {
+            "id": CLOUD_RELEASE_RUN_ID,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "push",
+            "head_branch": "dev",
+            "head_sha": source_sha,
+            "head_repository": {"full_name": REPOSITORY},
+            "path": gate.DEV_RELEASE_WORKFLOW_PATH,
+        }
         self.dev_pr = {
             "merged_at": "2026-09-24T12:00:00Z",
             "merge_commit_sha": source_sha,
@@ -104,6 +116,8 @@ class FakeGitHub:
                     }
                 ],
             }
+        if endpoint.startswith("actions/workflows/deploy-dev.yml/runs?"):
+            return {"total_count": 1, "workflow_runs": [self.cloud_release]}
         if endpoint == f"actions/runs/{TEST_RUN_ID}":
             return {
                 "status": "completed",
@@ -120,9 +134,15 @@ class FakeGitHub:
                 {
                     "name": name,
                     "expired": False,
-                    "workflow_run": {"id": MIGRATION_RUN_ID},
+                    "workflow_run": {
+                        "id": (
+                            CLOUD_RELEASE_RUN_ID
+                            if name in self.cloud_artifact_names
+                            else MIGRATION_RUN_ID
+                        )
+                    },
                 }
-                for name in self.artifact_names
+                for name in self.artifact_names + self.cloud_artifact_names
                 if name == requested_name
             ]
             return {
@@ -168,6 +188,54 @@ def test_promotion_check_accepts_exact_sha_and_default_ref_migration_run() -> No
     assert _verify_with(fake, _event(), "pull_request") == SOURCE_SHA
 
 
+def test_cloud_dev_release_artifact_proves_exact_sha_migration_and_smoke() -> None:
+    fake = FakeGitHub()
+    fake.artifact_names = []
+    fake.cloud_artifact_names = [
+        f"{gate.CLOUD_EVIDENCE_PREFIX}{SOURCE_SHA}-{CLOUD_RELEASE_RUN_ID}"
+    ]
+    assert _verify_with(fake, {"source_sha": SOURCE_SHA}, "source_sha") == SOURCE_SHA
+
+
+def test_cloud_dev_release_rejects_wrong_sha_workflow_or_artifact_run() -> None:
+    fake = FakeGitHub()
+    fake.artifact_names = []
+    fake.cloud_artifact_names = [
+        f"{gate.CLOUD_EVIDENCE_PREFIX}{'c' * 40}-{CLOUD_RELEASE_RUN_ID}"
+    ]
+    try:
+        _verify_with(fake, {"source_sha": SOURCE_SHA}, "source_sha")
+    except gate.EvidenceError as error:
+        assert "No completed Neon or cloud dev release" in str(error)
+    else:
+        raise AssertionError("accepted cloud evidence for a different SHA")
+
+    fake = FakeGitHub()
+    fake.artifact_names = []
+    fake.cloud_artifact_names = [
+        f"{gate.CLOUD_EVIDENCE_PREFIX}{SOURCE_SHA}-{CLOUD_RELEASE_RUN_ID}"
+    ]
+    fake.cloud_release["path"] = ".github/workflows/deploy-staging.yml"
+    try:
+        _verify_with(fake, {"source_sha": SOURCE_SHA}, "source_sha")
+    except gate.EvidenceError:
+        pass
+    else:
+        raise AssertionError("accepted evidence from a non-dev release workflow")
+
+    fake = FakeGitHub()
+    fake.artifact_names = []
+    fake.cloud_artifact_names = [
+        f"{gate.CLOUD_EVIDENCE_PREFIX}{SOURCE_SHA}-{CLOUD_RELEASE_RUN_ID + 1}"
+    ]
+    try:
+        _verify_with(fake, {"source_sha": SOURCE_SHA}, "source_sha")
+    except gate.EvidenceError:
+        pass
+    else:
+        raise AssertionError("accepted an artifact not attached to the release run")
+
+
 def test_staging_check_uses_exact_merged_dev_to_preprod_pr_head() -> None:
     fake = FakeGitHub()
     event = {"workflow_run": {"head_branch": "preprod", "head_sha": STAGING_SHA}}
@@ -182,7 +250,7 @@ def test_failed_or_skipped_migration_steps_do_not_prove_evidence() -> None:
             try:
                 _verify_with(fake, _event(), "pull_request")
             except gate.EvidenceError as error:
-                assert "No completed Neon migration workflow" in str(error)
+                assert "No completed Neon or cloud dev release" in str(error)
             else:
                 raise AssertionError(
                     f"accepted {required_step} conclusion {step_conclusion}"
@@ -195,7 +263,7 @@ def test_failed_migration_job_is_not_accepted() -> None:
     try:
         _verify_with(fake, _event(), "pull_request")
     except gate.EvidenceError as error:
-        assert "No completed Neon migration workflow" in str(error)
+        assert "No completed Neon or cloud dev release" in str(error)
     else:
         raise AssertionError("accepted a failed migration workflow")
 
@@ -206,7 +274,7 @@ def test_wrong_parent_sha_and_stale_artifact_are_rejected() -> None:
     try:
         _verify_with(fake, _event(), "pull_request")
     except gate.EvidenceError as error:
-        assert "No completed Neon migration workflow" in str(error)
+        assert "No completed Neon or cloud dev release" in str(error)
     else:
         raise AssertionError("accepted a test run for a different SHA")
 
@@ -215,7 +283,7 @@ def test_wrong_parent_sha_and_stale_artifact_are_rejected() -> None:
     try:
         _verify_with(stale, _event(), "pull_request")
     except gate.EvidenceError as error:
-        assert "No completed Neon migration workflow" in str(error)
+        assert "No completed Neon or cloud dev release" in str(error)
     else:
         raise AssertionError("accepted evidence for a stale SHA")
 
@@ -268,6 +336,9 @@ def test_wrong_source_merge_provenance_is_rejected() -> None:
 def test_workflows_make_both_gates_required_and_use_read_only_permissions() -> None:
     promotion = (ROOT / ".github/workflows/verify-promotion-source.yml").read_text()
     migrations = (ROOT / ".github/workflows/database-migrations.yml").read_text()
+    deploy = (ROOT / ".github/workflows/_deploy.yml").read_text()
+    promote = (ROOT / ".github/workflows/promote.yml").read_text()
+    pipeline = (ROOT / ".github/workflows/pipeline-tests.yml").read_text()
     assert "name: Enforce promotion chain" in promotion
     assert "actions: read" in promotion
     assert "pull-requests: read" in promotion
@@ -294,3 +365,25 @@ def test_workflows_make_both_gates_required_and_use_read_only_permissions() -> N
     assert migrations.index(
         "Recheck dev migration evidence for staging promotion"
     ) < migrations.index("Require environment-scoped database settings")
+    assert (
+        "dev-cloud-db-evidence-${{ inputs.release_sha }}-${{ github.run_id }}" in deploy
+    )
+    assert "if: success() && inputs.environment == 'dev'" in deploy
+    assert "DEV_EVIDENCE_MODE=source_sha" in promote
+    assert promote.index("DEV_EVIDENCE_MODE=source_sha") < promote.index("gh pr create")
+    assert "Rerun this workflow after the successful dev release" in promote
+    assert pipeline.count('"tests/test_dev_migration_evidence.py"') == 2
+    assert (
+        "tests/test_release_pipeline.py tests/test_dev_migration_evidence.py"
+        in pipeline
+    )
+    assert "current_source_sha" in promote
+
+
+def test_cloud_release_marker_follows_both_successful_smoke_boundaries() -> None:
+    release = (ROOT / "scripts/release.sh").read_text()
+    migration_wait = release.index('gcloud run jobs execute "$MIGRATION_JOB_NAME"')
+    smoke_wait = release.index('gcloud run jobs execute "$SMOKE_JOB_NAME"')
+    marker = release.index("app_role_smoke=success")
+    app_deploy = release.index('gcloud run deploy "$CLOUD_RUN_SERVICE"')
+    assert migration_wait < smoke_wait < marker < app_deploy

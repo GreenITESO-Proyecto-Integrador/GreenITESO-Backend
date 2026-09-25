@@ -103,6 +103,7 @@ def test_development_cors_middleware_is_local_only() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "DevelopmentCorsMiddleware" in result.stdout
+    assert "['http://localhost:3000']" in result.stdout
 
 
 def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
@@ -112,7 +113,6 @@ def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
         "DJANGO_DEPLOYED": "true",
         "DJANGO_CONNECTION_ROLE": "app",
         "MICROSOFT_AUTH_MODE": "entra",
-        "CORS_ALLOWED_ORIGINS": "https://staging.example.com",
         "DATABASE_URL": (
             "postgresql://user:password@"
             "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech:5432/db"
@@ -125,7 +125,8 @@ def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
             "-c",
             (
                 "import green_iteso.settings.base as settings; "
-                "print('DevelopmentCorsMiddleware' in settings.MIDDLEWARE)"
+                "print('DevelopmentCorsMiddleware' in settings.MIDDLEWARE); "
+                "print(settings.CORS_ALLOWED_ORIGINS)"
             ),
         ],
         cwd=APP_DIR,
@@ -137,80 +138,4 @@ def test_development_cors_middleware_is_not_loaded_outside_dev() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "False"
-
-
-def test_cors_allowed_origins_is_required_outside_dev() -> None:
-    environment = {
-        **_BASE_ENV,
-        "DJANGO_ENV": "staging",
-        "DJANGO_DEPLOYED": "true",
-        "DJANGO_CONNECTION_ROLE": "app",
-        "MICROSOFT_AUTH_MODE": "entra",
-        "CORS_ALLOWED_ORIGINS": "",
-        "DATABASE_URL": (
-            "postgresql://user:password@"
-            "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech:"
-            "5432/db?sslmode=verify-full"
-        ),
-    }
-    result = subprocess.run(
-        [sys.executable, "-c", "import django; django.setup()"],
-        cwd=APP_DIR,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-
-    assert result.returncode != 0
-    assert "CORS_ALLOWED_ORIGINS" in result.stderr
-
-
-def test_cors_allowed_origins_defaults_to_localhost_only_in_dev() -> None:
-    result = _check_settings(
-        DJANGO_ENV="dev",
-        DJANGO_DEPLOYED="false",
-        DJANGO_CONNECTION_ROLE="app",
-        MICROSOFT_AUTH_MODE="mock",
-    )
-
-    assert result.returncode == 0, result.stderr
-    # Default includes localhost:3000 without explicit CORS_ALLOWED_ORIGINS
-    assert "DevelopmentCorsMiddleware" in result.stdout
-
-
-def test_cors_middleware_is_not_loaded_outside_dev_with_valid_cors() -> None:
-    environment = {
-        **_BASE_ENV,
-        "DJANGO_ENV": "staging",
-        "DJANGO_DEPLOYED": "true",
-        "DJANGO_CONNECTION_ROLE": "app",
-        "MICROSOFT_AUTH_MODE": "entra",
-        "CORS_ALLOWED_ORIGINS": "https://staging.example.com",
-        "DATABASE_URL": (
-            "postgresql://user:password@"
-            "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech:"
-            "5432/db?sslmode=verify-full"
-        ),
-    }
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import green_iteso.settings.base as settings; "
-                "print('DevelopmentCorsMiddleware' in settings.MIDDLEWARE)"
-            ),
-        ],
-        cwd=APP_DIR,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip().splitlines() == ["False", "[]"]

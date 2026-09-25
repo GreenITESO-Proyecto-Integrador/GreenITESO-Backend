@@ -111,7 +111,7 @@ if CONNECTION_ROLE not in {"app", "direct"}:
 DEBUG = False
 ALLOWED_HOSTS = csv_setting("DJANGO_ALLOWED_HOSTS")
 
-# CORS origins: defaults to localhost in dev, required in staging/production.
+# Only the development middleware uses this setting.
 if os.environ.get("DJANGO_ENV") == "dev":
     CORS_ALLOWED_ORIGINS = [
         origin.strip()
@@ -121,7 +121,7 @@ if os.environ.get("DJANGO_ENV") == "dev":
         if origin.strip()
     ]
 else:
-    CORS_ALLOWED_ORIGINS = csv_setting("CORS_ALLOWED_ORIGINS")
+    CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
     "django.contrib.admin",

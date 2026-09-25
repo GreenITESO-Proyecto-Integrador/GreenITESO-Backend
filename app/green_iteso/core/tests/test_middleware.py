@@ -44,7 +44,7 @@ def test_disallowed_origin_passes_through_without_cors_headers() -> None:
     assert "Access-Control-Allow-Origin" not in response
     assert "Access-Control-Allow-Headers" not in response
     assert "Access-Control-Allow-Methods" not in response
-    assert response["Vary"] == "Cookie"
+    assert response["Vary"] == "Cookie, Origin"
 
 
 @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:3000"])
@@ -59,6 +59,7 @@ def test_allowed_preflight_returns_no_content_without_calling_view() -> None:
     request = RequestFactory().options(
         "/api/v1/users/me/",
         HTTP_ORIGIN="http://localhost:3000",
+        HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
     )
 
     response = DevelopmentCorsMiddleware(get_response)(request)
@@ -67,6 +68,19 @@ def test_allowed_preflight_returns_no_content_without_calling_view() -> None:
     assert response.content == b""
     assert called is False
     assert response["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
+
+@override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:3000"])
+def test_non_preflight_options_reaches_view() -> None:
+    request = RequestFactory().options(
+        "/api/v1/users/me/",
+        HTTP_ORIGIN="http://localhost:3000",
+    )
+
+    response = DevelopmentCorsMiddleware(_response_with_vary_cookie)(request)
+
+    assert response.status_code == 200
+    assert response.content == b"ok"
 
 
 @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:3000"])

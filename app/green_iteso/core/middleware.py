@@ -19,14 +19,18 @@ class DevelopmentCorsMiddleware:
         origin = request.headers.get("Origin", "")
         allowed_origins = settings.CORS_ALLOWED_ORIGINS
 
-        if request.method == "OPTIONS" and origin in allowed_origins:
+        if (
+            request.method == "OPTIONS"
+            and origin in allowed_origins
+            and request.headers.get("Access-Control-Request-Method")
+        ):
             response = HttpResponse(status=204)
         else:
             response = self.get_response(request)
 
+        patch_vary_headers(response, ["Origin"])
         if origin in allowed_origins:
             response["Access-Control-Allow-Origin"] = origin
-            patch_vary_headers(response, ["Origin"])
             response["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
             response["Access-Control-Allow-Methods"] = (
                 "GET, POST, PUT, PATCH, DELETE, OPTIONS"

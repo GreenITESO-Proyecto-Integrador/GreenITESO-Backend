@@ -1,12 +1,50 @@
+"""DRF views for the actions catalog.
+
+Equipo: Equipo 1 - Acciones, Puntos y Gamificación
+Última modificación: 2026-09-18
+"""
+
 from __future__ import annotations
 
 from django.db import transaction
-from rest_framework import status, views
+from django.db.models import QuerySet
+from rest_framework import mixins, permissions, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from .models import ActionLog, ActionMaster
-from .serializers import ActionLogSerializer
+from .models import ActionCategory, ActionLog, ActionMaster
+from .selectors import list_active_actions, list_categories_with_active_actions
+from .serializers import (
+    ActionCategoryWithActionsSerializer,
+    ActionLogSerializer,
+    ActionMasterSerializer,
+)
+
+
+class ActionMasterViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
+):
+    """List and retrieve active catalog actions under /api/v1/actions/.
+
+    The catalog is admin-curated public data (BR-02) without personal information,
+    so reads are allowed anonymously; the frontend loads it before any login.
+    """
+
+    serializer_class = ActionMasterSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self) -> QuerySet[ActionMaster]:
+        return list_active_actions()
+
+
+class ActionCategoryViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """List categories with their active actions under /api/v1/actions/categories/."""
+
+    serializer_class = ActionCategoryWithActionsSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self) -> QuerySet[ActionCategory]:
+        return list_categories_with_active_actions()
 
 
 class ActionLogCreateView(views.APIView):

@@ -119,6 +119,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "green_iteso.accounts",
     "green_iteso.clans",
@@ -136,14 +137,24 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
-    "DEFAULT_THROTTLE_RATES": {"auth_login": "10/min", "auth_refresh": "30/min"},
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_login": "10/min",
+        "auth_refresh": "30/min",
+        "auth_logout": "30/min",
+    },
 }
 
-# Provisional lifetimes from the SDD; T2-11 owns the final values.
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "AUTH_HEADER_TYPES": ("Bearer",),
+    # A refresh becomes single-use: each redemption blacklists the token it
+    # rotated out, so a stolen (but not yet used) refresh token still works
+    # for the attacker, but the legitimate client's next refresh detects the
+    # theft (its old token is already blacklisted) instead of both silently
+    # sharing one live refresh token indefinitely (T2-11).
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 
 # Microsoft Entra ID login (T2-10). ``mock`` skips Microsoft entirely, so it is

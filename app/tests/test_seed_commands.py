@@ -17,6 +17,7 @@ from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands import release_catalog
 from green_iteso.actions.management.commands.load_catalog import (
+    LOCAL_DATABASE_HOSTS,
     load_catalog_content,
     load_catalog_file,
     stable_reference_id,
@@ -312,7 +313,7 @@ def test_catalog_rejects_clan_name_collision_with_a_different_id() -> None:
 def test_seed_commands_reject_tls_even_when_host_looks_local(
     monkeypatch: pytest.MonkeyPatch, command_name: str
 ) -> None:
-    monkeypatch.setitem(settings.DATABASES["default"], "HOST", "db")
+    assert str(settings.DATABASES["default"]["HOST"]).lower() in LOCAL_DATABASE_HOSTS
     monkeypatch.setattr("green_iteso.core.database.client_tls_state", lambda _raw: True)
     if command_name == "bootstrap_dev":
         monkeypatch.setenv("DJANGO_ENV", "dev")

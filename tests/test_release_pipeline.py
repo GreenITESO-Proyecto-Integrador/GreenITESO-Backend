@@ -537,7 +537,9 @@ def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
     assert "- main" in workflow
     assert "- prod" not in workflow
     assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
-    script = textwrap.dedent(workflow.split("        run: |\n", 1)[1])
+    script = textwrap.dedent(
+        workflow.split("        run: |\n", 1)[1].split("\n\n      - name:", 1)[0]
+    )
     repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
     cases = (
         ("preprod", "dev", repository, 0),

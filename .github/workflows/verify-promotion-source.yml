@@ -7,13 +7,23 @@ on:
       - preprod
       - main
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
 
 jobs:
   verify:
     name: Enforce promotion chain
     runs-on: ubuntu-latest
     steps:
+      - name: Check out trusted default-branch evidence gate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Check head branch matches the promotion chain
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -43,3 +53,12 @@ jobs:
             echo "::error::$BASE_REF can only be updated via a promotion PR from '$expected' (got '$HEAD_REF'). Merge through the Promote workflow instead."
             exit 1
           fi
+
+      - name: Require exact dev migration and app-role smoke evidence
+        if: github.base_ref == 'preprod'
+        env:
+          DEV_EVIDENCE_MODE: pull_request
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-dev-migration-evidence.py

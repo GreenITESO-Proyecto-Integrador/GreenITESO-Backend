@@ -151,7 +151,7 @@ gcloud run jobs deploy "$SMOKE_JOB_NAME" \
   --image="$IMAGE_BY_DIGEST" \
   --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=60s \
   --service-account="$RUNTIME_SERVICE_ACCOUNT" \
-  --command=python --args=app/manage.py,db_smoke,--timeout,15 \
+  --command=python --args=app/manage.py,db_smoke,--timeout,15,--check-grants \
   --set-env-vars="$RUNTIME_ENV" --set-secrets="$RUNTIME_SECRETS" \
   --region="$GCP_REGION" --project="$GCP_PROJECT_ID" --quiet
 gcloud run jobs execute "$SMOKE_JOB_NAME" \

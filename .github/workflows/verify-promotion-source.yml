@@ -4,7 +4,7 @@ on:
   pull_request:
     branches:
       - preprod
-      - prod
+      - main
 
 jobs:
   verify:
@@ -20,7 +20,7 @@ jobs:
             preprod)
               expected="dev"
               ;;
-            prod)
+            main)
               expected="preprod"
               ;;
             *)

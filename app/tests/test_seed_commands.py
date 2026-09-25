@@ -80,6 +80,30 @@ def test_load_catalog_is_idempotent_and_preserves_existing_edits() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("collision", ["stable-id", "name-only"])
+def test_draft_catalog_rejects_soft_deleted_clan_collisions(collision: str) -> None:
+    """Hidden historical clans must not be revived or reused by a local seed."""
+    clan_id = (
+        stable_reference_id("institutional-clan", "draft-engineering")
+        if collision == "stable-id"
+        else uuid.uuid4()
+    )
+    Clan.all_objects.create(
+        id=clan_id,
+        name="Draft Engineering",
+        type=Clan.ClanType.INSTITUTIONAL,
+        privacy=Clan.Privacy.PUBLIC,
+        deleted_at=timezone.now(),
+    )
+
+    with pytest.raises(CommandError, match="identity collision|name collision"):
+        call_command("load_catalog", verbosity=0)
+    assert ActionCategory.objects.count() == 0
+    assert ActionMaster.objects.count() == 0
+    assert Clan.all_objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
 def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> None:
     """The complete synthetic graph can be loaded repeatedly without duplicates."""
     call_command("load_catalog", verbosity=0)

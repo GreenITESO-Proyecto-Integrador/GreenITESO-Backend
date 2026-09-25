@@ -13,7 +13,12 @@ and `production`; these map to Neon branches `dev`, `staging`, and
 change does not create or rename remote branches. `main` does not yet exist;
 the production environment already requires approval and allows `main`, so a
 separate branch cutover must create and protect `main` before production
-promotion is possible. The duplicate GitHub `staging` environment is not used.
+promotion is possible. At cutover, require PRs and the `Enforce promotion chain`
+and `test` checks on `main`; restrict the production environment to `main` and
+prevent the deployment initiator from approving their own release. As of
+2026-09-24, production environment self-review is allowed, so approval alone is
+not yet an independent release gate. The duplicate GitHub `staging` environment
+is not used.
 
 Cloud Run deployment remains opt-in through the repository variable
 `CLOUD_DEPLOYMENT_ENABLED`; it is unset, and GCP project configuration is not

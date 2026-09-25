@@ -6,6 +6,7 @@ import math
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from django.apps import apps
@@ -162,6 +163,43 @@ def _check_app_grants(cursor: Any) -> tuple[int, int]:
     return len(table_grants), len(sequence_grants)
 
 
+@dataclass(frozen=True)
+class SmokeReadings:
+    """Aggregated, non-sensitive evidence produced by one read-only probe."""
+
+    user_count: int
+    action_log_count: int
+    ssl_status: str
+    table_count: int = 0
+    sequence_count: int = 0
+
+
+def _read_smoke(timeout: float, check_grants: bool) -> SmokeReadings:
+    """Keep every database read inside one bounded read-only transaction."""
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("SET TRANSACTION READ ONLY")
+            _set_transaction_bounds(cursor, timeout)
+            cursor.execute("SELECT 1")
+            if cursor.fetchone() != (1,):
+                raise DatabaseError("read probe returned an unexpected value")
+
+        user_count = User.objects.count()
+        action_log_count = ActionLog.objects.count()
+        table_count = sequence_count = 0
+        if check_grants:
+            with connection.cursor() as cursor:
+                table_count, sequence_count = _check_app_grants(cursor)
+        return SmokeReadings(
+            user_count,
+            action_log_count,
+            _client_ssl_status(),
+            table_count,
+            sequence_count,
+        )
+
+
 class Command(BaseCommand):
     """Check PostgreSQL reachability and the minimal migrated ORM schema."""
 
@@ -194,26 +232,7 @@ class Command(BaseCommand):
             with _deadline(raw_timeout):
                 connection.ensure_connection()
                 phase = "read"
-                with transaction.atomic():
-                    # This makes accidental future writes fail at the database
-                    # boundary, in addition to this command containing no DML.
-                    with connection.cursor() as cursor:
-                        cursor.execute(
-                            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-                        )
-                        cursor.execute("SET TRANSACTION READ ONLY")
-                        _set_transaction_bounds(cursor, raw_timeout)
-                        cursor.execute("SELECT 1")
-                        if cursor.fetchone() != (1,):
-                            raise DatabaseError(
-                                "read probe returned an unexpected value"
-                            )
-                    user_count = User.objects.count()
-                    action_log_count = ActionLog.objects.count()
-                    if check_grants:
-                        with connection.cursor() as cursor:
-                            table_count, sequence_count = _check_app_grants(cursor)
-                    ssl_status = _client_ssl_status()
+                readings = _read_smoke(raw_timeout, check_grants)
         except AppGrantMismatchError:
             raise CommandError(
                 "DB_SMOKE ERROR\n"
@@ -268,10 +287,10 @@ class Command(BaseCommand):
         self.stdout.write("DB_SMOKE OK")
         self.stdout.write("conexion: OK; SELECT 1: OK")
         self.stdout.write(
-            f"orm: User count={user_count}; ActionLog count={action_log_count}"
+            f"orm: User count={readings.user_count}; ActionLog count={readings.action_log_count}"
         )
-        self.stdout.write(f"ssl_cliente: {ssl_status}")
+        self.stdout.write(f"ssl_cliente: {readings.ssl_status}")
         if check_grants:
             self.stdout.write(
-                f"grants: {table_count} tablas; {sequence_count} secuencias; DDL denegado"
+                f"grants: {readings.table_count} tablas; {readings.sequence_count} secuencias; DDL denegado"
             )

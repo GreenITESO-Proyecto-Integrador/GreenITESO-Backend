@@ -105,11 +105,24 @@ def database_from_url(
 
 SECRET_KEY = required("DJANGO_SECRET_KEY")
 DEPLOYED = required_bool("DJANGO_DEPLOYED")
+LOCAL_DEVELOPMENT = os.environ.get("DJANGO_ENV") == "dev" and not DEPLOYED
 CONNECTION_ROLE = required("DJANGO_CONNECTION_ROLE")
 if CONNECTION_ROLE not in {"app", "direct"}:
     raise RuntimeError("DJANGO_CONNECTION_ROLE must be exactly app or direct.")
 DEBUG = False
 ALLOWED_HOSTS = csv_setting("DJANGO_ALLOWED_HOSTS")
+
+# Only the development middleware uses this setting.
+if LOCAL_DEVELOPMENT:
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in os.environ.get(
+            "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
+        ).split(",")
+        if origin.strip()
+    ]
+else:
+    CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -190,6 +203,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+if LOCAL_DEVELOPMENT:
+    MIDDLEWARE.insert(1, "green_iteso.core.middleware.DevelopmentCorsMiddleware")
 
 ROOT_URLCONF = "green_iteso.urls"
 TEMPLATES = [

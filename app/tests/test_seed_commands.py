@@ -11,7 +11,6 @@ import pytest
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import connection
 from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
@@ -313,27 +312,17 @@ def test_catalog_rejects_clan_name_collision_with_a_different_id() -> None:
 def test_seed_commands_reject_tls_even_when_host_looks_local(
     monkeypatch: pytest.MonkeyPatch, command_name: str
 ) -> None:
-    class EncryptedCursor:
-        def __enter__(self) -> EncryptedCursor:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def execute(self, _query: str) -> None:
-            return None
-
-        def fetchone(self) -> tuple[bool]:
-            return (True,)
-
     monkeypatch.setitem(settings.DATABASES["default"], "HOST", "db")
-    monkeypatch.setattr(connection, "cursor", lambda: EncryptedCursor())
+    monkeypatch.setattr("green_iteso.core.database.client_tls_state", lambda _raw: True)
     if command_name == "bootstrap_dev":
         monkeypatch.setenv("DJANGO_ENV", "dev")
         monkeypatch.setattr(settings, "DEPLOYED", False)
 
-    with pytest.raises(CommandError, match="unencrypted local PostgreSQL"):
+    with pytest.raises(
+        CommandError, match="requires an unencrypted local PostgreSQL connection"
+    ):
         call_command(command_name, verbosity=0)
+    assert ActionCategory.objects.count() == 0
 
 
 @pytest.mark.django_db(transaction=True)

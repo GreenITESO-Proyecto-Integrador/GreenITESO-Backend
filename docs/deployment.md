@@ -204,7 +204,8 @@ The three GitHub Environments exist. After the project and region choices are co
 - `RUNTIME_SERVICE_ACCOUNT` (pooled runtime credential)
 - `MIGRATION_SERVICE_ACCOUNT` (direct migration credential)
 - `CLOUD_RUN_MAX_INSTANCES` (small positive bound, for example `3`)
-- `CLOUD_RUN_CONCURRENCY` (bounded Gunicorn-aligned concurrency, for example `40`)
+- `CLOUD_RUN_CONCURRENCY` (start conservatively, for example `2`; tune only
+  after staging load tests and a Neon connection-budget review)
 - `DJANGO_SECRET_KEY_SECRET` (Secret Manager secret ID or reference)
 - `DATABASE_URL_SECRET` (pooled runtime connection)
 - `DATABASE_URL_UNPOOLED_SECRET` (direct migration connection)
@@ -222,9 +223,11 @@ act as the two runtime identities. The migration service account should have
 only direct database secret access and image pull access. The runtime service
 account should have only pooled database secret access and image pull access.
 The dev release identity also needs Artifact Registry write permission. The
-service is deployed with explicit max instances and concurrency, and the
-Gunicorn command uses the foundation defaults of two workers and two threads.
-Configure the exact IAM policy after the GCP project is selected.
+service is deployed with explicit max instances and concurrency. The current
+ASGI Gunicorn command uses two Uvicorn workers by default; it no longer sets
+Gunicorn `--threads`. Do not carry forward the previous `40` concurrency
+example without runtime load and database-connection evidence. Configure the
+exact IAM policy after the GCP project is selected.
 
 Useful primary references:
 

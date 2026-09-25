@@ -74,7 +74,8 @@ def _table_integrity() -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
     fingerprints: dict[str, dict[str, Any]] = {}
     for model in TABLE_MODELS:
         field_names = [field.attname for field in model._meta.concrete_fields]
-        rows = model._base_manager.values_list(*field_names).order_by("pk").iterator()
+        manager = model._base_manager  # pylint: disable=protected-access
+        rows = manager.values_list(*field_names).order_by("pk").iterator()
         digest = sha256()
         count = 0
         for row in rows:
@@ -278,20 +279,7 @@ def _validate_snapshot(
     markers = snapshot.get("markers")
     if not isinstance(markers, dict):
         raise CommandError(f"{label} debe incluir los dos marcadores sintéticos.")
-    expected_marker_keys = {
-        "pre_fingerprint",
-        "post_fingerprint",
-        "pre_present",
-        "post_present",
-    }
-    if (
-        set(markers) != expected_marker_keys
-        or not _is_valid_digest(markers.get("pre_fingerprint"))
-        or not _is_valid_digest(markers.get("post_fingerprint"))
-        or markers.get("pre_fingerprint") == markers.get("post_fingerprint")
-        or not isinstance(markers.get("pre_present"), bool)
-        or not isinstance(markers.get("post_present"), bool)
-    ):
+    if not _valid_marker_evidence(markers):
         raise CommandError(f"{label} no contiene fingerprints de marcadores válidos.")
 
     action_logs = snapshot.get("action_logs")
@@ -358,6 +346,25 @@ def _is_valid_digest(value: object) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _valid_marker_evidence(markers: dict[str, Any]) -> bool:
+    """Require a complete, well-formed pair of synthetic marker fingerprints."""
+    expected_keys = {
+        "pre_fingerprint",
+        "post_fingerprint",
+        "pre_present",
+        "post_present",
+    }
+    if set(markers) != expected_keys:
+        return False
+    return (
+        _is_valid_digest(markers["pre_fingerprint"])
+        and _is_valid_digest(markers["post_fingerprint"])
+        and markers["pre_fingerprint"] != markers["post_fingerprint"]
+        and isinstance(markers["pre_present"], bool)
+        and isinstance(markers["post_present"], bool)
     )
 
 
@@ -525,8 +532,7 @@ class Command(BaseCommand):
         if not 0.1 <= timeout <= MAX_TIMEOUT_SECONDS:
             raise CommandError("--timeout debe estar entre 0.1 y 60 segundos.")
 
-        typed_options = dict(options)
-        baseline_path, write_path, pre_marker, post_marker = _parse_mode(typed_options)
+        baseline_path, write_path, pre_marker, post_marker = _parse_mode(dict(options))
 
         bounded_options: dict[str, object] | None = None
         original_options: dict[str, object] = {}

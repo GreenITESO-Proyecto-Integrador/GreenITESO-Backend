@@ -25,7 +25,7 @@ from green_iteso.accounts.management.commands.db_smoke import (
     _is_missing_schema,
     _restore_bounded_options,
     _set_bounded_options,
-    _set_transaction_bounds,
+    _start_read_only_transaction,
 )
 from green_iteso.actions.models import ActionLog
 
@@ -416,9 +416,7 @@ def _read_snapshot(
     """Capture one coherent read-only snapshot and optional comparison codes."""
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            cursor.execute("SET TRANSACTION READ ONLY")
-            _set_transaction_bounds(cursor, timeout)
+            _start_read_only_transaction(cursor, timeout)
         if expected is not None:
             actual = _snapshot(str(pre_marker), str(post_marker), marker_key)
             _validate_snapshot(actual, "El estado actual")

@@ -118,6 +118,13 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _start_read_only_transaction(cursor: Any, timeout: float) -> None:
+    """Initialize the snapshot and bounds used by both database verifiers."""
+    cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+    cursor.execute("SET TRANSACTION READ ONLY")
+    _set_transaction_bounds(cursor, timeout)
+
+
 def _restore_bounded_options(
     bounded_options: dict[str, object], original_options: dict[str, object]
 ) -> None:
@@ -187,9 +194,7 @@ def _read_smoke(timeout: float, check_grants: bool) -> SmokeReadings:
     """Keep every database read inside one bounded read-only transaction."""
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            cursor.execute("SET TRANSACTION READ ONLY")
-            _set_transaction_bounds(cursor, timeout)
+            _start_read_only_transaction(cursor, timeout)
             cursor.execute("SELECT 1")
             if cursor.fetchone() != (1,):
                 raise DatabaseError("read probe returned an unexpected value")

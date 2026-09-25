@@ -214,14 +214,9 @@ def test_assign_leader_rejects_a_membership_from_a_different_clan() -> None:
 
 
 @pytest.mark.django_db
-def test_transfer_leadership_promotes_successor_and_demotes_previous_leader() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    successor = User.objects.create_user(
-        email="successor@iteso.mx", password="local-only"
-    )
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_transfer_leadership_promotes_successor_and_demotes_previous_leader(
+    leader: User, successor: User, clan: Clan
+) -> None:
     ClanMembership.objects.create(
         user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
     )
@@ -240,15 +235,9 @@ def test_transfer_leadership_promotes_successor_and_demotes_previous_leader() ->
 
 
 @pytest.mark.django_db
-def test_transfer_leadership_rejects_a_non_leader_actor() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
-    successor = User.objects.create_user(
-        email="successor@iteso.mx", password="local-only"
-    )
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
+def test_transfer_leadership_rejects_a_non_leader_actor(
+    leader: User, member: User, successor: User, clan: Clan
+) -> None:
     ClanMembership.objects.create(
         user=member, clan=clan, role=ClanMembership.MembershipRole.MEMBER
     )
@@ -264,13 +253,11 @@ def test_transfer_leadership_rejects_a_non_leader_actor() -> None:
 
 
 @pytest.mark.django_db
-def test_transfer_leadership_rejects_a_non_member_successor() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+def test_transfer_leadership_rejects_a_non_member_successor(
+    leader: User, clan: Clan
+) -> None:
     outsider = User.objects.create_user(
         email="outsider@iteso.mx", password="local-only"
-    )
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
     )
 
     with pytest.raises(ValueError):
@@ -281,18 +268,17 @@ def test_transfer_leadership_rejects_a_non_member_successor() -> None:
 
 
 @pytest.mark.django_db
-def test_transfer_leadership_rejects_transferring_to_self() -> None:
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
-    )
-
+def test_transfer_leadership_rejects_transferring_to_self(
+    leader: User, clan: Clan
+) -> None:
     with pytest.raises(ValueError):
         transfer_leadership(clan=clan, actor=leader, successor=leader)
 
 
 @pytest.mark.django_db(transaction=True)
-def test_transfer_leadership_serializes_against_a_concurrent_transfer() -> None:
+def test_transfer_leadership_serializes_against_a_concurrent_transfer(
+    leader: User, clan: Clan
+) -> None:
     """Two callers race to transfer leadership away from the same leader.
 
     The clan-row lock in ``transfer_leadership`` must serialize them: only
@@ -300,15 +286,11 @@ def test_transfer_leadership_serializes_against_a_concurrent_transfer() -> None:
     transfer succeeds and the clan never ends up leaderless or with two
     LEADER rows.
     """
-    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
     first_candidate = User.objects.create_user(
         email="first@iteso.mx", password="local-only"
     )
     second_candidate = User.objects.create_user(
         email="second@iteso.mx", password="local-only"
-    )
-    clan = create_clan(
-        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
     )
     ClanMembership.objects.create(
         user=first_candidate, clan=clan, role=ClanMembership.MembershipRole.MEMBER

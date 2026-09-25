@@ -47,8 +47,14 @@ class ClanViewSet(
         )
 
     @action(detail=True, methods=["post"], url_path="transfer-leadership")
-    def transfer_leadership(self, request: Request, pk: str | None = None) -> Response:
-        """Transfer this clan's leadership to another of its members (T2-42)."""
+    def transfer_leadership(self, request: Request, **kwargs: object) -> Response:
+        """Transfer this clan's leadership to another of its members (T2-42).
+
+        Takes ``**kwargs`` rather than a named ``pk`` because the value is
+        never read directly here: ``self.get_object()`` already resolves it
+        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
+        queryset and permissions in the process.
+        """
         clan = self.get_object()
         payload = TransferLeadershipSerializer(data=request.data)
         payload.is_valid(raise_exception=True)

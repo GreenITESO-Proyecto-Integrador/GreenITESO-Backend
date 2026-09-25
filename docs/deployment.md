@@ -29,7 +29,9 @@ behind the production GitHub Environment approval.
 
 The `Promote` workflow only opens PRs (`dev` → `preprod`, then `preprod` →
 `main`); it never updates protected refs directly. It refuses a target branch
-that does not exist. Keep the legacy `prod` branch and unused GitHub environment
+that does not exist. The `Enforce promotion chain` check requires the matching
+source branch to belong to this repository; a fork with the same branch name
+does not qualify. Keep the legacy `prod` branch and unused GitHub environment
 intact until a separately approved cutover.
 
 ## Neon schema migration after merge

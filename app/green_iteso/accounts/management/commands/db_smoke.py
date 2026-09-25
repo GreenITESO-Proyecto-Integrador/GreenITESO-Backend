@@ -118,6 +118,22 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _start_read_only_transaction(cursor: Any, timeout: float) -> None:
+    """Initialize the snapshot and bounds used by both database verifiers."""
+    cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+    cursor.execute("SET TRANSACTION READ ONLY")
+    _set_transaction_bounds(cursor, timeout)
+
+
+def _restore_bounded_options(
+    bounded_options: dict[str, object], original_options: dict[str, object]
+) -> None:
+    """Close the connection and restore process-local settings."""
+    connection.close()
+    bounded_options.clear()
+    bounded_options.update(original_options)
+
+
 def _expected_managed_tables() -> set[str]:
     """Include auto-created M2M tables, not only directly queried models."""
     return {
@@ -178,9 +194,7 @@ def _read_smoke(timeout: float, check_grants: bool) -> SmokeReadings:
     """Keep every database read inside one bounded read-only transaction."""
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            cursor.execute("SET TRANSACTION READ ONLY")
-            _set_transaction_bounds(cursor, timeout)
+            _start_read_only_transaction(cursor, timeout)
             cursor.execute("SELECT 1")
             if cursor.fetchone() != (1,):
                 raise DatabaseError("read probe returned an unexpected value")
@@ -280,9 +294,7 @@ class Command(BaseCommand):
                 f"DB_SMOKE ERROR\ndiagnostico: {diagnosis}\ndetalle: {detail}"
             ) from None
         finally:
-            connection.close()
-            bounded_options.clear()
-            bounded_options.update(original_options)
+            _restore_bounded_options(bounded_options, original_options)
 
         self.stdout.write("DB_SMOKE OK")
         self.stdout.write("conexion: OK; SELECT 1: OK")

@@ -273,6 +273,47 @@ def test_select_active_private_clan_rejects_a_non_member() -> None:
         select_active_private_clan(user=user, clan=clan)
 
 
+@pytest.mark.django_db(transaction=True)
+def test_select_active_private_clan_serializes_against_concurrent_selections() -> None:
+    """Two concurrent selections for the same user must never leave two actives.
+
+    The lock here is on the ``User`` row (a per-user invariant), not per-clan,
+    so this races two *different* target clans rather than two callers on the
+    same one: that's the actual scenario the lock has to close -- both calls
+    passing their own unlocked "clear the previous active" read before either
+    commits, which would otherwise leave both memberships marked active and
+    violate ``membership_one_active_private_per_user``.
+    """
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    other_owner = User.objects.create_user(
+        email="other@iteso.mx", password="local-only"
+    )
+    first_clan = create_clan(
+        name="First Team", clan_type=Clan.ClanType.PRIVATE, created_by=user
+    )
+    second_clan = create_clan(
+        name="Second Team", clan_type=Clan.ClanType.PRIVATE, created_by=other_owner
+    )
+    ClanMembership.objects.create(user=user, clan=second_clan)
+
+    def select(clan: Clan) -> None:
+        select_active_private_clan(user=user, clan=clan)
+
+    threads = [
+        threading.Thread(target=select, args=(first_clan,)),
+        threading.Thread(target=select, args=(second_clan,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    active_count = ClanMembership.objects.filter(
+        user=user, is_active_private=True
+    ).count()
+    assert active_count == 1
+
+
 @pytest.mark.django_db
 def test_assign_institutional_clan_creates_it_on_first_use() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"c:/Users/Alexi/Desktop/universidad/Codigo/GreenIteso/GreenITESO-Backend/.codex/vexp-hint.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

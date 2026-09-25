@@ -126,6 +126,7 @@ class ActionLog(models.Model):
         max_length=20, choices=Status.choices, default=Status.APPROVED
     )
     evidence_object_key = models.CharField(max_length=500, blank=True)
+    is_shared_publicly = models.BooleanField(default=False)
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

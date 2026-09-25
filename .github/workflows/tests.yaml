@@ -1,6 +1,11 @@
 name: Django tests
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
   push:
   pull_request:
 
@@ -32,6 +37,8 @@ jobs:
       MICROSOFT_AUTH_MODE: mock
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -41,5 +48,7 @@ jobs:
         run: python app/manage.py migrate --no-input
       - name: Check migration state
         run: python app/manage.py makemigrations --check --dry-run
+      - name: Rehearse concurrent migration-leaf conflict
+        run: python scripts/rehearse-migration-conflict.py
       - name: Run tests
         run: pytest

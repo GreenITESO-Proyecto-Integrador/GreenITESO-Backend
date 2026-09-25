@@ -4,40 +4,81 @@ on:
   workflow_dispatch:
     inputs:
       promote_to:
-        description: "Environment branch to open a promotion PR into"
+        description: "Open a promotion PR into the selected protected branch"
         required: true
         type: choice
         options:
           - preprod
-          - prod
+          - main
+
+concurrency:
+  group: promotion-${{ inputs.promote_to }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
 
 jobs:
   promote:
     name: Open promotion PR to ${{ inputs.promote_to }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: dev
           fetch-depth: 0
 
-      - name: Determine source branch
-        id: source
-        run: |
-          case "${{ inputs.promote_to }}" in
-            preprod) echo "branch=dev" >> "$GITHUB_OUTPUT" ;;
-            prod) echo "branch=preprod" >> "$GITHUB_OUTPUT" ;;
-          esac
-
-      - name: Open promotion PR
+      - name: Open a PR from the previous tier
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ inputs.promote_to }}
         run: |
+          set -euo pipefail
+          case "$TARGET_REF" in
+            preprod) SOURCE_REF=dev ;;
+            main) SOURCE_REF=preprod ;;
+            *) echo "Unsupported promotion target: ${TARGET_REF}" >&2; exit 2 ;;
+          esac
+
+          source_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          if [ -z "$source_sha" ]; then
+            echo "Source branch '${SOURCE_REF}' does not exist; refusing promotion." >&2
+            exit 1
+          fi
+
+          if [ "$TARGET_REF" = preprod ]; then
+            DEV_EVIDENCE_MODE=source_sha \
+            DEV_SOURCE_SHA="$source_sha" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GH_TOKEN="$GH_TOKEN" \
+              python3 scripts/verify-dev-migration-evidence.py || {
+                echo "Dev migration evidence is not ready for ${source_sha}. Rerun this workflow after the successful dev release publishes its evidence artifact." >&2
+                exit 1
+              }
+          fi
+
+          target_sha="$(git ls-remote origin "refs/heads/${TARGET_REF}" | awk '{print $1}')"
+          if [ -z "$target_sha" ]; then
+            echo "Target branch '${TARGET_REF}' does not exist. Create/protect it through the agreed branch cutover before promoting." >&2
+            exit 1
+          fi
+
+          existing_pr="$(gh pr list --base "$TARGET_REF" --head "$SOURCE_REF" --state open --json url --jq '.[0].url // empty')"
+          if [ -n "$existing_pr" ]; then
+            echo "Promotion PR already exists: ${existing_pr}"
+            exit 0
+          fi
+
+          current_source_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          if [ "$current_source_sha" != "$source_sha" ]; then
+            echo "Source branch '${SOURCE_REF}' advanced while evidence was being checked. Rerun this workflow for the new dev tip." >&2
+            exit 1
+          fi
+
           gh pr create \
-            --base "${{ inputs.promote_to }}" \
-            --head "${{ steps.source.outputs.branch }}" \
-            --title "chore: promote ${{ steps.source.outputs.branch }} -> ${{ inputs.promote_to }}" \
-            --body "Automated promotion opened by @${{ github.actor }} via the Promote workflow." \
-          || echo "::notice::A promotion PR from ${{ steps.source.outputs.branch }} to ${{ inputs.promote_to }} may already be open."
+            --base "$TARGET_REF" \
+            --head "$SOURCE_REF" \
+            --title "chore: promote ${SOURCE_REF} -> ${TARGET_REF}" \
+            --body "Promote validated ${SOURCE_REF} commit ${source_sha} into protected ${TARGET_REF}. Review CI and database migration evidence before merging. This workflow never updates protected branch refs directly."

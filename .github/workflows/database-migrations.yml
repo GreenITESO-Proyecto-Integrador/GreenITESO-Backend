@@ -1,0 +1,181 @@
+name: Neon database migrations
+
+on:
+  workflow_run:
+    workflows: ["Django tests"]
+    types: [completed]
+    branches: [dev, preprod]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.evaluate.outputs.eligible }}
+    steps:
+      - name: Check out trusted default-branch gate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Evaluate migration event without database credentials
+        id: evaluate
+        env:
+          CLOUD_DEPLOYMENT_ENABLED: ${{ vars.CLOUD_DEPLOYMENT_ENABLED }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/should-run-neon-migration.py
+      - name: Require dev migration evidence for staging promotion
+        if: steps.evaluate.outputs.eligible == 'true' && github.event.workflow_run.head_branch == 'preprod'
+        env:
+          DEV_EVIDENCE_MODE: staging_merge
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-dev-migration-evidence.py
+
+  migrate:
+    needs: gate
+    if: needs.gate.outputs.eligible == 'true'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    concurrency:
+      group: db-release-${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ github.event.workflow_run.head_branch }}
+    env:
+      TARGET_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      MIGRATION_SHA: ${{ github.event.workflow_run.head_sha }}
+      DJANGO_ENV: ${{ github.event.workflow_run.head_branch == 'preprod' && 'staging' || 'dev' }}
+      DJANGO_DEPLOYED: "true"
+      MICROSOFT_AUTH_MODE: entra
+
+    steps:
+      - name: Check out the tested merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+
+      - name: Check out trusted migration gate code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted-gate
+
+      - name: Recheck migration eligibility after waiting for the environment lock
+        id: mode
+        env:
+          CLOUD_DEPLOYMENT_ENABLED: ${{ vars.CLOUD_DEPLOYMENT_ENABLED }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 trusted-gate/scripts/should-run-neon-migration.py
+
+      - name: Recheck dev migration evidence for staging promotion
+        if: steps.mode.outputs.eligible == 'true' && github.event.workflow_run.head_branch == 'preprod'
+        env:
+          DEV_EVIDENCE_MODE: staging_merge
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 trusted-gate/scripts/verify-dev-migration-evidence.py
+
+      - name: Set up Python
+        if: steps.mode.outputs.eligible == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Django dependencies
+        if: steps.mode.outputs.eligible == 'true'
+        working-directory: source
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check -r app/requirements.txt
+
+      - name: Skip a stale queued migration
+        id: current
+        if: steps.mode.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_BRANCH}" --jq '.commit.sha')"
+          if [ -z "$current_sha" ]; then
+            echo "Target branch '${TARGET_BRANCH}' no longer exists; refusing migration." >&2
+            exit 1
+          fi
+          if [ "$current_sha" != "$MIGRATION_SHA" ]; then
+            echo "A newer commit is at ${TARGET_BRANCH}; its successful test run will own migration."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Require environment-scoped database settings
+        if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
+        env:
+          APP_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATOR_DATABASE_URL: ${{ secrets.DATABASE_URL_UNPOOLED }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in DJANGO_SECRET_KEY DJANGO_ALLOWED_HOSTS APP_DATABASE_URL MIGRATOR_DATABASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required Neon migration configuration is missing from the '${TARGET_BRANCH}' GitHub Environment." >&2
+              exit 2
+            fi
+          done
+
+      - name: Apply committed migrations with the direct migrator role
+        if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
+        env:
+          DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          DJANGO_CONNECTION_ROLE: direct
+        run: make -C app migrate-direct
+
+      - name: Verify access through the pooled application role
+        if: steps.mode.outputs.eligible == 'true' && steps.current.outputs.run == 'true'
+        working-directory: source
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          DJANGO_CONNECTION_ROLE: app
+        run: python app/manage.py db_smoke --timeout 15 --check-grants
+
+      - name: Prepare successful dev migration evidence marker
+        if: success() && github.event.workflow_run.head_branch == 'dev' && steps.current.outputs.run == 'true'
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_TEST_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: printf 'dev_sha=%s\ndjango_test_run_id=%s\n' "$SOURCE_SHA" "$SOURCE_TEST_RUN_ID" > source/dev-migration-evidence.txt
+
+      - name: Publish successful dev migration evidence
+        if: success() && github.event.workflow_run.head_branch == 'dev' && steps.current.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-db-evidence-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}
+          path: source/dev-migration-evidence.txt
+          if-no-files-found: error
+          retention-days: 90

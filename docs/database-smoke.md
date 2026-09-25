@@ -11,6 +11,20 @@ proceso. Tiene un límite de tiempo finito y ejecuta una transacción
 No ejecuta `migrate`, `makemigrations`, `flush` ni ninguna operación de
 escritura. El comando es de diagnóstico y no carga datos.
 
+En releases, `--check-grants` agrega una verificación de solo lectura: exige
+que existan todas las tablas de modelos Django gestionados (incluidas las
+M2M autogeneradas), `USAGE` pero no `CREATE` en `public`,
+`SELECT`/`INSERT`/`UPDATE`/`DELETE` pero no `TRUNCATE` en todas las tablas
+públicas, y `USAGE` en todas las secuencias públicas. Es una inspección de
+privilegios, no un intento de escritura. Una conexión con el dueño/superusuario
+fallará deliberadamente con `GRANT_MISMATCH`; usar el rol app pooled.
+El migrador debe configurar `ALTER DEFAULT PRIVILEGES FOR ROLE` para que
+tablas y secuencias nuevas mantengan estos grants después de futuras
+migraciones. El rol app actual conserva DML incluso sobre `django_migrations`;
+esto refleja los grants observados, no una certificación de privilegio mínimo.
+Revisar esa excepción antes de production sin cambiar permisos de un ambiente
+compartido fuera de una ventana coordinada.
+
 ## Uso local
 
 Con el PostgreSQL 18 local levantado y las migraciones aplicadas:
@@ -55,6 +69,9 @@ conteos agregados y `ssl_cliente`. Los conteos no contienen PII.
   migrator mediante el pipeline o el procedimiento local documentado; el
   smoke no las aplica automáticamente.
 - `READ_FAILURE`: la conexión funcionó, pero una consulta de lectura falló.
+- `GRANT_MISMATCH` (con `--check-grants`): falta una tabla gestionada o un
+  permiso esperado, o el rol posee `CREATE`/`TRUNCATE`. Comprobar el rol app y
+  los grants por defecto del migrador; no usar el dueño de la base como app.
 
 El estado TLS se obtiene del cliente libpq mediante
 `connection.connection.pgconn.ssl_in_use` (psycopg 3). En Neon, `pg_stat_ssl` puede mostrar `false`

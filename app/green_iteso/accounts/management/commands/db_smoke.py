@@ -6,8 +6,10 @@ import math
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
+from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DatabaseError, OperationalError, connection, transaction
 
@@ -20,6 +22,10 @@ MAX_TIMEOUT_SECONDS = 30.0
 
 class SmokeDeadlineExceededError(Exception):
     """Raised when the whole smoke check reaches its deadline."""
+
+
+class AppGrantMismatchError(Exception):
+    """The pooled application identity has missing or excessive privileges."""
 
 
 @contextmanager
@@ -112,6 +118,88 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _expected_managed_tables() -> set[str]:
+    """Include auto-created M2M tables, not only directly queried models."""
+    return {
+        model._meta.db_table
+        for model in apps.get_models(include_auto_created=True)
+        if model._meta.managed and not model._meta.proxy
+    }
+
+
+def _check_app_grants(cursor: Any) -> tuple[int, int]:
+    """Inspect every public table and sequence without touching application rows."""
+    cursor.execute(
+        "SELECT has_schema_privilege('public', 'USAGE'), "
+        "has_schema_privilege('public', 'CREATE')"
+    )
+    schema_grants = cursor.fetchone()
+    cursor.execute(
+        "SELECT c.relname, has_table_privilege(c.oid, 'SELECT'), "
+        "has_table_privilege(c.oid, 'INSERT'), "
+        "has_table_privilege(c.oid, 'UPDATE'), "
+        "has_table_privilege(c.oid, 'DELETE'), "
+        "has_table_privilege(c.oid, 'TRUNCATE') "
+        "FROM pg_catalog.pg_class AS c "
+        "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')"
+    )
+    table_grants = cursor.fetchall()
+    cursor.execute(
+        "SELECT has_sequence_privilege(c.oid, 'USAGE') "
+        "FROM pg_catalog.pg_class AS c "
+        "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'S'"
+    )
+    sequence_grants = cursor.fetchall()
+    if (
+        schema_grants != (True, False)
+        or not table_grants
+        or not _expected_managed_tables().issubset({row[0] for row in table_grants})
+        or any(row[1:] != (True, True, True, True, False) for row in table_grants)
+        or any(row != (True,) for row in sequence_grants)
+    ):
+        raise AppGrantMismatchError
+    return len(table_grants), len(sequence_grants)
+
+
+@dataclass(frozen=True)
+class SmokeReadings:
+    """Aggregated, non-sensitive evidence produced by one read-only probe."""
+
+    user_count: int
+    action_log_count: int
+    ssl_status: str
+    table_count: int = 0
+    sequence_count: int = 0
+
+
+def _read_smoke(timeout: float, check_grants: bool) -> SmokeReadings:
+    """Keep every database read inside one bounded read-only transaction."""
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("SET TRANSACTION READ ONLY")
+            _set_transaction_bounds(cursor, timeout)
+            cursor.execute("SELECT 1")
+            if cursor.fetchone() != (1,):
+                raise DatabaseError("read probe returned an unexpected value")
+
+        user_count = User.objects.count()
+        action_log_count = ActionLog.objects.count()
+        table_count = sequence_count = 0
+        if check_grants:
+            with connection.cursor() as cursor:
+                table_count, sequence_count = _check_app_grants(cursor)
+        return SmokeReadings(
+            user_count,
+            action_log_count,
+            _client_ssl_status(),
+            table_count,
+            sequence_count,
+        )
+
+
 class Command(BaseCommand):
     """Check PostgreSQL reachability and the minimal migrated ORM schema."""
 
@@ -124,10 +212,16 @@ class Command(BaseCommand):
             default=DEFAULT_TIMEOUT_SECONDS,
             help="Límite total en segundos (0.1–30; predeterminado: 5).",
         )
+        parser.add_argument(
+            "--check-grants",
+            action="store_true",
+            help="Verifica DML, secuencias y denegación DDL del rol app.",
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         del args
         raw_timeout = float(options["timeout"])
+        check_grants = bool(options["check_grants"])
         if not 0.1 <= raw_timeout <= MAX_TIMEOUT_SECONDS:
             raise CommandError("--timeout debe estar entre 0.1 y 30 segundos.")
 
@@ -138,23 +232,13 @@ class Command(BaseCommand):
             with _deadline(raw_timeout):
                 connection.ensure_connection()
                 phase = "read"
-                with transaction.atomic():
-                    # This makes accidental future writes fail at the database
-                    # boundary, in addition to this command containing no DML.
-                    with connection.cursor() as cursor:
-                        cursor.execute(
-                            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-                        )
-                        cursor.execute("SET TRANSACTION READ ONLY")
-                        _set_transaction_bounds(cursor, raw_timeout)
-                        cursor.execute("SELECT 1")
-                        if cursor.fetchone() != (1,):
-                            raise DatabaseError(
-                                "read probe returned an unexpected value"
-                            )
-                    user_count = User.objects.count()
-                    action_log_count = ActionLog.objects.count()
-                    ssl_status = _client_ssl_status()
+                readings = _read_smoke(raw_timeout, check_grants)
+        except AppGrantMismatchError:
+            raise CommandError(
+                "DB_SMOKE ERROR\n"
+                "diagnostico: GRANT_MISMATCH\n"
+                "detalle: El rol app no cumple el contrato de tablas, secuencias o denegación DDL."
+            ) from None
         except SmokeDeadlineExceededError:
             raise CommandError(
                 "DB_SMOKE ERROR\n"
@@ -203,6 +287,10 @@ class Command(BaseCommand):
         self.stdout.write("DB_SMOKE OK")
         self.stdout.write("conexion: OK; SELECT 1: OK")
         self.stdout.write(
-            f"orm: User count={user_count}; ActionLog count={action_log_count}"
+            f"orm: User count={readings.user_count}; ActionLog count={readings.action_log_count}"
         )
-        self.stdout.write(f"ssl_cliente: {ssl_status}")
+        self.stdout.write(f"ssl_cliente: {readings.ssl_status}")
+        if check_grants:
+            self.stdout.write(
+                f"grants: {readings.table_count} tablas; {readings.sequence_count} secuencias; DDL denegado"
+            )

@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DatabaseError, OperationalError, connection, transaction
 
@@ -116,6 +117,15 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _expected_managed_tables() -> set[str]:
+    """Include auto-created M2M tables, not only directly queried models."""
+    return {
+        model._meta.db_table
+        for model in apps.get_models(include_auto_created=True)
+        if model._meta.managed and not model._meta.proxy
+    }
+
+
 def _check_app_grants(cursor: Any) -> tuple[int, int]:
     """Inspect every public table and sequence without touching application rows."""
     cursor.execute(
@@ -124,7 +134,7 @@ def _check_app_grants(cursor: Any) -> tuple[int, int]:
     )
     schema_grants = cursor.fetchone()
     cursor.execute(
-        "SELECT has_table_privilege(c.oid, 'SELECT'), "
+        "SELECT c.relname, has_table_privilege(c.oid, 'SELECT'), "
         "has_table_privilege(c.oid, 'INSERT'), "
         "has_table_privilege(c.oid, 'UPDATE'), "
         "has_table_privilege(c.oid, 'DELETE'), "
@@ -144,7 +154,8 @@ def _check_app_grants(cursor: Any) -> tuple[int, int]:
     if (
         schema_grants != (True, False)
         or not table_grants
-        or any(row != (True, True, True, True, False) for row in table_grants)
+        or not _expected_managed_tables().issubset({row[0] for row in table_grants})
+        or any(row[1:] != (True, True, True, True, False) for row in table_grants)
         or any(row != (True,) for row in sequence_grants)
     ):
         raise AppGrantMismatchError

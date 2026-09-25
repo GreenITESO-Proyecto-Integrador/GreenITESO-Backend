@@ -6,6 +6,7 @@ import traceback
 from collections.abc import Callable
 from io import StringIO
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -13,10 +14,27 @@ from django.core.management.base import CommandError
 from django.db import connection, transaction
 
 from green_iteso.accounts.management.commands.db_smoke import (
+    AppGrantMismatchError,
+    _check_app_grants,
     _is_missing_schema,
     _set_bounded_options,
     _set_transaction_bounds,
 )
+
+
+def test_grant_smoke_rejects_a_missing_managed_model_table() -> None:
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (True, False)
+    cursor.fetchall.side_effect = [
+        [("accounts_user", True, True, True, True, False)],
+        [(True,)],
+    ]
+    with patch(
+        "green_iteso.accounts.management.commands.db_smoke._expected_managed_tables",
+        return_value={"accounts_user", "feed_posts"},
+    ):
+        with pytest.raises(AppGrantMismatchError):
+            _check_app_grants(cursor)
 
 
 @pytest.mark.django_db(transaction=True)

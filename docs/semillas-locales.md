@@ -115,6 +115,43 @@ parte de la migración al merge ni de un deploy automático. No se cargan semill
 en staging/preprod ni en production. **El comando se implementó y probó sólo con
 PostgreSQL 18 local; no se ejecutó contra Neon.**
 
+## Liberación aprobada solo de catálogo
+
+`release_catalog` publica únicamente categorías, acciones y clanes
+institucionales aprobados. Usa la ruta fija y versionada
+`app/green_iteso/actions/fixtures/catalog_approved_v1.json`; no admite una
+fixture elegida en la línea de comandos. El archivo se mantiene ausente hasta
+que Product registre la aprobación. El comando también falla si el pin externo
+no está configurado o no coincide con los bytes exactos de la fixture.
+
+Configura el SHA-256 en el entorno protegido del destino:
+`NEON_DEV_APPROVED_CATALOG_SHA256`,
+`NEON_STAGING_APPROVED_CATALOG_SHA256` o
+`NEON_PRODUCTION_APPROVED_CATALOG_SHA256`. La metadata `approval` del JSON es
+trazabilidad, no evidencia por sí sola de signoff. Los nombres de roles se
+validan según el mapa de Infra: `greeniteso_dev_app`,
+`greeniteso_staging_app` y `greeniteso_production_app`.
+
+Ejemplo para dev (usa el destino correspondiente en los otros ambientes):
+
+```sh
+DJANGO_ENV=dev \
+DJANGO_DEPLOYED=true \
+DJANGO_CONNECTION_ROLE=app \
+DATABASE_URL="$NEON_DEV_DATABASE_URL" \
+python app/manage.py release_catalog --confirm-target dev
+```
+
+El comando valida ambiente, confirmación explícita, host pooled canónico,
+rol app, `sslmode=verify-full` y TLS de la conexión. La carga es atómica e
+idempotente: un rerun exacto no cambia filas; los códigos o identidades que
+colisionan y las filas editadas con contenido distinto detienen la carga y
+revierten todo. Las actualizaciones no se aplican silenciosamente. No crea
+usuarios, actividad, campañas ni datos demo. Es una ejecución manual fuera del
+flujo de migración/despliegue; este trabajo no ejecuta el comando contra Neon,
+especialmente en production. No agregues valores ni configures pins sin la
+decisión registrada de Product.
+
 ## Identidad y Admin local
 
 Los usuarios demo no tienen `firebase_uid` ni contraseña. Eso evita simular un

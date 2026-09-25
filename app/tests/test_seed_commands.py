@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from django.db import connection
 
 from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.actions.management.commands import release_catalog
 from green_iteso.actions.management.commands.load_catalog import stable_reference_id
 from green_iteso.actions.models import (
     ActionCategory,
@@ -351,3 +353,220 @@ def test_bootstrap_does_not_recreate_reversed_contributions() -> None:
     log.refresh_from_db()
     assert log.status == ActionLog.Status.REJECTED
     assert not log.mission_contributions.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_fails_closed_without_fixture_or_pin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DJANGO_ENV", "dev")
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(release_catalog, "ensure_release_target", lambda _target: None)
+    monkeypatch.setattr(release_catalog, "APPROVED_CATALOG", tmp_path / "missing.json")
+    monkeypatch.delenv("NEON_DEV_APPROVED_CATALOG_SHA256", raising=False)
+    with pytest.raises(CommandError, match="SHA-256"):
+        call_command("release_catalog", confirm_target="dev", verbosity=0)
+
+    monkeypatch.setenv("NEON_DEV_APPROVED_CATALOG_SHA256", "a" * 64)
+    with pytest.raises(CommandError, match="read"):
+        call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert ActionCategory.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_rejects_fixture_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture = tmp_path / "tampered.json"
+    fixture.write_bytes(b"{}")
+    monkeypatch.setattr(release_catalog, "APPROVED_CATALOG", fixture)
+    monkeypatch.setenv("NEON_DEV_APPROVED_CATALOG_SHA256", "0" * 64)
+    monkeypatch.setenv("DJANGO_ENV", "dev")
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(release_catalog, "ensure_release_target", lambda _target: None)
+
+    with pytest.raises(CommandError, match="does not match"):
+        call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert ActionCategory.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_is_idempotent_and_catalog_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    content = json.dumps(
+        {
+            "schema_version": 1,
+            "status": "APPROVED",
+            "approval": {
+                "approved_by": "Synthetic test only",
+                "reference": "test-payload-not-product-approval",
+                "approved_at": "2026-01-01T00:00:00Z",
+            },
+            "categories": [{"code": "approved-mobility", "name": "Test Mobility"}],
+            "actions": [
+                {
+                    "code": "approved-bike",
+                    "category_code": "approved-mobility",
+                    "name": "Test Bike",
+                    "description": "Synthetic test row",
+                    "points": 1,
+                    "daily_limit": 1,
+                    "validation_type": "NONE",
+                }
+            ],
+            "institutional_clans": [],
+        }
+    ).encode()
+    fixture = tmp_path / "synthetic-approved-test.json"
+    fixture.write_bytes(content)
+    monkeypatch.setattr(release_catalog, "APPROVED_CATALOG", fixture)
+    monkeypatch.setenv(
+        "NEON_DEV_APPROVED_CATALOG_SHA256", hashlib.sha256(content).hexdigest()
+    )
+    monkeypatch.setenv("DJANGO_ENV", "dev")
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(release_catalog, "ensure_release_target", lambda _target: None)
+    monkeypatch.setattr(release_catalog, "ensure_tls_connection", lambda: None)
+
+    call_command("release_catalog", confirm_target="dev", verbosity=0)
+    call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert ActionCategory.objects.filter(code="approved-mobility").count() == 1
+    assert ActionMaster.objects.filter(code="approved-bike").count() == 1
+    assert User.objects.count() == 0
+    assert ActionLog.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_rejects_existing_edits_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    content = json.dumps(
+        {
+            "schema_version": 1,
+            "status": "APPROVED",
+            "approval": {
+                "approved_by": "Synthetic test only",
+                "reference": "test-payload-not-product-approval",
+                "approved_at": "2026-01-01T00:00:00Z",
+            },
+            "categories": [
+                {"code": "approved-mobility", "name": "Test Mobility"},
+                {"code": "approved-water", "name": "Test Water"},
+            ],
+            "actions": [],
+            "institutional_clans": [],
+        }
+    ).encode()
+    fixture = tmp_path / "synthetic-approved-test.json"
+    fixture.write_bytes(content)
+    monkeypatch.setattr(release_catalog, "APPROVED_CATALOG", fixture)
+    monkeypatch.setenv(
+        "NEON_DEV_APPROVED_CATALOG_SHA256", hashlib.sha256(content).hexdigest()
+    )
+    monkeypatch.setenv("DJANGO_ENV", "dev")
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(release_catalog, "ensure_release_target", lambda _target: None)
+    monkeypatch.setattr(release_catalog, "ensure_tls_connection", lambda: None)
+    ActionCategory.objects.create(
+        id=stable_reference_id("category", "approved-mobility"),
+        code="approved-mobility",
+        name="Edited test value",
+    )
+
+    with pytest.raises(CommandError, match="differs"):
+        call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert not ActionCategory.objects.filter(code="approved-water").exists()
+    assert ActionMaster.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_catalog_rolls_back_if_row_changes_after_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    content = json.dumps(
+        {
+            "schema_version": 1,
+            "status": "APPROVED",
+            "approval": {
+                "approved_by": "Synthetic test only",
+                "reference": "test-payload-not-product-approval",
+                "approved_at": "2026-01-01T00:00:00Z",
+            },
+            "categories": [{"code": "approved-water", "name": "Test Water"}],
+            "actions": [],
+            "institutional_clans": [],
+        }
+    ).encode()
+    fixture = tmp_path / "synthetic-approved-test.json"
+    fixture.write_bytes(content)
+    monkeypatch.setattr(release_catalog, "APPROVED_CATALOG", fixture)
+    monkeypatch.setenv(
+        "NEON_DEV_APPROVED_CATALOG_SHA256", hashlib.sha256(content).hexdigest()
+    )
+    monkeypatch.setenv("DJANGO_ENV", "dev")
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(release_catalog, "ensure_release_target", lambda _target: None)
+    monkeypatch.setattr(release_catalog, "ensure_tls_connection", lambda: None)
+    original_load = release_catalog.load_catalog_data
+
+    def intervening_change(catalog: object) -> tuple[int, int]:
+        result = original_load(catalog)
+        ActionCategory.objects.filter(code="approved-water").update(name="Conflict")
+        return result
+
+    monkeypatch.setattr(release_catalog, "load_catalog_data", intervening_change)
+    with pytest.raises(CommandError, match="differs"):
+        call_command("release_catalog", confirm_target="dev", verbosity=0)
+    assert not ActionCategory.objects.filter(code="approved-water").exists()
+
+
+@pytest.mark.parametrize("environment", ["dev", "staging", "production"])
+def test_release_catalog_target_guard_checks_role_host_tls_configuration(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    from green_iteso.settings.neon_endpoints import canonical_neon_host
+
+    monkeypatch.setenv("DJANGO_ENV", environment)
+    monkeypatch.setattr(settings, "DEPLOYED", True)
+    monkeypatch.setattr(settings, "CONNECTION_ROLE", "app")
+    monkeypatch.setitem(
+        settings.DATABASES["default"],
+        "HOST",
+        canonical_neon_host(environment, pooled=True),
+    )
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "USER", f"greeniteso_{environment}_app"
+    )
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "OPTIONS", {"sslmode": "verify-full"}
+    )
+    release_catalog.ensure_release_target(environment)
+
+    monkeypatch.setitem(settings.DATABASES["default"], "USER", "wrong-role")
+    with pytest.raises(CommandError, match="role"):
+        release_catalog.ensure_release_target(environment)
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "USER", f"greeniteso_{environment}_app"
+    )
+
+    monkeypatch.setitem(settings.DATABASES["default"], "HOST", "wrong.neon.tech")
+    with pytest.raises(CommandError, match="branch"):
+        release_catalog.ensure_release_target(environment)
+    monkeypatch.setitem(
+        settings.DATABASES["default"],
+        "HOST",
+        canonical_neon_host(environment, pooled=True),
+    )
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "OPTIONS", {"sslmode": "require"}
+    )
+    with pytest.raises(CommandError, match="verify-full"):
+        release_catalog.ensure_release_target(environment)
+
+    monkeypatch.setitem(
+        settings.DATABASES["default"], "OPTIONS", {"sslmode": "verify-full"}
+    )
+    monkeypatch.setenv("DJANGO_ENV", "wrong")
+    with pytest.raises(CommandError, match="DJANGO_ENV"):
+        release_catalog.ensure_release_target(environment)

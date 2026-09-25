@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "status": "DRAFT",
+  "categories": [
+    {
+      "code": "mobility",
+      "name": "Movilidad",
+      "description": "Acciones propuestas sobre desplazamientos cotidianos al campus.",
+      "icon": "bike"
+    },
+    {
+      "code": "water",
+      "name": "Agua",
+      "description": "Acciones propuestas para cuidar el uso del agua.",
+      "icon": "water"
+    },
+    {
+      "code": "waste",
+      "name": "Residuos",
+      "description": "Acciones propuestas de separación y reducción de residuos.",
+      "icon": "recycle"
+    }
+  ],
+  "actions": [
+    {
+      "code": "mobility-bike-trip",
+      "category_code": "mobility",
+      "name": "Viaje al campus en bicicleta",
+      "description": "Registrar un desplazamiento al campus realizado en bicicleta. Declaración del usuario; pendiente de política antifraude.",
+      "points": 5,
+      "daily_limit": 1,
+      "validation_type": "NONE",
+      "co2_kg_factor": "0.000",
+      "water_liters_factor": "0.000",
+      "plastic_kg_factor": "0.000",
+      "is_active": false
+    },
+    {
+      "code": "water-refill-bottle",
+      "category_code": "water",
+      "name": "Rellenar botella reutilizable",
+      "description": "Registrar un relleno de botella reutilizable. Declaración del usuario; pendiente de política antifraude.",
+      "points": 2,
+      "daily_limit": 3,
+      "validation_type": "NONE",
+      "co2_kg_factor": "0.000",
+      "water_liters_factor": "0.000",
+      "plastic_kg_factor": "0.000",
+      "is_active": false
+    },
+    {
+      "code": "waste-sort-recyclables",
+      "category_code": "waste",
+      "name": "Separar residuos reciclables",
+      "description": "Registrar la separación de residuos reciclables con evidencia fotográfica; pendiente de almacenamiento privado y auditoría.",
+      "points": 3,
+      "daily_limit": 1,
+      "validation_type": "PHOTO",
+      "co2_kg_factor": "0.000",
+      "water_liters_factor": "0.000",
+      "plastic_kg_factor": "0.000",
+      "is_active": false
+    }
+  ],
+  "institutional_clans": []
+}

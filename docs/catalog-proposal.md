@@ -6,6 +6,15 @@ explícitamente cada valor y la política de validación antes de generar una
 fixture versionada y su pin SHA-256.
 Fuente consultada el 2026-09-25. Este documento propone un **piloto parcial**, no
 un catálogo completo de carreras o acciones.
+El payload completo propuesto está en [catalog-candidate-v1.json](catalog-candidate-v1.json),
+marcado `DRAFT` y fuera de la ruta fija del comando `release_catalog`. Incluye
+códigos, textos, iconos, puntos, límites, factores en cero y las tres acciones
+inactivas; `institutional_clans` está vacío conforme a la decisión de esperar
+el mapeo de carreras. Product debe revisar **ese JSON exacto** además de este
+documento. La conversión posterior a `APPROVED` requiere otra revisión del
+archivo final y su metadata de aprobación.
+SHA-256 de este candidato `DRAFT` (no es pin de release):
+`ca1b8667fe5d30012b6b71470d8496ce818bcb21498f19088bc183320863abf5`.
 
 ## Fuentes y alcance
 

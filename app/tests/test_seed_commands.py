@@ -16,7 +16,10 @@ from django.db import connection
 from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands import release_catalog
-from green_iteso.actions.management.commands.load_catalog import stable_reference_id
+from green_iteso.actions.management.commands.load_catalog import (
+    load_catalog_file,
+    stable_reference_id,
+)
 from green_iteso.actions.models import (
     ActionCategory,
     ActionLog,
@@ -29,6 +32,15 @@ from green_iteso.campaigns.models import (
     Mission,
     UserMissionProgress,
 )
+
+
+def test_product_candidate_remains_inactive_draft_without_clans() -> None:
+    candidate = Path(__file__).resolve().parents[2] / "docs/catalog-candidate-v1.json"
+    catalog = load_catalog_file(candidate)
+    assert len(catalog.categories) == 3
+    assert len(catalog.actions) == 3
+    assert not catalog.clans
+    assert all(not action["is_active"] for action in catalog.actions)
 
 
 @pytest.mark.django_db(transaction=True)

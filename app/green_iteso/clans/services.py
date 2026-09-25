@@ -78,6 +78,37 @@ def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
     return membership
 
 
+@transaction.atomic
+def select_active_private_clan(*, user: User, clan: Clan) -> ClanMembership:
+    """Set ``clan`` as ``user``'s active private clan for point attribution (BR-03).
+
+    Locks the ``user`` row first so two concurrent selections by the same
+    user always serialize: the ``membership_one_active_private_per_user`` DB
+    constraint would otherwise only catch the conflict if both requests
+    happened to race on the exact same row, not two different ones.
+    Clearing any previous active membership and setting the new one inside
+    the same transaction keeps exactly one active row per user at all times.
+
+    Raises:
+        ValueError: If ``clan`` is not PRIVATE, or ``user`` is not one of
+            its members.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Only private clans can be selected as active.")
+    User.objects.select_for_update().get(pk=user.pk)
+    try:
+        membership = ClanMembership.objects.get(user=user, clan=clan)
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not a member of this clan.") from exc
+
+    ClanMembership.objects.filter(user=user, is_active_private=True).exclude(
+        pk=membership.pk
+    ).update(is_active_private=False)
+    membership.is_active_private = True
+    membership.save(update_fields=["is_active_private"])
+    return membership
+
+
 def _get_or_create_institutional_clan(career: str) -> Clan:
     """Return the institutional clan for ``career``, creating it on first use.
 

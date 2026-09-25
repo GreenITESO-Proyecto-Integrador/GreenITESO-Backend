@@ -13,6 +13,7 @@ from green_iteso.clans.services import (
     assign_institutional_clan,
     assign_leader,
     create_clan,
+    select_active_private_clan,
 )
 
 
@@ -209,6 +210,67 @@ def test_assign_leader_rejects_a_membership_from_a_different_clan() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_select_active_private_clan_marks_the_membership_active() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=user
+    )
+
+    membership = select_active_private_clan(user=user, clan=clan)
+
+    assert membership.is_active_private is True
+
+
+@pytest.mark.django_db
+def test_select_active_private_clan_deactivates_the_previous_selection() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    other_owner = User.objects.create_user(
+        email="other@iteso.mx", password="local-only"
+    )
+    first_clan = create_clan(
+        name="First Team", clan_type=Clan.ClanType.PRIVATE, created_by=user
+    )
+    second_clan = create_clan(
+        name="Second Team", clan_type=Clan.ClanType.PRIVATE, created_by=other_owner
+    )
+    ClanMembership.objects.create(user=user, clan=second_clan)
+
+    select_active_private_clan(user=user, clan=first_clan)
+    select_active_private_clan(user=user, clan=second_clan)
+
+    first_membership = ClanMembership.objects.get(user=user, clan=first_clan)
+    second_membership = ClanMembership.objects.get(user=user, clan=second_clan)
+    assert first_membership.is_active_private is False
+    assert second_membership.is_active_private is True
+
+
+@pytest.mark.django_db
+def test_select_active_private_clan_rejects_an_institutional_clan() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    institutional_clan = Clan.objects.create(
+        name="Software Engineering", type=Clan.ClanType.INSTITUTIONAL
+    )
+    ClanMembership.objects.create(user=user, clan=institutional_clan)
+
+    with pytest.raises(ValueError):
+        select_active_private_clan(user=user, clan=institutional_clan)
+
+
+@pytest.mark.django_db
+def test_select_active_private_clan_rejects_a_non_member() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    other_owner = User.objects.create_user(
+        email="other@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=other_owner
+    )
+
+    with pytest.raises(ValueError):
+        select_active_private_clan(user=user, clan=clan)
 
 
 @pytest.mark.django_db

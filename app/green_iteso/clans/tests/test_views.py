@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
 
 
 @pytest.mark.django_db
@@ -31,6 +31,55 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
     list_response = client.get("/api/v1/clans/")
     names = [row["name"] for row in list_response.json()["results"]]
     assert names == ["Green Team"]
+
+
+@pytest.mark.django_db
+def test_dissolve_clan_requires_authentication(clan: Clan) -> None:
+    response = APIClient().delete(f"/api/v1/clans/{clan.pk}/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+    clan.refresh_from_db()
+    assert clan.deleted_at is None
+
+
+@pytest.mark.django_db
+def test_leader_dissolves_clan_and_it_leaves_the_listing(
+    leader: User, clan: Clan
+) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/clans/").json()["results"] == []
+    # The default manager excludes soft-deleted clans; use all_objects to
+    # confirm the row was preserved rather than hard-deleted.
+    assert Clan.all_objects.filter(pk=clan.pk).exists()
+
+
+@pytest.mark.django_db
+def test_member_cannot_dissolve_clan(member: User, clan: Clan) -> None:
+    ClanMembership.objects.create(user=member, clan=clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert response.status_code == 403
+    clan.refresh_from_db()
+    assert clan.deleted_at is None
+
+
+@pytest.mark.django_db
+def test_dissolved_clan_is_not_retrievable(leader: User, clan: Clan) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+    client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert client.get(f"/api/v1/clans/{clan.pk}/").status_code == 404
+    assert client.delete(f"/api/v1/clans/{clan.pk}/").status_code == 404
 
 
 @pytest.mark.django_db

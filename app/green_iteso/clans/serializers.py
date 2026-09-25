@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.accounts.models import Clan, ClanMembership, UserProfile
 
 
 class ClanSerializer(serializers.ModelSerializer):
@@ -24,6 +24,29 @@ class ClanSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "privacy", "total_points", "created_at"]
+
+
+class TransferLeadershipSerializer(serializers.Serializer):
+    """Input payload for transferring a clan's leadership (T2-42)."""
+
+    successor_id = serializers.UUIDField()
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+
+class ClanMembershipSerializer(serializers.ModelSerializer):
+    """Read-only view of a clan membership, e.g. to confirm a leadership change."""
+
+    class Meta:
+        model = ClanMembership
+        fields = ["id", "clan", "user", "role", "is_active_private", "joined_at"]
+        read_only_fields = fields
 
 
 class InstitutionalOnboardingSerializer(serializers.Serializer):

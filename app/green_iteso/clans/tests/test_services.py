@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+from django.core.exceptions import PermissionDenied
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import (
@@ -13,6 +14,7 @@ from green_iteso.clans.services import (
     assign_institutional_clan,
     assign_leader,
     create_clan,
+    transfer_leadership,
 )
 
 
@@ -209,6 +211,134 @@ def test_assign_leader_rejects_a_membership_from_a_different_clan() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_promotes_successor_and_demotes_previous_leader() -> None:
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    successor = User.objects.create_user(
+        email="successor@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    promoted = transfer_leadership(clan=clan, actor=leader, successor=successor)
+
+    assert promoted.role == ClanMembership.MembershipRole.LEADER
+    previous_leader = ClanMembership.objects.get(user=leader, clan=clan)
+    assert previous_leader.role == ClanMembership.MembershipRole.MEMBER
+    assert (
+        ClanMembership.objects.filter(
+            clan=clan, role=ClanMembership.MembershipRole.LEADER
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_leader_actor() -> None:
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    member = User.objects.create_user(email="member@iteso.mx", password="local-only")
+    successor = User.objects.create_user(
+        email="successor@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
+    )
+    ClanMembership.objects.create(
+        user=member, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    with pytest.raises(PermissionDenied):
+        transfer_leadership(clan=clan, actor=member, successor=successor)
+
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_member_successor() -> None:
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
+    )
+
+    with pytest.raises(ValueError):
+        transfer_leadership(clan=clan, actor=leader, successor=outsider)
+
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_transferring_to_self() -> None:
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
+    )
+
+    with pytest.raises(ValueError):
+        transfer_leadership(clan=clan, actor=leader, successor=leader)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_transfer_leadership_serializes_against_a_concurrent_transfer() -> None:
+    """Two callers race to transfer leadership away from the same leader.
+
+    The clan-row lock in ``transfer_leadership`` must serialize them: only
+    the first to commit finds ``actor`` still LEADER, so exactly one
+    transfer succeeds and the clan never ends up leaderless or with two
+    LEADER rows.
+    """
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    first_candidate = User.objects.create_user(
+        email="first@iteso.mx", password="local-only"
+    )
+    second_candidate = User.objects.create_user(
+        email="second@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=leader
+    )
+    ClanMembership.objects.create(
+        user=first_candidate, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=second_candidate, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    outcomes: list[Exception | None] = [None, None]
+
+    def transfer(index: int, successor: User) -> None:
+        try:
+            transfer_leadership(clan=clan, actor=leader, successor=successor)
+        except PermissionDenied as exc:
+            outcomes[index] = exc
+
+    threads = [
+        threading.Thread(target=transfer, args=(0, first_candidate)),
+        threading.Thread(target=transfer, args=(1, second_candidate)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    leader_count = ClanMembership.objects.filter(
+        clan=clan, role=ClanMembership.MembershipRole.LEADER
+    ).count()
+    assert leader_count == 1
+    assert sum(1 for outcome in outcomes if outcome is not None) == 1
 
 
 @pytest.mark.django_db

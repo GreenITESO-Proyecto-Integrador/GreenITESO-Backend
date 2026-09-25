@@ -18,8 +18,9 @@ from green_iteso.core.permissions import IsAdmin
 
 from .exceptions import RequestValidationError
 from .models import User
-from .selectors import get_user_by_id, list_users
+from .selectors import get_ecological_profile, get_user_by_id, list_users
 from .serializers import (
+    EcologicalProfileSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
     UserSerializer,
@@ -124,3 +125,19 @@ class TokenRefreshView(SimpleJWTTokenRefreshView):
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_refresh"
+
+
+class EcologicalProfileView(APIView):
+    """Return the caller's own aggregated ecological profile (T2-20).
+
+    Self-scoped only: this always returns the caller's full data regardless
+    of their own ``visibility`` setting (a user always sees their own
+    profile). ``visibility`` is exposed here as a field, and enforced, if
+    another endpoint is later added to view someone else's profile.
+    """
+
+    @extend_schema(responses=EcologicalProfileSerializer)
+    def get(self, request: Request) -> Response:
+        """Aggregate the caller's own data with E1 (points/badges) and E3 (campaigns) data."""
+        profile = get_ecological_profile(request.user)
+        return Response(EcologicalProfileSerializer(profile).data)

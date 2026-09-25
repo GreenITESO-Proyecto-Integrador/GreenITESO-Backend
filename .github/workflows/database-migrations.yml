@@ -143,4 +143,4 @@ jobs:
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
           DJANGO_ALLOWED_HOSTS: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
           DJANGO_CONNECTION_ROLE: app
-        run: python app/manage.py db_smoke --timeout 15
+        run: python app/manage.py db_smoke --timeout 15 --check-grants

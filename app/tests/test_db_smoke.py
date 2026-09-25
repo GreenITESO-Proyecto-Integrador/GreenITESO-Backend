@@ -59,6 +59,14 @@ def test_db_smoke_emits_no_dml() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+def test_db_smoke_rejects_privileged_owner_when_app_grants_are_required() -> None:
+    # The disposable test database is owned by the test role. A release app
+    # role must not inherit schema CREATE or table TRUNCATE privileges.
+    with pytest.raises(CommandError, match="GRANT_MISMATCH"):
+        call_command("db_smoke", "--timeout", "2", "--check-grants", stdout=StringIO())
+
+
+@pytest.mark.django_db(transaction=True)
 def test_transaction_bounds_are_local_and_startup_options_only_connect() -> None:
     options = connection.settings_dict.setdefault("OPTIONS", {})
     original_options = dict(options)

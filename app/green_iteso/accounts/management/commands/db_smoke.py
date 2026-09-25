@@ -22,6 +22,10 @@ class SmokeDeadlineExceededError(Exception):
     """Raised when the whole smoke check reaches its deadline."""
 
 
+class AppGrantMismatchError(Exception):
+    """The pooled application identity has missing or excessive privileges."""
+
+
 @contextmanager
 def _deadline(seconds: float) -> Iterator[None]:
     """Put a finite wall-clock bound around libpq connection and queries."""
@@ -112,6 +116,41 @@ def _set_transaction_bounds(cursor: Any, timeout: float) -> None:
     )
 
 
+def _check_app_grants(cursor: Any) -> tuple[int, int]:
+    """Inspect every public table and sequence without touching application rows."""
+    cursor.execute(
+        "SELECT has_schema_privilege('public', 'USAGE'), "
+        "has_schema_privilege('public', 'CREATE')"
+    )
+    schema_grants = cursor.fetchone()
+    cursor.execute(
+        "SELECT has_table_privilege(c.oid, 'SELECT'), "
+        "has_table_privilege(c.oid, 'INSERT'), "
+        "has_table_privilege(c.oid, 'UPDATE'), "
+        "has_table_privilege(c.oid, 'DELETE'), "
+        "has_table_privilege(c.oid, 'TRUNCATE') "
+        "FROM pg_catalog.pg_class AS c "
+        "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')"
+    )
+    table_grants = cursor.fetchall()
+    cursor.execute(
+        "SELECT has_sequence_privilege(c.oid, 'USAGE') "
+        "FROM pg_catalog.pg_class AS c "
+        "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'S'"
+    )
+    sequence_grants = cursor.fetchall()
+    if (
+        schema_grants != (True, False)
+        or not table_grants
+        or any(row != (True, True, True, True, False) for row in table_grants)
+        or any(row != (True,) for row in sequence_grants)
+    ):
+        raise AppGrantMismatchError
+    return len(table_grants), len(sequence_grants)
+
+
 class Command(BaseCommand):
     """Check PostgreSQL reachability and the minimal migrated ORM schema."""
 
@@ -124,10 +163,16 @@ class Command(BaseCommand):
             default=DEFAULT_TIMEOUT_SECONDS,
             help="Límite total en segundos (0.1–30; predeterminado: 5).",
         )
+        parser.add_argument(
+            "--check-grants",
+            action="store_true",
+            help="Verifica DML, secuencias y denegación DDL del rol app.",
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         del args
         raw_timeout = float(options["timeout"])
+        check_grants = bool(options["check_grants"])
         if not 0.1 <= raw_timeout <= MAX_TIMEOUT_SECONDS:
             raise CommandError("--timeout debe estar entre 0.1 y 30 segundos.")
 
@@ -154,7 +199,16 @@ class Command(BaseCommand):
                             )
                     user_count = User.objects.count()
                     action_log_count = ActionLog.objects.count()
+                    if check_grants:
+                        with connection.cursor() as cursor:
+                            table_count, sequence_count = _check_app_grants(cursor)
                     ssl_status = _client_ssl_status()
+        except AppGrantMismatchError:
+            raise CommandError(
+                "DB_SMOKE ERROR\n"
+                "diagnostico: GRANT_MISMATCH\n"
+                "detalle: El rol app no cumple el contrato de tablas, secuencias o denegación DDL."
+            ) from None
         except SmokeDeadlineExceededError:
             raise CommandError(
                 "DB_SMOKE ERROR\n"
@@ -206,3 +260,7 @@ class Command(BaseCommand):
             f"orm: User count={user_count}; ActionLog count={action_log_count}"
         )
         self.stdout.write(f"ssl_cliente: {ssl_status}")
+        if check_grants:
+            self.stdout.write(
+                f"grants: {table_count} tablas; {sequence_count} secuencias; DDL denegado"
+            )

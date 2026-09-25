@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DatabaseError, OperationalError, connection, transaction
 from django.db.migrations.loader import MigrationLoader
@@ -26,37 +27,21 @@ from green_iteso.accounts.management.commands.db_smoke import (
     _set_bounded_options,
     _set_transaction_bounds,
 )
-from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
-from green_iteso.actions.models import (
-    ActionCategory,
-    ActionLog,
-    ActionLogMissionContribution,
-    ActionMaster,
-)
-from green_iteso.campaigns.models import (
-    Campaign,
-    CampaignParticipant,
-    Mission,
-    UserMissionProgress,
-)
+from green_iteso.actions.models import ActionLog
 
-BASELINE_VERSION = 3
+BASELINE_VERSION = 4
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_TIMEOUT_SECONDS = 60.0
 
-TABLE_MODELS = (
-    User,
-    Clan,
-    ClanMembership,
-    UserProfile,
-    ActionCategory,
-    ActionMaster,
-    ActionLog,
-    ActionLogMissionContribution,
-    Campaign,
-    Mission,
-    CampaignParticipant,
-    UserMissionProgress,
+TABLE_MODELS = tuple(
+    sorted(
+        (
+            model
+            for model in apps.get_models(include_auto_created=True)
+            if model._meta.managed and not model._meta.proxy
+        ),
+        key=lambda model: model._meta.db_table,
+    )
 )
 
 
@@ -84,13 +69,12 @@ def _pending_code_migrations(applied: list[str]) -> list[str]:
 
 
 def _table_integrity() -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
-    """Fingerprint complete core-table contents without retaining row values."""
+    """Fingerprint managed Django tables without retaining row values."""
     counts: dict[str, int] = {}
     fingerprints: dict[str, dict[str, Any]] = {}
     for model in TABLE_MODELS:
         field_names = [field.attname for field in model._meta.concrete_fields]
-        manager = Clan.all_objects if model is Clan else model.objects
-        rows = manager.values_list(*field_names).order_by("pk").iterator()
+        rows = model._base_manager.values_list(*field_names).order_by("pk").iterator()
         digest = sha256()
         count = 0
         for row in rows:
@@ -130,12 +114,13 @@ def _status_totals() -> dict[str, dict[str, int]]:
     }
 
 
-def _opaque_identifier(value: object) -> str:
-    """Avoid storing a direct ID; the deterministic hash is pseudonymous, not anonymous."""
-    return sha256(str(value).encode("utf-8")).hexdigest()
+def _opaque_identifier(value: object, key: bytes) -> str:
+    """Key clan identifiers so a known UUID cannot be matched to the baseline."""
+    payload = b"db-recovery-clan:v1:" + str(value).encode("utf-8")
+    return hmac.new(key, payload, sha256).hexdigest()
 
 
-def _attribution_totals() -> list[dict[str, Any]]:
+def _attribution_totals(key: bytes) -> list[dict[str, Any]]:
     """Summarize frozen clan attribution using IDs and aggregate values only."""
     rows = (
         ActionLog.objects.values("institutional_clan_id", "credited_private_clan_id")
@@ -145,10 +130,10 @@ def _attribution_totals() -> list[dict[str, Any]]:
     return [
         {
             "institutional_clan_fingerprint": _opaque_identifier(
-                row["institutional_clan_id"]
+                row["institutional_clan_id"], key
             ),
             "credited_private_clan_fingerprint": (
-                _opaque_identifier(row["credited_private_clan_id"])
+                _opaque_identifier(row["credited_private_clan_id"], key)
                 if row["credited_private_clan_id"] is not None
                 else None
             ),
@@ -230,7 +215,7 @@ def _snapshot(pre_id: str, post_id: str, marker_key: bytes) -> dict[str, Any]:
         "table_fingerprints": table_fingerprints,
         "action_logs": {
             "by_status": _status_totals(),
-            "attribution": _attribution_totals(),
+            "attribution": _attribution_totals(marker_key),
             "history_fingerprint": table_fingerprints[ActionLog._meta.db_table],
             "fk_orphans": _fk_orphans(),
         },

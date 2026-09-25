@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from hashlib import sha256
 from pathlib import Path
 from stat import S_IMODE
 from unittest.mock import MagicMock
 
 import pytest
+from django.apps import apps
+from django.contrib.auth.models import Group
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import DatabaseError, connection
@@ -17,7 +20,15 @@ from django.utils import timezone
 
 from green_iteso.accounts.management.commands import db_recovery_verify
 from green_iteso.accounts.models import Clan, User, UserProfile
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import (
+    ActionCategory,
+    ActionLog,
+    ActionLogMissionContribution,
+    ActionMaster,
+)
+from green_iteso.campaigns.models import Campaign, UserMissionProgress
+from green_iteso.feed.models import Post, PostType
+from green_iteso.notifications.models import Notification
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +99,22 @@ def _capture_baseline(tmp_path: Path) -> tuple[Path, ActionLog, str]:
     return baseline, marker, post_marker_id
 
 
+def test_recovery_inventory_covers_all_managed_django_tables() -> None:
+    expected_tables = {
+        model._meta.db_table
+        for model in apps.get_models(include_auto_created=True)
+        if model._meta.managed and not model._meta.proxy
+    }
+    actual_tables = {model._meta.db_table for model in db_recovery_verify.TABLE_MODELS}
+    assert actual_tables == expected_tables
+    assert {
+        "feed_posts",
+        "notifications_notification",
+        "accounts_user_groups",
+        "accounts_user_user_permissions",
+    } <= actual_tables
+
+
 @pytest.mark.django_db
 def test_recovery_fk_queries_follow_model_table_names(
     monkeypatch: pytest.MonkeyPatch,
@@ -99,11 +126,11 @@ def test_recovery_fk_queries_follow_model_table_names(
     monkeypatch.setattr(db_recovery_verify.connection, "cursor", lambda: cursor)
 
     model_tables = {
-        db_recovery_verify.ActionLog: "renamed_action_log",
-        db_recovery_verify.User: "renamed_user",
-        db_recovery_verify.ActionMaster: "renamed_action_master",
-        db_recovery_verify.Clan: "renamed_clan",
-        db_recovery_verify.Campaign: "renamed_campaign",
+        ActionLog: "renamed_action_log",
+        User: "renamed_user",
+        ActionMaster: "renamed_action_master",
+        Clan: "renamed_clan",
+        Campaign: "renamed_campaign",
     }
     for model, table_name in model_tables.items():
         monkeypatch.setattr(model._meta, "db_table", table_name)
@@ -141,8 +168,8 @@ def test_recovery_fk_queries_follow_model_table_names(
     for table_name in model_tables.values():
         assert any(f'"{table_name}"' in query for query in rendered_queries)
     for model in (
-        db_recovery_verify.ActionLogMissionContribution,
-        db_recovery_verify.UserMissionProgress,
+        ActionLogMissionContribution,
+        UserMissionProgress,
     ):
         assert any(f'"{model._meta.db_table}"' in query for query in rendered_queries)
 
@@ -171,6 +198,8 @@ def test_recovery_baseline_matches_unchanged_history(tmp_path: Path) -> None:
         ("same_count", "TABLE_CONTENT_MISMATCH"),
         ("profile", "TABLE_CONTENT_MISMATCH"),
         ("soft_deleted_clan", "TABLE_CONTENT_MISMATCH"),
+        ("post", "TABLE_COUNT_MISMATCH"),
+        ("notification", "TABLE_COUNT_MISMATCH"),
         ("idempotency", "ACTION_LOG_HISTORY_MISMATCH"),
     ],
 )
@@ -197,6 +226,19 @@ def test_recovery_reports_count_points_and_history_mismatches(
         clan = Clan.all_objects.get(name="Soft-deleted recovery verifier clan")
         clan.description = "Changed while remaining soft-deleted"
         clan.save(update_fields=["description"])
+    elif change == "post":
+        Post.objects.create(
+            author=marker.user,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Synthetic recovery verifier post",
+        )
+    elif change == "notification":
+        Notification.objects.create(
+            user=marker.user,
+            title="Synthetic recovery notification",
+            message="Recovery verifier test",
+            notification_type=Notification.NotificationType.AUDIT_REJECT,
+        )
     elif change == "idempotency":
         marker.idempotency_key = "recovery-pre-t-modified"
         marker.save(update_fields=["idempotency_key"])
@@ -208,6 +250,33 @@ def test_recovery_reports_count_points_and_history_mismatches(
         marker.save(update_fields=["institutional_clan"])
 
     with pytest.raises(CommandError, match=diagnosis):
+        call_command(
+            "db_recovery_verify",
+            baseline=baseline,
+            pre_marker_id=str(marker.pk),
+            post_marker_id=post_marker_id,
+            timeout=5,
+            verbosity=0,
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_detects_auto_created_group_membership_change(tmp_path: Path) -> None:
+    marker = _create_history()
+    group = Group.objects.create(name="Recovery verifier group")
+    post_marker_id = str(uuid.uuid4())
+    baseline = tmp_path / "recovery-groups-baseline.json"
+    call_command(
+        "db_recovery_verify",
+        write_baseline=baseline,
+        pre_marker_id=str(marker.pk),
+        post_marker_id=post_marker_id,
+        timeout=5,
+        verbosity=0,
+    )
+
+    marker.user.groups.add(group)
+    with pytest.raises(CommandError, match="TABLE_COUNT_MISMATCH"):
         call_command(
             "db_recovery_verify",
             baseline=baseline,
@@ -254,6 +323,13 @@ def test_recovery_baseline_contains_no_personal_fields(tmp_path: Path) -> None:
     assert "synthetic-private-group-id" not in rendered
     assert str(marker.institutional_clan_id) not in rendered
     assert str(marker.credited_private_clan_id) not in rendered
+    assert (
+        sha256(str(marker.institutional_clan_id).encode()).hexdigest() not in rendered
+    )
+    assert (
+        sha256(str(marker.credited_private_clan_id).encode()).hexdigest()
+        not in rendered
+    )
     assert str(marker.pk) not in rendered
     assert post_marker_id not in rendered
     assert "test-only-recovery-marker-key-32-bytes" not in rendered

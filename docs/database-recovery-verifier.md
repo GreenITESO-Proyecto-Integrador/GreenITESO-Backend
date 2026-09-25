@@ -5,11 +5,16 @@ T8 de recuperación de PostgreSQL. Trabaja con la base que ya está configurada
 para Django y solo registra metadatos agregados:
 
 - el conjunto exacto de migraciones aplicadas y las migraciones de código pendientes;
-- el conteo y una huella SHA-256 del contenido completo de cada tabla del
-  esquema actual, incluida `ClanMembership` y los clanes con soft-delete (solo
-  se guarda el digest, nunca los valores de las filas);
+- el conteo y una huella SHA-256 del contenido completo de cada tabla de modelo
+  Django gestionado, incluidas las tablas de `feed.Post`,
+  `notifications.Notification`, las relaciones many-to-many autocreadas y los
+  modelos internos de Django. El conjunto de migraciones representa el ledger
+  `django_migrations`; tablas no gestionadas y vistas quedan fuera de esta
+  evidencia. Solo se guarda el digest, nunca los valores de las filas, y los
+  clanes con soft-delete también se incluyen;
 - los conteos y puntos de `ActionLog` agrupados por estado y atribución de clan,
-  usando fingerprints estables de los IDs de clan en vez de guardarlos en claro;
+  usando fingerprints HMAC-SHA-256 estables de los IDs de clan en vez de
+  guardarlos en claro;
 - una huella SHA-256 del contenido completo de `ActionLog`, incluyendo sus
   snapshots, claves de idempotencia/evidencia y metadatos de revisión;
 - los conteos de referencias foráneas huérfanas de todas las relaciones
@@ -31,7 +36,8 @@ comando de baseline exige que `pre` exista y que `post` todavía no exista. Los
 dos argumentos deben ser UUIDs de registros sintéticos; se pasan tanto al crear
 como al comparar el baseline. Para no guardar esos UUIDs en claro, el proceso
 requiere `DB_RECOVERY_MARKER_HMAC_KEY`, con al menos 32 bytes, suministrada por
-un gestor de secretos local. Conserva la misma clave fuera del baseline para
+un gestor de secretos local. La misma clave protege las huellas de atribución
+de clan. Conserva la clave fuera del baseline para
 comparar; no la escribas en el repositorio ni junto a la evidencia.
 
 Define `PRE_MARKER_ID` con el UUID de un ActionLog sintético existente y `POST_MARKER_ID` con un UUID reservado que todavía no existe. Antes de ejecutar, carga `DB_RECOVERY_MARKER_HMAC_KEY` desde el gestor de secretos acordado y conserva acceso a la misma clave para la comparación. Captura el baseline antes de la operación de recuperación:
@@ -60,6 +66,7 @@ solo códigos estables, como `MIGRATION_SET_MISMATCH`,
 `ACTION_LOG_STATUS_POINTS_MISMATCH`,
 `ACTION_LOG_ATTRIBUTION_MISMATCH`, `ACTION_LOG_HISTORY_MISMATCH`,
 `FK_INTEGRITY_MISMATCH`,
+`BASELINE_PRE_MARKER_MISMATCH`, `BASELINE_POST_MARKER_MISMATCH`,
 `PRE_MARKER_MISSING` o `POST_MARKER_PRESENT`. Los errores de conexión,
 esquema incompleto, lectura y escritura del archivo tienen diagnósticos
 genéricos; no se incluye el texto del driver, la URL, credenciales ni valores

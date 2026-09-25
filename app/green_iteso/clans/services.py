@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 
@@ -76,6 +77,44 @@ def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
     membership.role = ClanMembership.MembershipRole.LEADER
     membership.save(update_fields=["role"])
     return membership
+
+
+@transaction.atomic
+def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMembership:
+    """Transfer ``clan``'s LEADER role from ``actor`` to ``successor`` (FR-CLAN-03).
+
+    Locks the ``clan`` row before checking who currently holds LEADER,
+    matching the discipline ``dissolve_clan`` and ``assign_leader`` already
+    use: checking on an unlocked read would leave a window where a
+    concurrent transfer or dissolve commits in between, letting a caller who
+    is no longer LEADER go through anyway. Demoting the current leader and
+    delegating the promotion to ``assign_leader`` (rather than setting the
+    role directly) keeps a single place enforcing "at most one LEADER per
+    clan", including its own re-check under the same lock.
+
+    Raises:
+        PermissionDenied: If ``actor`` is not the clan's current LEADER.
+        ValueError: If ``successor`` is ``actor``, or is not a member of
+            ``clan``.
+    """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    actor_membership = ClanMembership.objects.filter(
+        clan=locked, user=actor, role=ClanMembership.MembershipRole.LEADER
+    ).first()
+    if actor_membership is None:
+        raise PermissionDenied(
+            "Only the clan's current leader can transfer leadership."
+        )
+    if successor.pk == actor.pk:
+        raise ValueError("Cannot transfer leadership to yourself.")
+    try:
+        successor_membership = ClanMembership.objects.get(clan=locked, user=successor)
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("Successor must be a member of the clan.") from exc
+
+    actor_membership.role = ClanMembership.MembershipRole.MEMBER
+    actor_membership.save(update_fields=["role"])
+    return assign_leader(clan=locked, membership=successor_membership)
 
 
 def _get_or_create_institutional_clan(career: str) -> Clan:

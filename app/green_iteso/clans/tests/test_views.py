@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
 
 
 @pytest.mark.django_db
@@ -31,6 +31,76 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
     list_response = client.get("/api/v1/clans/")
     names = [row["name"] for row in list_response.json()["results"]]
     assert names == ["Green Team"]
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_requires_authentication(clan: Clan) -> None:
+    response = APIClient().post(f"/api/v1/clans/{clan.pk}/transfer-leadership/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_leader_transfers_leadership_successfully(
+    leader: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(successor.pk)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "LEADER"
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.MEMBER
+
+
+@pytest.mark.django_db
+def test_member_cannot_transfer_leadership(
+    leader: User, member: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=member, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(successor.pk)},
+    )
+
+    assert response.status_code == 403
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_member_successor(
+    leader: User, clan: Clan
+) -> None:
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(outsider.pk)},
+    )
+
+    assert response.status_code == 400
 
 
 @pytest.mark.django_db

@@ -2,9 +2,12 @@ name: Verify promotion source
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     branches:
       - preprod
       - main
+
+permissions: {}
 
 jobs:
   verify:

@@ -532,6 +532,7 @@ def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
 
 def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
     workflow = (ROOT / ".github/workflows/verify-promotion-source.yml").read_text()
+    assert "types: [opened, synchronize, reopened, edited]" in workflow
     assert "- preprod" in workflow
     assert "- main" in workflow
     assert "- prod" not in workflow

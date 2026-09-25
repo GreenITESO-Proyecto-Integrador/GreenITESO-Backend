@@ -14,7 +14,7 @@ el mapeo de carreras. Product debe revisar **ese JSON exacto** además de este
 documento. La conversión posterior a `APPROVED` requiere otra revisión del
 archivo final y su metadata de aprobación.
 SHA-256 de este candidato `DRAFT` (no es pin de release):
-`ca1b8667fe5d30012b6b71470d8496ce818bcb21498f19088bc183320863abf5`.
+`d68c80544c17a2bed82db099e6463735ef2ba6d2f71ab4ace4c4ad748be0071e`.
 
 ## Fuentes y alcance
 

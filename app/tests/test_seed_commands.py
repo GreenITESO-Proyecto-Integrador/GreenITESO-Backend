@@ -35,8 +35,15 @@ from green_iteso.campaigns.models import (
 
 
 def test_product_candidate_remains_inactive_draft_without_clans() -> None:
+    """Keep the exact Product review candidate separate from release fixtures."""
     candidate = Path(__file__).resolve().parents[2] / "docs/catalog-candidate-v1.json"
+    proposal = candidate.with_name("catalog-proposal.md")
+    content = candidate.read_bytes()
+    payload = json.loads(content)
     catalog = load_catalog_file(candidate)
+    assert payload["status"] == "DRAFT"
+    assert "approval" not in payload
+    assert f"`{hashlib.sha256(content).hexdigest()}`" in proposal.read_text()
     assert len(catalog.categories) == 3
     assert len(catalog.actions) == 3
     assert not catalog.clans

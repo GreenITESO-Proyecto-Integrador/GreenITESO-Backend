@@ -37,7 +37,7 @@ services:
       - "127.0.0.1:${APP_PORT:?set APP_PORT in .env}:8000"
     volumes:
       - .:/workspace
-    command: ["make", "-C", "app", "start"]
+    command: ["make", "-C", "app", "start-asgi"]
 
 volumes:
   greeniteso_postgres_data:

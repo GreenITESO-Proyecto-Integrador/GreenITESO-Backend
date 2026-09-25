@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from django.db import transaction
+from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.accounts.services import ensure_profile
 
 
 class DuplicateClanLeaderError(Exception):
@@ -74,3 +76,61 @@ def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
     membership.role = ClanMembership.MembershipRole.LEADER
     membership.save(update_fields=["role"])
     return membership
+
+
+def _get_or_create_institutional_clan(career: str) -> Clan:
+    """Return the institutional clan for ``career``, creating it on first use.
+
+    Uses ``get_or_create`` rather than a plain check-then-act: ``Clan.name``
+    carries a DB-level unique constraint, and concurrent onboarding for the
+    same career is plausible (many students in the same career onboarding
+    around the same time). ``get_or_create`` retries under a savepoint if the
+    initial insert loses the race, matching the pattern used by
+    ``ClanMembership.objects.get_or_create`` below.
+    """
+    clan, created = Clan.objects.get_or_create(
+        name=career, defaults={"type": Clan.ClanType.INSTITUTIONAL}
+    )
+    if not created and clan.type != Clan.ClanType.INSTITUTIONAL:
+        raise ValueError(f"'{career}' is already in use by a non-institutional clan.")
+    return clan
+
+
+@transaction.atomic
+def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
+    """Declare ``career`` and auto-assign its institutional clan (FR T2-30).
+
+    Re-running with the same career is idempotent; re-running with a
+    different career reassigns the profile and removes the stale membership
+    in the previous institutional clan, so the user always ends up a member
+    of exactly one institutional clan.
+    """
+    career = career.strip()
+    if not career:
+        raise ValueError("career must not be blank")
+
+    profile = ensure_profile(user)
+    clan = _get_or_create_institutional_clan(career)
+    previous_clan = profile.institutional_clan
+
+    profile.career = career
+    profile.institutional_clan = clan
+    if profile.onboarding_completed_at is None:
+        profile.onboarding_completed_at = timezone.now()
+    profile.save(
+        update_fields=["career", "institutional_clan", "onboarding_completed_at"]
+    )
+
+    if previous_clan is not None and previous_clan.pk != clan.pk:
+        ClanMembership.objects.filter(
+            user=user,
+            clan=previous_clan,
+            role=ClanMembership.MembershipRole.MEMBER,
+        ).delete()
+
+    ClanMembership.objects.get_or_create(
+        user=user,
+        clan=clan,
+        defaults={"role": ClanMembership.MembershipRole.MEMBER},
+    )
+    return profile

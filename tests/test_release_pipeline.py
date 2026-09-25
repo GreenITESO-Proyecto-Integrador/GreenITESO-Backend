@@ -77,10 +77,18 @@ def _fake_commands(
 
 
 def _run_release(
-    tmp_path: Path, *, migrate_status: int = 0
+    tmp_path: Path,
+    *,
+    migrate_status: int = 0,
+    smoke_status: int = 0,
+    environment: str = "staging",
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     env = _base_env(tmp_path)
-    log = _fake_commands(tmp_path, migrate_status=migrate_status)
+    env["RELEASE_ENVIRONMENT"] = environment
+    env["DEV_EVIDENCE_PATH"] = str(tmp_path / "dev-db-evidence.txt")
+    log = _fake_commands(
+        tmp_path, migrate_status=migrate_status, smoke_status=smoke_status
+    )
     result = subprocess.run(
         [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
     )
@@ -121,6 +129,32 @@ def test_success_uses_digest_and_deploys_after_migration(tmp_path: Path) -> None
         + "a" * 64
     ) in log
     assert ":sha-" not in log
+
+
+def test_dev_release_evidence_is_written_only_after_migration_and_smoke(
+    tmp_path: Path,
+) -> None:
+    result, log = _run_release(tmp_path, environment="dev")
+    evidence = tmp_path / "dev-db-evidence.txt"
+    assert result.returncode == 0, result.stderr
+    assert evidence.read_text() == (
+        f"release_sha={'a' * 40}\n"
+        "migration=success\n"
+        "app_role_smoke=success\n"
+        f"image_digest={'sha256:' + 'a' * 64}\n"
+    )
+    assert (
+        log.index("run jobs execute greeniteso-migrate-staging")
+        < log.index("run jobs execute greeniteso-migrate-staging-smoke")
+        < log.index("run deploy")
+    )
+
+    failed_smoke_dir = tmp_path / "failed-smoke"
+    failed_smoke_dir.mkdir()
+    result, log = _run_release(failed_smoke_dir, environment="dev", smoke_status=1)
+    assert result.returncode != 0
+    assert not (failed_smoke_dir / "dev-db-evidence.txt").exists()
+    assert "run deploy" not in log
 
 
 def test_promotion_uses_source_digest_without_looking_up_merge_commit_tag(

@@ -14,6 +14,8 @@ TEST_WORKFLOW_PATH = ".github/workflows/tests.yaml"
 MIGRATION_STEP = "Apply committed migrations with the direct migrator role"
 SMOKE_STEP = "Verify access through the pooled application role"
 EVIDENCE_PREFIX = "dev-db-evidence-"
+CLOUD_EVIDENCE_PREFIX = "dev-cloud-db-evidence-"
+DEV_RELEASE_WORKFLOW_PATH = ".github/workflows/deploy-dev.yml"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -167,6 +169,8 @@ def _require_dev_evidence(api: GitHub, source_sha: str) -> None:
     if not SHA_PATTERN.fullmatch(source_sha):
         raise EvidenceError("The source SHA is not a full lowercase Git SHA.")
     _require_merged_dev_pr(api, source_sha)
+    if _has_cloud_dev_release_evidence(api, source_sha):
+        return
     for parent_id in _successful_dev_test_runs(api, source_sha):
         _require_parent_test_run(api, parent_id, source_sha)
         name = f"{EVIDENCE_PREFIX}{source_sha}-{parent_id}"
@@ -190,8 +194,47 @@ def _require_dev_evidence(api: GitHub, source_sha: str) -> None:
             if _has_successful_required_steps(api, migration_run_id):
                 return
     raise EvidenceError(
-        f"No completed Neon migration workflow proves both migration and app-role smoke success for dev SHA {source_sha}."
+        f"No completed Neon or cloud dev release proves migration and app-role smoke success for dev SHA {source_sha}."
     )
+
+
+def _has_cloud_dev_release_evidence(api: GitHub, source_sha: str) -> bool:
+    page = 1
+    while True:
+        result = api.get(
+            f"actions/workflows/deploy-dev.yml/runs?event=push&branch=dev"
+            f"&head_sha={source_sha}&per_page=100&page={page}"
+        )
+        if not isinstance(result, dict) or not isinstance(
+            result.get("workflow_runs"), list
+        ):
+            raise EvidenceError("GitHub returned invalid cloud dev release evidence.")
+        for run in result["workflow_runs"]:
+            if not isinstance(run, dict) or not (
+                isinstance(run.get("id"), int)
+                and run.get("status") == "completed"
+                and run.get("conclusion") == "success"
+                and run.get("event") == "push"
+                and run.get("head_branch") == "dev"
+                and run.get("head_sha") == source_sha
+                and isinstance(run.get("head_repository"), dict)
+                and run["head_repository"].get("full_name") == api.repository
+                and run.get("path") == DEV_RELEASE_WORKFLOW_PATH
+            ):
+                continue
+            artifact_name = f"{CLOUD_EVIDENCE_PREFIX}{source_sha}-{run['id']}"
+            if any(
+                isinstance(artifact.get("workflow_run"), dict)
+                and artifact["workflow_run"].get("id") == run["id"]
+                for artifact in api.artifacts(artifact_name)
+            ):
+                return True
+        total_count = result.get("total_count")
+        if not isinstance(total_count, int):
+            raise EvidenceError("GitHub omitted the cloud dev release count.")
+        if page * 100 >= total_count:
+            return False
+        page += 1
 
 
 def _source_sha_for_staging_merge(api: GitHub, merge_sha: str) -> str:
@@ -221,7 +264,11 @@ def _source_sha_for_staging_merge(api: GitHub, merge_sha: str) -> str:
 
 def verify(event: dict[str, Any], mode: str, repository: str) -> str:
     api = GitHub(repository)
-    if mode == "pull_request":
+    if mode == "source_sha":
+        source_sha = event.get("source_sha")
+        if not isinstance(source_sha, str):
+            raise EvidenceError("The requested source SHA is missing.")
+    elif mode == "pull_request":
         pr = event.get("pull_request")
         if not isinstance(pr, dict):
             raise EvidenceError("Pull request event data is missing.")
@@ -259,11 +306,14 @@ def verify(event: dict[str, Any], mode: str, repository: str) -> str:
 
 def main() -> int:
     try:
-        event_path = os.environ["GITHUB_EVENT_PATH"]
         mode = os.environ["DEV_EVIDENCE_MODE"]
         repository = os.environ["GITHUB_REPOSITORY"]
-        with open(event_path, encoding="utf-8") as event_file:
-            event = json.load(event_file)
+        if mode == "source_sha":
+            event = {"source_sha": os.environ["DEV_SOURCE_SHA"]}
+        else:
+            event_path = os.environ["GITHUB_EVENT_PATH"]
+            with open(event_path, encoding="utf-8") as event_file:
+                event = json.load(event_file)
         if not isinstance(event, dict):
             raise EvidenceError("GitHub event payload is invalid.")
         source_sha = verify(event, mode, repository)

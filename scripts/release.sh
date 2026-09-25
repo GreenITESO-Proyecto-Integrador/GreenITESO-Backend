@@ -157,6 +157,18 @@ gcloud run jobs deploy "$SMOKE_JOB_NAME" \
 gcloud run jobs execute "$SMOKE_JOB_NAME" \
   --region="$GCP_REGION" --project="$GCP_PROJECT_ID" --wait
 
+# This marker is uploaded only after the complete dev release succeeds. The
+# artifact name binds it to the exact workflow run and release SHA.
+if [[ "$RELEASE_ENVIRONMENT" == dev ]]; then
+  DEV_EVIDENCE_PATH="${DEV_EVIDENCE_PATH:-dev-db-evidence.txt}"
+  cat > "$DEV_EVIDENCE_PATH" <<EOF
+release_sha=${RELEASE_SHA}
+migration=success
+app_role_smoke=success
+image_digest=${IMAGE_DIGEST}
+EOF
+fi
+
 # Keep this command after the successful --wait. A failed job leaves the
 # previous service revision serving because this deploy is never reached.
 gcloud run deploy "$CLOUD_RUN_SERVICE" \

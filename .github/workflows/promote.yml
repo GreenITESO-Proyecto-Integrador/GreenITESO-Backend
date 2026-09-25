@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
   pull-requests: write
 
@@ -26,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: dev
           fetch-depth: 0
 
       - name: Open a PR from the previous tier
@@ -45,6 +47,18 @@ jobs:
             echo "Source branch '${SOURCE_REF}' does not exist; refusing promotion." >&2
             exit 1
           fi
+
+          if [ "$TARGET_REF" = preprod ]; then
+            DEV_EVIDENCE_MODE=source_sha \
+            DEV_SOURCE_SHA="$source_sha" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GH_TOKEN="$GH_TOKEN" \
+              python3 scripts/verify-dev-migration-evidence.py || {
+                echo "Dev migration evidence is not ready for ${source_sha}. Rerun this workflow after the successful dev release publishes its evidence artifact." >&2
+                exit 1
+              }
+          fi
+
           target_sha="$(git ls-remote origin "refs/heads/${TARGET_REF}" | awk '{print $1}')"
           if [ -z "$target_sha" ]; then
             echo "Target branch '${TARGET_REF}' does not exist. Create/protect it through the agreed branch cutover before promoting." >&2
@@ -55,6 +69,12 @@ jobs:
           if [ -n "$existing_pr" ]; then
             echo "Promotion PR already exists: ${existing_pr}"
             exit 0
+          fi
+
+          current_source_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          if [ "$current_source_sha" != "$source_sha" ]; then
+            echo "Source branch '${SOURCE_REF}' advanced while evidence was being checked. Rerun this workflow for the new dev tip." >&2
+            exit 1
           fi
 
           gh pr create \

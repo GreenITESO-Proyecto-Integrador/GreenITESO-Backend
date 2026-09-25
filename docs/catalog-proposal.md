@@ -52,8 +52,10 @@ Clanes institucionales propuestos (públicos):
 | `design` | Diseño |
 
 El loader exige, para la fixture exacta, códigos y nombres de categoría,
-descripciones no vacías de acción, descripción y campo `career` de cada clan,
-iconos opcionales y metadata `approval` con persona, referencia y hora. Los
+descripciones no vacías de acción y metadata `approval` con persona,
+referencia y hora; permite iconos opcionales. Para clanes, el loader hoy
+permite omitir descripción y `career` (usa valores por defecto), pero la
+política de aprobación debería exigir ambos explícitos antes de liberarlos. Los
 textos finales, iconos y formato de `career` son decisiones de Product/E1/E2,
 no se infieren de la tabla anterior. Los códigos e IDs derivados son estables;
 cambiarlos luego no es una simple corrección de etiqueta.

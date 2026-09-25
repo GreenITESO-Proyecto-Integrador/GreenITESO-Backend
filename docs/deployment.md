@@ -94,6 +94,17 @@ role), `DATABASE_URL_UNPOOLED` (direct migrator role), `DJANGO_SECRET_KEY`, and
 Git branch named `staging`. Secret values must never enter the repository,
 workflow logs, or issue comments. They are not configured by this change.
 
+Do not add a `preprod`-only deployment-branch rule to the GitHub `preprod`
+Environment without changing and retesting this trigger. GitHub matches
+environment branch rules against the workflow run's `GITHUB_REF`; for
+`workflow_run`, that ref is the repository default branch (`dev`), even when
+`workflow_run.head_branch` is `preprod`. The current `preprod` Environment has
+no branch rule, so the credential-free gate above must enforce the tested
+target branch and merged-PR provenance before the job can access its secrets.
+The staging/production Cloud Run promotion paths instead use merged
+`pull_request` events, whose refs are the destination branches. Recheck all
+release paths if the default branch, trigger, or environment policy changes.
+
 ## Release behavior
 
 `.github/workflows/deploy-dev.yml` builds and pushes an image tagged with the

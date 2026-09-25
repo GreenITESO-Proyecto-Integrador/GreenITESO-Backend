@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 from datetime import datetime, timezone
@@ -39,7 +40,7 @@ from green_iteso.campaigns.models import (
     UserMissionProgress,
 )
 
-BASELINE_VERSION = 2
+BASELINE_VERSION = 3
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_TIMEOUT_SECONDS = 60.0
 
@@ -163,45 +164,35 @@ def _quoted_table(model: Any) -> str:
     return connection.ops.quote_name(model._meta.db_table)
 
 
+def _foreign_key_fields() -> list[tuple[Any, Any]]:
+    """Return every concrete FK/one-to-one relation for fingerprinted models."""
+    return [
+        (model, field)
+        for model in TABLE_MODELS
+        for field in model._meta.concrete_fields
+        if field.is_relation and (field.many_to_one or field.one_to_one)
+    ]
+
+
 def _fk_orphans() -> dict[str, int]:
-    """Check ActionLog foreign-key targets without selecting any row payload."""
-    log_table = _quoted_table(ActionLog)
-    user_table = _quoted_table(User)
-    action_table = _quoted_table(ActionMaster)
-    clan_table = _quoted_table(Clan)
-    campaign_table = _quoted_table(Campaign)
-    checks = {
-        "user": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {user_table} AS target ON target.id = log.user_id
-            WHERE target.id IS NULL
-        """,
-        "action": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {action_table} AS target ON target.id = log.action_id
-            WHERE target.id IS NULL
-        """,
-        "institutional_clan": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {clan_table} AS target ON target.id = log.institutional_clan_id
-            WHERE target.id IS NULL
-        """,
-        "credited_private_clan": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {clan_table} AS target ON target.id = log.credited_private_clan_id
-            WHERE log.credited_private_clan_id IS NOT NULL AND target.id IS NULL
-        """,
-        "campaign": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {campaign_table} AS target ON target.id = log.campaign_id
-            WHERE log.campaign_id IS NOT NULL AND target.id IS NULL
-        """,
-        "reviewed_by": f"""
-            SELECT COUNT(*) FROM {log_table} AS log
-            LEFT JOIN {user_table} AS target ON target.id = log.reviewed_by_id
-            WHERE log.reviewed_by_id IS NOT NULL AND target.id IS NULL
-        """,
-    }
+    """Check every concrete FK in the fingerprinted models without row payloads."""
+    checks: dict[str, str] = {}
+    for model, field in _foreign_key_fields():
+        target_model = field.remote_field.model
+        source_table = _quoted_table(model)
+        target_table = _quoted_table(target_model)
+        source_column = connection.ops.quote_name(field.column)
+        target_column = connection.ops.quote_name(field.target_field.column)
+        nullable_guard = (
+            f"source.{source_column} IS NOT NULL AND " if field.null else ""
+        )
+        check_name = f"{model._meta.label}.{field.name}"
+        checks[check_name] = f"""
+            SELECT COUNT(*) FROM {source_table} AS source
+            LEFT JOIN {target_table} AS target
+              ON target.{target_column} = source.{source_column}
+            WHERE {nullable_guard}target.{target_column} IS NULL
+        """
     result: dict[str, int] = {}
     with connection.cursor() as cursor:
         for name, query in checks.items():
@@ -210,17 +201,23 @@ def _fk_orphans() -> dict[str, int]:
     return result
 
 
-def _marker_presence(pre_id: str, post_id: str) -> dict[str, Any]:
-    """Record only whether the two synthetic marker IDs exist."""
+def _marker_fingerprint(value: str, key: bytes) -> str:
+    """Return a keyed, non-reversible fingerprint for a marker identifier."""
+    marker = UUID(value)
+    return hmac.new(key, b"db-recovery-marker:v1:" + marker.bytes, sha256).hexdigest()
+
+
+def _marker_presence(pre_id: str, post_id: str, key: bytes) -> dict[str, Any]:
+    """Record keyed marker fingerprints and presence, never marker IDs."""
     return {
-        "pre_id": pre_id,
-        "post_id": post_id,
+        "pre_fingerprint": _marker_fingerprint(pre_id, key),
+        "post_fingerprint": _marker_fingerprint(post_id, key),
         "pre_present": ActionLog.objects.filter(pk=pre_id).exists(),
         "post_present": ActionLog.objects.filter(pk=post_id).exists(),
     }
 
 
-def _snapshot(pre_id: str, post_id: str) -> dict[str, Any]:
+def _snapshot(pre_id: str, post_id: str, marker_key: bytes) -> dict[str, Any]:
     """Build the complete metadata-only recovery snapshot."""
     applied = _migration_set()
     table_counts, table_fingerprints = _table_integrity()
@@ -237,7 +234,7 @@ def _snapshot(pre_id: str, post_id: str) -> dict[str, Any]:
             "history_fingerprint": table_fingerprints[ActionLog._meta.db_table],
             "fk_orphans": _fk_orphans(),
         },
-        "markers": _marker_presence(pre_id, post_id),
+        "markers": _marker_presence(pre_id, post_id, marker_key),
     }
 
 
@@ -251,11 +248,13 @@ def _load_baseline(path: Path) -> dict[str, Any]:
         raise CommandError(
             "El baseline de recuperación no tiene un formato compatible."
         )
-    _validate_snapshot(value, "El baseline")
+    _validate_snapshot(value, "El baseline", require_clean_fks=True)
     return value
 
 
-def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
+def _validate_snapshot(
+    snapshot: dict[str, Any], label: str, *, require_clean_fks: bool = False
+) -> None:
     """Reject malformed or internally unsafe evidence before comparison."""
     migrations = snapshot.get("migrations")
     pending = snapshot.get("pending_code_migrations")
@@ -294,16 +293,21 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
     markers = snapshot.get("markers")
     if not isinstance(markers, dict):
         raise CommandError(f"{label} debe incluir los dos marcadores sintéticos.")
-    pre_id = markers.get("pre_id")
-    post_id = markers.get("post_id")
-    if not isinstance(pre_id, str) or not isinstance(post_id, str):
-        raise CommandError(f"{label} debe incluir IDs de marcador válidos.")
-    pre_id = _marker_id(pre_id, "pre_id")
-    post_id = _marker_id(post_id, "post_id")
-    markers["pre_id"] = pre_id
-    markers["post_id"] = post_id
-    if pre_id == post_id:
-        raise CommandError(f"{label} debe incluir marcadores sintéticos distintos.")
+    expected_marker_keys = {
+        "pre_fingerprint",
+        "post_fingerprint",
+        "pre_present",
+        "post_present",
+    }
+    if (
+        set(markers) != expected_marker_keys
+        or not _is_valid_digest(markers.get("pre_fingerprint"))
+        or not _is_valid_digest(markers.get("post_fingerprint"))
+        or markers.get("pre_fingerprint") == markers.get("post_fingerprint")
+        or not isinstance(markers.get("pre_present"), bool)
+        or not isinstance(markers.get("post_present"), bool)
+    ):
+        raise CommandError(f"{label} no contiene fingerprints de marcadores válidos.")
 
     action_logs = snapshot.get("action_logs")
     if not isinstance(action_logs, dict):
@@ -315,7 +319,19 @@ def _validate_snapshot(snapshot: dict[str, Any], label: str) -> None:
             f"{label} no contiene los agregados de ActionLog requeridos."
         )
     fk_orphans = action_logs.get("fk_orphans")
-    if not isinstance(fk_orphans, dict) or any(
+    expected_fk_names = {
+        f"{model._meta.label}.{field.name}" for model, field in _foreign_key_fields()
+    }
+    if (
+        not isinstance(fk_orphans, dict)
+        or set(fk_orphans) != expected_fk_names
+        or any(not _is_nonnegative_integer(value) for value in fk_orphans.values())
+    ):
+        raise CommandError(
+            f"{label} contiene checks FK omitidos o conteos inválidos; "
+            "no es evidencia íntegra."
+        )
+    if require_clean_fks and any(
         not _is_zero_integer(value) for value in fk_orphans.values()
     ):
         raise CommandError(
@@ -347,9 +363,16 @@ def _is_valid_fingerprint(value: object) -> bool:
     return (
         value.get("algorithm") == "sha256"
         and _is_nonnegative_integer(value.get("count"))
-        and isinstance(digest, str)
-        and len(digest) == 64
-        and all(character in "0123456789abcdef" for character in digest)
+        and _is_valid_digest(digest)
+    )
+
+
+def _is_valid_digest(value: object) -> bool:
+    """Validate a lowercase SHA-256/HMAC-SHA-256 hex digest."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
     )
 
 
@@ -374,13 +397,15 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     ):
         mismatches.append("ACTION_LOG_HISTORY_MISMATCH")
     if expected_logs.get("fk_orphans") != actual_logs.get("fk_orphans"):
-        mismatches.append("ACTION_LOG_FK_MISMATCH")
+        mismatches.append("FK_INTEGRITY_MISMATCH")
 
     expected_markers = expected.get("markers", {})
     actual_markers = actual.get("markers", {})
-    if expected_markers.get("pre_id") != actual_markers.get("pre_id"):
+    if expected_markers.get("pre_fingerprint") != actual_markers.get("pre_fingerprint"):
         mismatches.append("BASELINE_PRE_MARKER_MISMATCH")
-    if expected_markers.get("post_id") != actual_markers.get("post_id"):
+    if expected_markers.get("post_fingerprint") != actual_markers.get(
+        "post_fingerprint"
+    ):
         mismatches.append("BASELINE_POST_MARKER_MISMATCH")
     if not actual_markers.get("pre_present"):
         mismatches.append("PRE_MARKER_MISSING")
@@ -394,6 +419,7 @@ def _read_snapshot(
     expected: dict[str, Any] | None,
     pre_marker: str | None,
     post_marker: str | None,
+    marker_key: bytes,
 ) -> tuple[dict[str, Any], list[str]]:
     """Capture one coherent read-only snapshot and optional comparison codes."""
     with transaction.atomic():
@@ -402,11 +428,10 @@ def _read_snapshot(
             cursor.execute("SET TRANSACTION READ ONLY")
             _set_transaction_bounds(cursor, timeout)
         if expected is not None:
-            markers = expected["markers"]
-            actual = _snapshot(str(markers["pre_id"]), str(markers["post_id"]))
+            actual = _snapshot(str(pre_marker), str(post_marker), marker_key)
             _validate_snapshot(actual, "El estado actual")
             return actual, _compare(expected, actual)
-        actual = _snapshot(str(pre_marker), str(post_marker))
+        actual = _snapshot(str(pre_marker), str(post_marker), marker_key)
         _validate_snapshot(actual, "El estado actual")
         return actual, []
 
@@ -419,23 +444,35 @@ def _parse_mode(
     write_path: Path | None = options.get("write_baseline")  # type: ignore[assignment]
     pre_marker = options.get("pre_marker_id")
     post_marker = options.get("post_marker_id")
-    if write_path is not None:
-        if not pre_marker or not post_marker:
-            raise CommandError(
-                "--write-baseline requiere --pre-marker-id y --post-marker-id."
-            )
-        pre_id = _marker_id(str(pre_marker), "--pre-marker-id")
-        post_id = _marker_id(str(post_marker), "--post-marker-id")
-        if pre_id == post_id:
-            raise CommandError("Los marcadores sintéticos deben ser distintos.")
-        return baseline_path, write_path, pre_id, post_id
-    if pre_marker is not None or post_marker is not None:
-        raise CommandError("Los marcadores solo se indican al crear el baseline.")
-    return baseline_path, write_path, None, None
+    if not pre_marker or not post_marker:
+        mode = "--write-baseline" if write_path is not None else "--baseline"
+        raise CommandError(f"{mode} requiere --pre-marker-id y --post-marker-id.")
+    pre_id = _marker_id(str(pre_marker), "--pre-marker-id")
+    post_id = _marker_id(str(post_marker), "--post-marker-id")
+    if pre_id == post_id:
+        raise CommandError("Los marcadores sintéticos deben ser distintos.")
+    return baseline_path, write_path, pre_id, post_id
+
+
+def _marker_hmac_key() -> bytes:
+    """Load a drill-local key that is deliberately excluded from the baseline."""
+    value = os.environ.get("DB_RECOVERY_MARKER_HMAC_KEY", "")
+    key = value.encode("utf-8")
+    if len(key) < 32:
+        raise CommandError(
+            "DB_RECOVERY_MARKER_HMAC_KEY debe contener al menos 32 bytes."
+        )
+    return key
 
 
 def _write_baseline(path: Path, snapshot: dict[str, Any]) -> None:
     """Create a private baseline without replacing existing evidence."""
+    fk_orphans = snapshot["action_logs"]["fk_orphans"]
+    if any(not _is_zero_integer(value) for value in fk_orphans.values()):
+        raise CommandError(
+            "RECOVERY_VERIFY ERROR\ndiagnostico: BASELINE_FK_INTEGRITY_INVALID\n"
+            "detalle: El baseline requiere cero referencias foráneas huérfanas."
+        )
     if not snapshot["markers"]["pre_present"] or snapshot["markers"]["post_present"]:
         raise CommandError(
             "RECOVERY_VERIFY ERROR\ndiagnostico: MARKER_BASELINE_INVALID\n"
@@ -509,6 +546,7 @@ class Command(BaseCommand):
         bounded_options: dict[str, object] | None = None
         original_options: dict[str, object] = {}
         try:
+            marker_key = _marker_hmac_key()
             with _deadline(timeout):
                 expected: dict[str, Any] | None = None
                 if baseline_path is not None:
@@ -517,7 +555,11 @@ class Command(BaseCommand):
                 try:
                     connection.close()
                     actual, mismatches = _read_snapshot(
-                        timeout, expected, pre_marker, post_marker
+                        timeout,
+                        expected,
+                        pre_marker,
+                        post_marker,
+                        marker_key,
                     )
                     if write_path is not None:
                         _write_baseline(write_path, actual)

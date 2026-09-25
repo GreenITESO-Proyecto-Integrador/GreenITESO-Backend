@@ -12,8 +12,10 @@ para Django y solo registra metadatos agregados:
   usando fingerprints estables de los IDs de clan en vez de guardarlos en claro;
 - una huella SHA-256 del contenido completo de `ActionLog`, incluyendo sus
   snapshots, claves de idempotencia/evidencia y metadatos de revisión;
-- los conteos de referencias foráneas huérfanas de `ActionLog`;
-- la presencia de dos IDs sintéticos de marcador.
+- los conteos de referencias foráneas huérfanas de todas las relaciones
+  ForeignKey/OneToOne de los modelos incluidos en `TABLE_MODELS`;
+- la presencia de dos marcadores sintéticos, identificados en el baseline solo
+  por HMAC-SHA-256. Los UUID originales no se escriben en el archivo.
 
 El esquema y sus reglas de producto siguen siendo un borrador. Esta herramienta
 no ejecuta una restauración, no aplica migraciones, no modifica datos y no
@@ -26,10 +28,13 @@ un ambiente compartido.
 El marcador `pre` representa un `ActionLog` sintético creado antes del punto T.
 El marcador `post` representa un `ActionLog` sintético creado después de T. El
 comando de baseline exige que `pre` exista y que `post` todavía no exista. Los
-dos argumentos deben ser UUIDs de los registros sintéticos; no se imprimen
-otros campos del registro.
+dos argumentos deben ser UUIDs de registros sintéticos; se pasan tanto al crear
+como al comparar el baseline. Para no guardar esos UUIDs en claro, el proceso
+requiere `DB_RECOVERY_MARKER_HMAC_KEY`, con al menos 32 bytes, suministrada por
+un gestor de secretos local. Conserva la misma clave fuera del baseline para
+comparar; no la escribas en el repositorio ni junto a la evidencia.
 
-Define `PRE_MARKER_ID` con el UUID de un ActionLog sintético existente y `POST_MARKER_ID` con un UUID reservado que todavía no existe. Captura el baseline antes de la operación de recuperación:
+Define `PRE_MARKER_ID` con el UUID de un ActionLog sintético existente y `POST_MARKER_ID` con un UUID reservado que todavía no existe. Antes de ejecutar, carga `DB_RECOVERY_MARKER_HMAC_KEY` desde el gestor de secretos acordado y conserva acceso a la misma clave para la comparación. Captura el baseline antes de la operación de recuperación:
 
 ```sh
 python app/manage.py db_recovery_verify \
@@ -44,6 +49,8 @@ Después de restaurar la copia o rama desechable, compara el estado recuperado:
 ```sh
 python app/manage.py db_recovery_verify \
   --baseline /tmp/recovery-baseline.json \
+  --pre-marker-id "$PRE_MARKER_ID" \
+  --post-marker-id "$POST_MARKER_ID" \
   --timeout 10
 ```
 
@@ -52,14 +59,18 @@ solo códigos estables, como `MIGRATION_SET_MISMATCH`,
 `TABLE_COUNT_MISMATCH`, `TABLE_CONTENT_MISMATCH`,
 `ACTION_LOG_STATUS_POINTS_MISMATCH`,
 `ACTION_LOG_ATTRIBUTION_MISMATCH`, `ACTION_LOG_HISTORY_MISMATCH`,
-`ACTION_LOG_FK_MISMATCH`,
+`FK_INTEGRITY_MISMATCH`,
 `PRE_MARKER_MISSING` o `POST_MARKER_PRESENT`. Los errores de conexión,
 esquema incompleto, lectura y escritura del archivo tienen diagnósticos
-genéricos; no se incluye el texto del driver, la URL, credenciales, PII ni
-valores de filas.
+genéricos; no se incluye el texto del driver, la URL, credenciales ni valores
+de filas. Los fingerprints y agregados son datos seudónimos potencialmente
+correlacionables, no datos anónimos; trátalos como evidencia sensible y
+conserva el baseline con acceso restringido.
 
 El baseline se valida antes de consultar la base: debe tener una migración
-completa, cero referencias huérfanas y marcadores distintos. La ruta de salida
+completa, exactamente una cuenta por cada FK/OneToOne inspeccionada y cero
+referencias huérfanas, fingerprints de marcadores válidos y marcadores distintos.
+La ruta de salida
 se crea exclusivamente con permisos 0600; si ya existe, el comando falla para
 preservar la evidencia anterior.
 
@@ -88,6 +99,29 @@ ejercicio.
 
 ## Selección de una rama temporal
 
-El guard de ambientes desplegados solo permite los endpoints canónicos de dev/staging/production. Una rama de recuperación temporal debe verificarse desde un proceso operador local separado (`DJANGO_DEPLOYED=false`, `DJANGO_ENV=dev`), con la credencial app heredada de la rama fuente y `DATABASE_URL` del destino explícitamente revisado, incluyendo `sslmode=verify-full`. El rol app tiene permisos DML; es este comando el que impone una transacción READ ONLY. Un rol adicional de solo lectura no se ha provisionado. Carga los valores desde un archivo privado fuera del repositorio o un gestor de secretos; no pegues la URL en el comando ni cambies la configuración del servicio desplegado. Ejecuta únicamente este verificador, que impone transacción de solo lectura.
+El inventario operativo mantiene solo tres ramas Neon de larga duración y no
+crea una rama por PR. Una rama temporal para T8 es una excepción de un solo
+ejercicio: requiere comprobar previamente plan/cuota, autorización del operador
+Neon y aprobación del dataset sintético, además de definir expiración/limpieza.
+No la crees si el origen contiene datos de personas o si no se ha confirmado
+qué datos hereda; production nunca es origen para el ensayo. Si no existe un
+origen autorizado con datos sintéticos, conserva el ensayo como pendiente y usa
+PostgreSQL local para validar el comando, sin llamarlo PITR de Neon.
 
-Coordina una ventana sin otras escrituras entre la captura del baseline y el punto T elegido; después crea el marcador posterior y restaura a T. Conserva junto al baseline el ID de rama, el timestamp UTC y la duración del ensayo. El timestamp del JSON describe la captura y no sustituye la evidencia del punto de restauración de Neon. Cambiar tráfico a un endpoint restaurado requiere actualizar y revisar el inventario canónico de Backend e Infra; este comando no realiza ese cambio.
+El guard de ambientes desplegados solo permite los endpoints canónicos de
+dev/staging/production. Verifica la rama temporal desde un proceso operador
+local separado (`DJANGO_DEPLOYED=false`, `DJANGO_ENV=dev`), con la credencial
+app heredada de la rama fuente y `DATABASE_URL` del destino explícitamente
+revisado, incluyendo `sslmode=verify-full`. El rol app tiene permisos DML; este
+comando impone la transacción `READ ONLY`. Un rol adicional de solo lectura no
+se ha provisionado. Carga URL y clave HMAC desde gestores/archivos privados
+fuera del repositorio; nunca pegues credenciales en comandos ni cambies la
+configuración del servicio desplegado. Ejecuta únicamente este verificador.
+
+Coordina una ventana sin otras escrituras entre la captura del baseline y el
+punto T elegido; después crea el marcador posterior y restaura a T. Conserva
+junto al baseline el nombre/ID de rama en evidencia restringida, el timestamp
+UTC y la duración del ensayo. El timestamp del JSON describe la captura y no
+sustituye la evidencia del punto de restauración de Neon. Cambiar tráfico a un
+endpoint restaurado requiere actualizar y revisar el inventario canónico de
+Backend e Infra; este comando no realiza ese cambio.

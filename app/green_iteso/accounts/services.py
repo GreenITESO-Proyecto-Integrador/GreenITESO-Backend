@@ -28,6 +28,41 @@ def ensure_profile(user: User) -> UserProfile:
     return profile
 
 
+def update_profile(
+    *,
+    user: User,
+    bio: str | None = None,
+    preferences: dict[str, object] | None = None,
+    visibility: str | None = None,
+    avatar_url: str | None = None,
+) -> UserProfile:
+    """Apply a partial edit to ``user``'s profile (T2-21).
+
+    ``None`` means "not provided, leave unchanged", the same convention
+    ``_sync_profile`` uses for Microsoft directory data -- an explicit empty
+    string/dict is a real value (e.g. clearing the bio or avatar), not a
+    no-op. Input validation (choices, URL shape, size limits) is the
+    caller's (serializer's) job; this only decides what changed.
+    """
+    profile = ensure_profile(user)
+    update_fields = []
+    if bio is not None:
+        profile.bio = bio
+        update_fields.append("bio")
+    if preferences is not None:
+        profile.preferences = preferences
+        update_fields.append("preferences")
+    if visibility is not None:
+        profile.visibility = visibility
+        update_fields.append("visibility")
+    if avatar_url is not None:
+        profile.avatar_url = avatar_url
+        update_fields.append("avatar_url")
+    if update_fields:
+        profile.save(update_fields=update_fields)
+    return profile
+
+
 @dataclass(frozen=True)
 class LoginResult:
     user: User

@@ -190,6 +190,13 @@ class UserProfile(models.Model):
     visibility = models.CharField(
         max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC
     )
+    bio = models.CharField(max_length=500, blank=True)
+    preferences = models.JSONField(default=dict, blank=True)
+    # The object itself lives in Cloud Storage (T2-21); only its URL is
+    # persisted here, never the binary. The GCS bucket/account is not
+    # provisioned yet (see docs/avatar-upload.md), so this is populated by
+    # whatever the client uploaded the file to in the meantime.
+    avatar_url = models.URLField(max_length=500, blank=True)
 
     class Meta:
         db_table = "accounts_user_profile"

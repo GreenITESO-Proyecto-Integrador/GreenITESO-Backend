@@ -8,7 +8,7 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 
 class UserManager(BaseUserManager):
@@ -251,3 +251,63 @@ class ClanMembership(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user.email} @ {self.clan.name}"
+
+
+class Friendship(models.Model):
+    """Mutual friend relationship between two users (T2-50).
+
+    ``requester``/``addressee`` preserve who sent the request, which
+    ``respond_to_friend_request`` needs to allow only the addressee to
+    accept/reject. ``low_user``/``high_user`` mirror the same pair sorted by
+    id, so the unique constraint below catches a request in either direction
+    (AC-2: no A->B duplicate of an existing B->A).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    requester = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="sent_friend_requests"
+    )
+    addressee = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="received_friend_requests",
+    )
+    low_user = models.UUIDField(editable=False)
+    high_user = models.UUIDField(editable=False)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_friendship"
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(requester=F("addressee")),
+                name="friendship_not_self",
+            ),
+            models.CheckConstraint(
+                condition=Q(low_user__lt=F("high_user")),
+                name="friendship_pair_ordered",
+            ),
+            models.UniqueConstraint(
+                fields=["low_user", "high_user"], name="friendship_pair_unique"
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["PENDING", "ACCEPTED", "REJECTED"]),
+                name="friendship_status_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["addressee", "status"], name="friendship_addr_st_idx"),
+            models.Index(fields=["requester", "status"], name="friendship_req_st_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.requester_id} -> {self.addressee_id} ({self.status})"

@@ -11,7 +11,13 @@ from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.accounts.models import (
+    Clan,
+    ClanMembership,
+    Friendship,
+    User,
+    UserProfile,
+)
 from green_iteso.actions.models import (
     ActionCategory,
     ActionLog,
@@ -30,6 +36,7 @@ DOMAIN_TABLES = {
     Clan: "accounts_clan",
     UserProfile: "accounts_user_profile",
     ClanMembership: "accounts_clan_membership",
+    Friendship: "accounts_friendship",
     ActionCategory: "actions_action_category",
     ActionMaster: "actions_action_master",
     ActionLog: "actions_action_log",
@@ -78,7 +85,7 @@ def test_custom_user_table_replaces_default_auth_user_table() -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_domain_models_use_canonical_tables_and_preserve_auth_m2m_names() -> None:
-    assert len(DOMAIN_TABLES) == 12
+    assert len(DOMAIN_TABLES) == 13
     assert {model._meta.db_table for model in DOMAIN_TABLES} == set(
         DOMAIN_TABLES.values()
     )
@@ -324,6 +331,50 @@ def test_profile_available_points_check_is_a_database_constraint() -> None:
 
 
 @pytest.mark.django_db
+def test_friendship_status_check_is_a_database_constraint() -> None:
+    requester = User.objects.create_user(email="req@iteso.mx")
+    addressee = User.objects.create_user(email="addr@iteso.mx")
+    low, high = sorted([requester.pk, addressee.pk])
+    friendship = Friendship.objects.create(
+        requester=requester, addressee=addressee, low_user=low, high_user=high
+    )
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Friendship.objects.filter(pk=friendship.pk).update(status="BOGUS")
+
+
+@pytest.mark.django_db
+def test_friendship_pair_is_unique_regardless_of_direction_at_db_level() -> None:
+    requester = User.objects.create_user(email="req@iteso.mx")
+    addressee = User.objects.create_user(email="addr@iteso.mx")
+    low, high = sorted([requester.pk, addressee.pk])
+    Friendship.objects.create(
+        requester=requester, addressee=addressee, low_user=low, high_user=high
+    )
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            # Same unordered pair, reversed requester/addressee: the service
+            # layer (connections.services) never does this, but the
+            # unique-pair constraint must reject it even at the raw DB level.
+            Friendship.objects.create(
+                requester=addressee,
+                addressee=requester,
+                low_user=low,
+                high_user=high,
+            )
+
+
+@pytest.mark.django_db
+def test_friendship_rejects_self_at_db_level() -> None:
+    user = User.objects.create_user(email="solo@iteso.mx")
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Friendship.objects.create(
+                requester=user, addressee=user, low_user=user.pk, high_user=user.pk
+            )
+
+
+@pytest.mark.django_db
 def test_catalog_and_campaign_checks_are_database_constraints() -> None:
     category = ActionCategory.objects.create(code="mobility", name="Mobility")
     with pytest.raises(IntegrityError):
@@ -400,7 +451,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+        ("accounts", "0009_friendship"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -495,6 +546,51 @@ def test_accounts_0005_migration_preserves_existing_rows_and_adds_microsoft_fiel
             microsoft_oid="11111111-1111-1111-1111-111111111111",
         )
         assert new_user_model.objects.filter(pk=second_user.pk).exists()
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0009_migration_preserves_existing_rows_and_adds_friendship_table() -> (
+    None
+):
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0009_friendship only adds a new table, so existing User/UserProfile rows
+    from 0008 must survive untouched, and the new table must be usable
+    immediately after the upgrade.
+    """
+    old_target = [("accounts", "0008_merge_microsoft_identity_and_clan_updates")]
+    new_target = [("accounts", "0009_friendship")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+
+    ana = old_user_model.objects.create(email="ana@iteso.mx", first_name="Ana")
+    beto = old_user_model.objects.create(email="beto@iteso.mx", first_name="Beto")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_user_model = new_apps.get_model("accounts", "User")
+        new_friendship_model = new_apps.get_model("accounts", "Friendship")
+
+        migrated_ana = new_user_model.objects.get(pk=ana.pk)
+        assert migrated_ana.email == "ana@iteso.mx"
+        assert migrated_ana.first_name == "Ana"
+
+        pair = sorted([ana.pk, beto.pk])
+        friendship = new_friendship_model.objects.create(
+            requester_id=ana.pk,
+            addressee_id=beto.pk,
+            low_user=pair[0],
+            high_user=pair[1],
+        )
+        assert friendship.status == "PENDING"
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

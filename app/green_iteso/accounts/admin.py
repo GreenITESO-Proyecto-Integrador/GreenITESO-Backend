@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 
-from .models import Clan, ClanMembership, User, UserProfile
+from .models import Clan, ClanMembership, Friendship, User, UserProfile
 
 
 @admin.register(User)
@@ -163,3 +163,11 @@ class ClanMembershipAdmin(admin.ModelAdmin):
                         f"({existing_leader.user})."
                     )
             super().save_model(request, obj, form, change)
+
+
+@admin.register(Friendship)
+class FriendshipAdmin(admin.ModelAdmin):
+    list_display = ("requester", "addressee", "status", "created_at", "responded_at")
+    list_filter = ("status",)
+    search_fields = ("requester__email", "addressee__email")
+    readonly_fields = ("low_user", "high_user", "created_at")

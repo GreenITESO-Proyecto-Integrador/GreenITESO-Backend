@@ -12,6 +12,30 @@ backend ni se persiste en la base de datos — solo su URL.
 - La URL del objeto se persiste en Neon (Postgres), en una columna nueva:
   `UserProfile.avatar_url` (`accounts_user_profile.avatar_url`).
 
+### El bucket, según `GreenITESO-Infra` (aún no aplicado)
+
+El repo de infraestructura (`GreenITESO-Proyecto-Integrador/GreenITESO-Infra`,
+`modules/storage/`) ya define el bucket que usaríamos, aunque el proyecto de
+GCP en sí no existe todavía (`project_id` no tiene default: "No project
+exists yet"). De ahí:
+
+- **Nombre**: `${var.app_name}-${var.environment}-objects`, con
+  `app_name = "greeniteso"` por default → `greeniteso-dev-objects`,
+  `greeniteso-staging-objects`, `greeniteso-production-objects`.
+- **Es un solo bucket compartido por ambiente**, no uno dedicado a avatares:
+  el módulo lo describe como almacenamiento privado de objetos en general
+  ("photo evidence and other objects"). Los avatares irían ahí bajo su
+  propio prefijo (p. ej. `avatars/<user_id>.<ext>`), no en un bucket aparte.
+- **Es privado** (`uniform_bucket_level_access = true`, sin override de
+  lectura pública en ningún lado del módulo) — confirma que una URL directa
+  tipo `https://storage.googleapis.com/<bucket>/<objeto>` no serviría sin
+  más; el flujo real necesita URLs firmadas (ver más abajo), tanto para
+  subir como probablemente para servir el avatar de vuelta.
+- El nombre final no cambia el diseño de esta historia: `avatar_url` se
+  guarda tal cual venga del cliente hoy, y una vez que exista el bucket real
+  el backend simplemente empezará a emitir URLs firmadas contra
+  `greeniteso-<ambiente>-objects` en el flujo descrito abajo.
+
 ## Flujo actual (sin bucket todavía)
 
 1. El cliente sube el archivo a donde sea que hoy resuelva ese problema
@@ -49,6 +73,7 @@ permite validar tipo/tamaño antes de que el archivo exista) es:
    `PATCH /api/v1/profile/me/`, igual que hoy.
 
 Esto necesita `django-storages` (o el SDK de GCS directamente) más las
-credenciales del bucket, ninguno de los cuales existe todavía en este
-repositorio. Es trabajo de una historia futura, una vez que la cuenta de
-GCS esté lista.
+credenciales del bucket `greeniteso-<ambiente>-objects` (ver arriba),
+ninguno de los cuales existe todavía en este repositorio. Es trabajo de una
+historia futura, una vez que `GreenITESO-Infra` aplique el módulo
+`storage` y la cuenta de GCP exista.

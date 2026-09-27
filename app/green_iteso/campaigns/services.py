@@ -6,14 +6,14 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from green_iteso.accounts.models import Clan, ClanMembership
 from green_iteso.core.roles import ClanRole, GlobalRole
 
-from .models import Campaign, Mission
+from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 
 
 def is_clan_leader(user: Any, clan: Clan | None) -> bool:
@@ -178,3 +178,120 @@ def reject_campaign(admin: Any, campaign_id: UUID, reason: str) -> Campaign:
             ]
         )
     return campaign
+
+
+def validate_action_log_campaign(
+    user: Any, action: Any, campaign_id: UUID | None
+) -> Campaign | None:
+    """Validate that ``user`` may credit ``action`` toward ``campaign_id``.
+
+    Used by Team 1 before creating an ActionLog (BR-07, BR-03). Returns the
+    validated campaign, or None when ``campaign_id`` is None.
+    """
+    if campaign_id is None:
+        return None
+    try:
+        campaign = Campaign.objects.get(
+            pk=campaign_id, approval_status=Campaign.ApprovalStatus.APPROVED
+        )
+    except Campaign.DoesNotExist as error:
+        raise ValidationError(
+            {"campaign_id": "Campaign does not exist or is not approved."}
+        ) from error
+
+    sync_campaign_statuses()
+    campaign.refresh_from_db()
+    if campaign.status != Campaign.Status.IN_PROGRESS:
+        raise ValidationError({"campaign_id": "Campaign is not in progress."})
+    if not CampaignParticipant.objects.filter(campaign=campaign, user=user).exists():
+        raise ValidationError(
+            {"campaign_id": "User is not a participant of this campaign."}
+        )
+    if not Mission.objects.filter(campaign=campaign, action=action).exists():
+        raise ValidationError(
+            {"campaign_id": "Campaign has no mission for this action."}
+        )
+    return campaign
+
+
+def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProgress:
+    """Recompute and persist ``user``'s progress toward ``mission``.
+
+    Counts non-rejected ActionLogMissionContribution rows, clamped to the
+    mission target, and saves only when the stored value changed.
+    """
+    from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
+
+    with transaction.atomic():
+        try:
+            progress, _ = UserMissionProgress.objects.get_or_create(
+                user=user, mission=mission
+            )
+        except IntegrityError:
+            progress = UserMissionProgress.objects.get(user=user, mission=mission)
+        progress = UserMissionProgress.objects.select_for_update().get(pk=progress.pk)
+
+        valid = (
+            ActionLogMissionContribution.objects.filter(
+                mission=mission, action_log__user=user
+            )
+            .exclude(action_log__status=ActionLog.Status.REJECTED)
+            .count()
+        )
+        current_count = min(valid, mission.target_count)
+        is_completed = current_count >= mission.target_count
+
+        if (
+            progress.current_count != current_count
+            or progress.is_completed != is_completed
+        ):
+            progress.current_count = current_count
+            progress.is_completed = is_completed
+            progress.save(update_fields=["current_count", "is_completed"])
+    return progress
+
+
+def apply_action_log_to_missions(action_log: Any) -> list[UserMissionProgress]:
+    """Credit ``action_log`` toward every eligible mission's progress.
+
+    Precondition: must be called inside the caller's transaction, at the same
+    point the log's points are credited. Does nothing if the log is REJECTED.
+    """
+    from green_iteso.actions.models import ActionLogMissionContribution
+
+    if action_log.status == action_log.Status.REJECTED:
+        return []
+
+    sync_campaign_statuses()
+    missions = Mission.objects.filter(
+        action=action_log.action,
+        campaign__approval_status=Campaign.ApprovalStatus.APPROVED,
+        campaign__status=Campaign.Status.IN_PROGRESS,
+        campaign__participants__user=action_log.user,
+    ).distinct()
+
+    updated_progress = []
+    for mission in missions:
+        ActionLogMissionContribution.objects.get_or_create(
+            action_log=action_log, mission=mission
+        )
+        updated_progress.append(recalculate_mission_progress(action_log.user, mission))
+    return updated_progress
+
+
+def revert_action_log_from_missions(action_log: Any) -> list[UserMissionProgress]:
+    """Recompute progress for missions ``action_log`` contributed to.
+
+    Precondition: call after saving ``action_log.status = REJECTED``, inside
+    the same transaction. Contributions are kept as history; podium snapshots
+    are untouched. Applies even if the campaign has since finished.
+    """
+    from green_iteso.actions.models import ActionLogMissionContribution
+
+    contributions = ActionLogMissionContribution.objects.filter(
+        action_log=action_log
+    ).select_related("mission")
+    return [
+        recalculate_mission_progress(action_log.user, contribution.mission)
+        for contribution in contributions
+    ]

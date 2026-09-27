@@ -259,7 +259,10 @@ class UserMissionProgressSerializer(serializers.ModelSerializer):
             "target_count",
             "progress_percentage",
         )
-        extra_kwargs = {"is_completed": {"read_only": True}}
+        extra_kwargs = {
+            "current_count": {"read_only": True},
+            "is_completed": {"read_only": True},
+        }
 
     def get_progress_percentage(self, instance: UserMissionProgress) -> float:
         """Return current progress as a percentage of the mission target."""

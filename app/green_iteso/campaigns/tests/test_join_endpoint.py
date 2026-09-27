@@ -20,13 +20,10 @@ from green_iteso.campaigns.tests.helpers import campaign_data
 
 @pytest.mark.django_db
 class TestCampaignJoinEndpoint:
-    @pytest.mark.parametrize(
-        "status", [Campaign.Status.PROMOTION, Campaign.Status.IN_PROGRESS]
-    )
-    def test_join_active_campaign_returns_201(
-        self, api_client: APIClient, user: User, campaign_factory: Any, status: str
+    def test_join_promotion_campaign_returns_201(
+        self, api_client: APIClient, user: User, campaign_factory: Any
     ) -> None:
-        campaign = campaign_factory(status=status)
+        campaign = campaign_factory(status=Campaign.Status.PROMOTION)
         api_client.force_authenticate(user=user)
 
         response = api_client.post(
@@ -36,10 +33,13 @@ class TestCampaignJoinEndpoint:
         assert response.status_code == 201
         assert CampaignParticipant.objects.filter(campaign=campaign, user=user).exists()
 
-    def test_join_finished_campaign_returns_400(
-        self, api_client: APIClient, user: User, campaign_factory: Any
+    @pytest.mark.parametrize(
+        "status", [Campaign.Status.IN_PROGRESS, Campaign.Status.FINISHED]
+    )
+    def test_join_non_promotion_campaign_returns_400(
+        self, api_client: APIClient, user: User, campaign_factory: Any, status: str
     ) -> None:
-        campaign = campaign_factory(status=Campaign.Status.FINISHED)
+        campaign = campaign_factory(status=status)
         api_client.force_authenticate(user=user)
 
         response = api_client.post(
@@ -61,7 +61,7 @@ class TestCampaignJoinEndpoint:
                 creator=user,
                 scope=Campaign.Scope.PRIVATE,
                 target_clan=clan,
-                status=Campaign.Status.IN_PROGRESS,
+                status=Campaign.Status.PROMOTION,
             )
         )
         api_client.force_authenticate(user=other_user)
@@ -83,7 +83,7 @@ class TestCampaignJoinEndpoint:
                 creator=user,
                 scope=Campaign.Scope.PRIVATE,
                 target_clan=clan,
-                status=Campaign.Status.IN_PROGRESS,
+                status=Campaign.Status.PROMOTION,
             )
         )
         ClanMembership.objects.create(user=other_user, clan=clan)

@@ -120,6 +120,11 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be after start date."}
             )
+        if self.instance is None and start_date is not None:
+            if start_date <= timezone.now():
+                raise serializers.ValidationError(
+                    {"start_date": "Start date must be in the future."}
+                )
         if self.instance is None and end_date is not None:
             if end_date <= timezone.now():
                 raise serializers.ValidationError(
@@ -139,12 +144,17 @@ class CampaignSerializer(serializers.ModelSerializer):
                 {"target_clan": "Private campaigns must target a clan."}
             )
 
-        if (
-            scope == Campaign.Scope.PRIVATE
-            and target_clan.type != Clan.ClanType.PRIVATE
+        if scope == Campaign.Scope.PRIVATE and target_clan.type not in (
+            Clan.ClanType.PRIVATE,
+            Clan.ClanType.INSTITUTIONAL,
         ):
             raise serializers.ValidationError(
-                {"target_clan": "Private campaigns must target a private clan."}
+                {
+                    "target_clan": (
+                        "Private campaigns must target a private or "
+                        "institutional clan."
+                    )
+                }
             )
 
         request = self.context.get("request")

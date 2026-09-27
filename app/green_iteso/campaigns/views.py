@@ -234,7 +234,7 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
             ),
         },
     )
-    def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         campaign = self.get_object()
         data = CampaignSerializer(campaign, context={"request": request}).data
         data["participants"] = CampaignParticipantSerializer(
@@ -292,14 +292,14 @@ class CampaignMissionListCreateView(
             ),
         },
     )
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         if not can_manage_campaign(request.user, self.campaign):
             raise PermissionDenied("You cannot manage missions in this campaign.")
         if self.campaign.status != Campaign.Status.PROMOTION:
             raise ValidationError(
                 "Missions can only be added while the campaign is in promotion."
             )
-        return super().create(request, *args, **kwargs)
+        return self.create(request, *args, **kwargs)
 
     def perform_create(self, serializer: MissionSerializer) -> None:
         try:
@@ -509,7 +509,7 @@ class CampaignProposalListCreateView(
             ),
         },
     )
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         if request.user.role == GlobalRole.ADMIN:
             raise PermissionDenied("Administrators create global campaigns directly.")
         serializer = self.get_serializer(data=request.data)

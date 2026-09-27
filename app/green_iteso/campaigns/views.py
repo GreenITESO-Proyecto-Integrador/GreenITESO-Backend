@@ -310,8 +310,15 @@ class MissionProgressView(CampaignStatusSyncMixin, APIView):
         return Response(UserMissionProgressSerializer(progress).data)
 
     def patch(self, request: Request, mission_id: Any) -> Response:
-        mission = get_object_or_404(Mission, pk=mission_id)
+        mission = get_object_or_404(
+            Mission.objects.select_related("campaign"), pk=mission_id
+        )
         self._require_participation(request, mission)
+        if mission.campaign.status == Campaign.Status.FINISHED:
+            return Response(
+                {"detail": "Cannot track progress for a finished campaign."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         with transaction.atomic():
             progress = self.get_or_create_progress(request, mission)
             progress = UserMissionProgress.objects.select_for_update().get(

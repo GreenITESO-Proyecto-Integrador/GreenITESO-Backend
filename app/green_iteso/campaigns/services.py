@@ -28,30 +28,48 @@ def is_clan_leader(user: Any, clan: Clan | None) -> bool:
     ).exists()
 
 
+def _is_admin_for_institutional_clan(user: Any, clan: Clan | None) -> bool:
+    """Return whether the user is an admin managing an institutional clan.
+
+    Admins may create and manage private campaigns targeted at institutional
+    clans, alongside that clan's leader. They still have no access to
+    campaigns targeting non-institutional (private/friend) clans.
+    """
+    if clan is None or clan.deleted_at is not None:
+        return False
+    return user.role == GlobalRole.ADMIN and clan.type == Clan.ClanType.INSTITUTIONAL
+
+
 def can_create_campaign(user: Any, scope: str, target_clan: Clan | None) -> bool:
     """Return whether the user may create a campaign with the given scope.
 
-    Global campaigns are admin-only. Private campaigns can only be created by
-    the leader of the target clan; admins may view private campaigns but
-    cannot create them.
+    Global campaigns are admin-only. Private campaigns can be created by the
+    leader of the target clan, or by an admin when the target clan is
+    institutional; admins have no create access to non-institutional
+    (private/friend) clans' campaigns.
     """
     if scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
     if scope == Campaign.Scope.PRIVATE:
-        return is_clan_leader(user, target_clan)
+        return is_clan_leader(user, target_clan) or _is_admin_for_institutional_clan(
+            user, target_clan
+        )
     return False
 
 
 def can_manage_campaign(user: Any, campaign: Campaign) -> bool:
     """Return whether the user may manage the campaign's missions.
 
-    Global campaigns are managed only by admins. Private campaigns are managed
-    only by the leader of the target clan; admins may view private campaigns
-    but cannot manage their missions.
+    Global campaigns are managed only by admins. Private campaigns are
+    managed by the leader of the target clan, or by an admin when the target
+    clan is institutional; admins have no manage access to non-institutional
+    (private/friend) clans' campaigns.
     """
     if campaign.scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
-    return is_clan_leader(user, campaign.target_clan)
+    return is_clan_leader(
+        user, campaign.target_clan
+    ) or _is_admin_for_institutional_clan(user, campaign.target_clan)
 
 
 def compute_campaign_status(

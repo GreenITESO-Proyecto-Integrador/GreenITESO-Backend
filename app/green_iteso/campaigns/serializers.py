@@ -8,11 +8,11 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from green_iteso.accounts.models import ClanMembership
+from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionMaster
-from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
+from .services import can_create_campaign
 
 
 class ActionMasterSerializer(serializers.ModelSerializer):
@@ -65,6 +65,12 @@ class CampaignSerializer(serializers.ModelSerializer):
     """Serialize campaigns, including missions during campaign creation."""
 
     missions = MissionSerializer(many=True, required=False)
+    target_clan = serializers.PrimaryKeyRelatedField(
+        queryset=Clan.objects.all(),
+        required=False,
+        allow_null=True,
+        error_messages={"does_not_exist": "Clan does not exist or was deleted."},
+    )
 
     class Meta:
         model = Campaign
@@ -119,23 +125,28 @@ class CampaignSerializer(serializers.ModelSerializer):
                 {"target_clan": "Private campaigns must target a clan."}
             )
 
+        if (
+            scope == Campaign.Scope.PRIVATE
+            and target_clan.type != Clan.ClanType.PRIVATE
+        ):
+            raise serializers.ValidationError(
+                {"target_clan": "Private campaigns must target a private clan."}
+            )
+
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if self.instance is None and user is not None:
-            if scope == Campaign.Scope.GLOBAL and user.role != GlobalRole.ADMIN:
+        if (
+            self.instance is None
+            and user is not None
+            and not can_create_campaign(user, scope, target_clan)
+        ):
+            if scope == Campaign.Scope.GLOBAL:
                 raise PermissionDenied(
                     "Only administrators can create global campaigns."
                 )
-            if scope == Campaign.Scope.PRIVATE and target_clan is not None:
-                is_leader = ClanMembership.objects.filter(
-                    user=user,
-                    clan=target_clan,
-                    role=ClanRole.LEADER,
-                ).exists()
-                if not is_leader:
-                    raise PermissionDenied(
-                        "Only the clan leader can create campaigns for this clan."
-                    )
+            raise PermissionDenied(
+                "Only the clan leader can create campaigns for this clan."
+            )
         return attrs
 
     @transaction.atomic

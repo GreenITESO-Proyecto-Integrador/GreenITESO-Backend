@@ -6,6 +6,7 @@ from .views import (
     CampaignDetailView,
     CampaignJoinView,
     CampaignListCreateView,
+    CampaignMissionListCreateView,
     CampaignParticipantListView,
     MissionProgressView,
 )
@@ -21,6 +22,11 @@ urlpatterns = [
         "campaigns/<uuid:campaign_id>/participants/",
         CampaignParticipantListView.as_view(),
         name="campaign-participants",
+    ),
+    path(
+        "campaigns/<uuid:campaign_id>/missions/",
+        CampaignMissionListCreateView.as_view(),
+        name="campaign-missions",
     ),
     path(
         "campaigns/<uuid:campaign_id>/join/",

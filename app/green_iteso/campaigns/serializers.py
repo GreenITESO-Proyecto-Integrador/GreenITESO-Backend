@@ -8,8 +8,9 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from green_iteso.accounts.models import ClanMembership, User
+from green_iteso.accounts.models import ClanMembership
 from green_iteso.actions.models import ActionMaster
+from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 
@@ -84,6 +85,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "id": {"read_only": True},
             "created_at": {"read_only": True},
             "creator": {"read_only": True},
+            "status": {"read_only": True},
         }
 
     def validate_missions(self, missions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -120,7 +122,7 @@ class CampaignSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if self.instance is None and user is not None:
-            if scope == Campaign.Scope.GLOBAL and user.role != User.Role.ADMIN:
+            if scope == Campaign.Scope.GLOBAL and user.role != GlobalRole.ADMIN:
                 raise PermissionDenied(
                     "Only administrators can create global campaigns."
                 )
@@ -128,7 +130,7 @@ class CampaignSerializer(serializers.ModelSerializer):
                 is_leader = ClanMembership.objects.filter(
                     user=user,
                     clan=target_clan,
-                    role=ClanMembership.MembershipRole.LEADER,
+                    role=ClanRole.LEADER,
                 ).exists()
                 if not is_leader:
                     raise PermissionDenied(

@@ -66,7 +66,10 @@ class TestCampaignEndpoints:
         ClanMembership.objects.create(user=user, clan=clan)
         Campaign.objects.create(
             **campaign_data(
-                title="global", creator=user, status=Campaign.Status.PROMOTION
+                title="global",
+                creator=user,
+                status=Campaign.Status.PROMOTION,
+                start_date=current_time,
             )
         )
         Campaign.objects.create(

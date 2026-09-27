@@ -8,7 +8,6 @@ from typing import Any
 from django.db import IntegrityError, transaction
 from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -26,7 +25,15 @@ from .serializers import (
     MissionSerializer,
     UserMissionProgressSerializer,
 )
-from .services import can_manage_campaign
+from .services import can_manage_campaign, sync_campaign_statuses
+
+
+class CampaignStatusSyncMixin:
+    """Sync campaign statuses lazily after authentication and permissions."""
+
+    def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
+        super().initial(request, *args, **kwargs)  # type: ignore[misc]
+        sync_campaign_statuses()
 
 
 class CampaignPagination(PageNumberPagination):
@@ -64,7 +71,7 @@ def _progress_by_campaign(
     return progress_by_campaign
 
 
-class CampaignListCreateView(generics.ListCreateAPIView):
+class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView):
     """List campaigns or create a campaign with its nested missions."""
 
     serializer_class = CampaignSerializer
@@ -89,10 +96,7 @@ class CampaignListCreateView(generics.ListCreateAPIView):
         if campaign_status:
             queryset = queryset.filter(status=campaign_status)
         if self.request.query_params.get("is_active", "").lower() == "true":
-            current_time = timezone.now()
-            queryset = queryset.filter(
-                start_date__lte=current_time, end_date__gte=current_time
-            )
+            queryset = queryset.filter(status=Campaign.Status.IN_PROGRESS)
         return queryset.order_by("-start_date")
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
@@ -113,7 +117,7 @@ class CampaignListCreateView(generics.ListCreateAPIView):
         serializer.save(creator=self.request.user)
 
 
-class CampaignDetailView(generics.RetrieveAPIView):
+class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
     """Return one campaign with its missions and participants."""
 
     serializer_class = CampaignSerializer
@@ -137,7 +141,9 @@ class CampaignDetailView(generics.RetrieveAPIView):
         return Response(data)
 
 
-class CampaignMissionListCreateView(generics.ListCreateAPIView):
+class CampaignMissionListCreateView(
+    CampaignStatusSyncMixin, generics.ListCreateAPIView
+):
     """List a campaign's missions or add one while it is in promotion."""
 
     serializer_class = MissionSerializer
@@ -180,7 +186,7 @@ class CampaignMissionListCreateView(generics.ListCreateAPIView):
             ) from error
 
 
-class CampaignParticipantListView(generics.ListAPIView):
+class CampaignParticipantListView(CampaignStatusSyncMixin, generics.ListAPIView):
     """List the participants enrolled in a campaign."""
 
     serializer_class = CampaignParticipantSerializer
@@ -195,7 +201,7 @@ class CampaignParticipantListView(generics.ListAPIView):
         )
 
 
-class CampaignJoinView(APIView):
+class CampaignJoinView(CampaignStatusSyncMixin, APIView):
     """Enroll the authenticated user in an active campaign."""
 
     permission_classes = [IsAuthenticated]
@@ -242,7 +248,7 @@ class CampaignJoinView(APIView):
         )
 
 
-class MissionProgressView(APIView):
+class MissionProgressView(CampaignStatusSyncMixin, APIView):
     """Read or update the authenticated user's progress for a mission."""
 
     permission_classes = [IsAuthenticated]

@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from green_iteso.accounts.models import Clan, ClanMembership
+from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
 from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
@@ -51,25 +52,25 @@ def can_create_campaign(user: Any, scope: str, target_clan: Clan | None) -> bool
     if scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
     if scope == Campaign.Scope.PRIVATE:
-        return is_clan_leader(user, target_clan) or _is_admin_for_institutional_clan(
-            user, target_clan
-        )
+        if target_clan is not None and target_clan.type == Clan.ClanType.INSTITUTIONAL:
+            return _is_admin_for_institutional_clan(user, target_clan)
+        return is_clan_leader(user, target_clan)
     return False
 
 
 def can_manage_campaign(user: Any, campaign: Campaign) -> bool:
     """Return whether the user may manage the campaign's missions.
 
-    Global campaigns are managed only by admins. Private campaigns are
-    managed by the leader of the target clan, or by an admin when the target
-    clan is institutional; admins have no manage access to non-institutional
-    (private/friend) clans' campaigns.
+    Global campaigns are managed only by admins. Private campaigns targeting
+    an institutional clan are admin-only; other private campaigns are
+    managed by the leader of the target clan.
     """
     if campaign.scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
-    return is_clan_leader(
-        user, campaign.target_clan
-    ) or _is_admin_for_institutional_clan(user, campaign.target_clan)
+    target_clan = campaign.target_clan
+    if target_clan is not None and target_clan.type == Clan.ClanType.INSTITUTIONAL:
+        return _is_admin_for_institutional_clan(user, target_clan)
+    return is_clan_leader(user, target_clan)
 
 
 def compute_campaign_status(
@@ -220,8 +221,6 @@ def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProg
     Counts non-rejected ActionLogMissionContribution rows, clamped to the
     mission target, and saves only when the stored value changed.
     """
-    from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
-
     with transaction.atomic():
         try:
             progress, _ = UserMissionProgress.objects.get_or_create(
@@ -257,8 +256,6 @@ def apply_action_log_to_missions(action_log: Any) -> list[UserMissionProgress]:
     Precondition: must be called inside the caller's transaction, at the same
     point the log's points are credited. Does nothing if the log is REJECTED.
     """
-    from green_iteso.actions.models import ActionLogMissionContribution
-
     if action_log.status == action_log.Status.REJECTED:
         return []
 
@@ -286,8 +283,6 @@ def revert_action_log_from_missions(action_log: Any) -> list[UserMissionProgress
     the same transaction. Contributions are kept as history; podium snapshots
     are untouched. Applies even if the campaign has since finished.
     """
-    from green_iteso.actions.models import ActionLogMissionContribution
-
     contributions = ActionLogMissionContribution.objects.filter(
         action_log=action_log
     ).select_related("mission")

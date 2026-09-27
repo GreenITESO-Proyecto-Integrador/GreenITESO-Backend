@@ -22,7 +22,9 @@ from green_iteso.campaigns.tests.helpers import FakeRequest, campaign_data
 
 @pytest.mark.django_db
 class TestCampaignSerializer:
-    def test_global_campaign_without_clan_is_valid(self, user: User) -> None:
+    def test_global_campaign_without_clan_is_valid(
+        self, user: User  # pylint: disable=unused-argument
+    ) -> None:
         serializer = CampaignSerializer(data=campaign_data())
 
         assert serializer.is_valid(), serializer.errors

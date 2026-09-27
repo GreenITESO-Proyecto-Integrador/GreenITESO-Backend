@@ -1,5 +1,9 @@
 """Fixtures shared by the campaigns tests."""
 
+# pylint: disable=redefined-outer-name
+# Fixture params intentionally reuse other fixtures' names (pytest's
+# name-based resolution), which pylint otherwise flags as shadowing.
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -100,5 +104,7 @@ def second_action(action_category: ActionCategory) -> ActionMaster:
 
 
 @pytest.fixture
-def private_campaign(user: User, clan: Clan, campaign_factory: Any) -> Campaign:
+def private_campaign(
+    user: User, clan: Clan, campaign_factory: Any  # pylint: disable=unused-argument
+) -> Campaign:
     return campaign_factory(scope=Campaign.Scope.PRIVATE, target_clan=clan)

@@ -1,5 +1,10 @@
 """Tests for deriving mission progress from ActionLog contributions."""
 
+# pylint: disable=unused-argument,redefined-outer-name
+# Several fixtures below (e.g. in_progress_mission, institutional_clan) are
+# depended on only for their setup side effects, not their return value, and
+# fixture params intentionally reuse other fixtures' names for resolution.
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -226,7 +231,7 @@ class TestApplyActionLogToMissions:
 
         progresses = apply_action_log_to_missions(log)
 
-        assert progresses == []
+        assert not progresses
         assert not UserMissionProgress.objects.filter(user=other_user).exists()
 
     def test_is_idempotent(
@@ -322,7 +327,7 @@ class TestApplyActionLogToMissions:
 
         progresses = apply_action_log_to_missions(log)
 
-        assert progresses == []
+        assert not progresses
         assert not ActionLogMissionContribution.objects.filter(action_log=log).exists()
 
 

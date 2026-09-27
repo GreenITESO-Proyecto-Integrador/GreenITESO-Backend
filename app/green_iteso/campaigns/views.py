@@ -6,9 +6,10 @@ from functools import cached_property
 from typing import Any
 
 from django.db import IntegrityError, transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -23,6 +24,8 @@ from green_iteso.core.roles import GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .serializers import (
+    CampaignDetailSerializer,
+    CampaignListItemSerializer,
     CampaignParticipantSerializer,
     CampaignProposalSerializer,
     CampaignRejectSerializer,
@@ -72,6 +75,21 @@ def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
     )
 
 
+def _annotate_is_participant(
+    queryset: QuerySet[Campaign], user: Any
+) -> QuerySet[Campaign]:
+    """Annotate each campaign with whether the given user is enrolled."""
+    if not getattr(user, "is_authenticated", False):
+        return queryset.annotate(
+            is_participant=Exists(CampaignParticipant.objects.none())
+        )
+    return queryset.annotate(
+        is_participant=Exists(
+            CampaignParticipant.objects.filter(campaign=OuterRef("pk"), user=user)
+        )
+    )
+
+
 def _progress_by_campaign(
     user: Any, campaign_ids: list[Any]
 ) -> dict[str, list[dict[str, Any]]]:
@@ -100,10 +118,63 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
     permission_classes = [IsAuthenticated]
     pagination_class = CampaignPagination
 
+    @extend_schema(
+        operation_id="campaigns_list",
+        tags=["campaigns"],
+        parameters=[
+            OpenApiParameter(
+                "scope",
+                str,
+                enum=[Campaign.Scope.GLOBAL, Campaign.Scope.PRIVATE],
+                description="Filter by a single campaign scope.",
+            ),
+            OpenApiParameter(
+                "scope__in",
+                str,
+                description="Comma-separated list of scopes, e.g. GLOBAL,PRIVATE.",
+            ),
+            OpenApiParameter(
+                "status",
+                str,
+                enum=[
+                    Campaign.Status.PROMOTION,
+                    Campaign.Status.IN_PROGRESS,
+                    Campaign.Status.FINISHED,
+                ],
+                description="Filter by campaign status.",
+            ),
+            OpenApiParameter(
+                "is_active", bool, description="If true, only IN_PROGRESS campaigns."
+            ),
+            OpenApiParameter(
+                "participating",
+                bool,
+                description="If true, only campaigns the user is enrolled in.",
+            ),
+        ],
+        responses={200: CampaignListItemSerializer(many=True)},
+    )
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        operation_id="campaigns_create",
+        tags=["campaigns"],
+        responses={
+            201: CampaignSerializer,
+            400: OpenApiResponse(description="VALIDATION_ERROR: field errors"),
+            403: OpenApiResponse(
+                description="Only administrators or the clan leader can create this campaign"
+            ),
+        },
+    )
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return super().post(request, *args, **kwargs)
+
     def get_queryset(self) -> QuerySet[Campaign]:
-        queryset = _visible_campaigns(self.request.user).prefetch_related(
-            "missions__action", "participants"
-        )
+        queryset = _annotate_is_participant(
+            _visible_campaigns(self.request.user), self.request.user
+        ).prefetch_related("missions__action", "participants")
         scope = self.request.query_params.get("scope")
         scopes = [
             value.strip()
@@ -119,6 +190,8 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
             queryset = queryset.filter(status=campaign_status)
         if self.request.query_params.get("is_active", "").lower() == "true":
             queryset = queryset.filter(status=Campaign.Status.IN_PROGRESS)
+        if self.request.query_params.get("participating", "").lower() == "true":
+            queryset = queryset.filter(participants__user=self.request.user).distinct()
         return queryset.order_by("-start_date")
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
@@ -147,10 +220,20 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
     lookup_url_kwarg = "campaign_id"
 
     def get_queryset(self) -> QuerySet[Campaign]:
-        return _visible_campaigns(self.request.user).prefetch_related(
-            "missions__action", "participants"
-        )
+        return _annotate_is_participant(
+            _visible_campaigns(self.request.user), self.request.user
+        ).prefetch_related("missions__action", "participants")
 
+    @extend_schema(
+        operation_id="campaigns_retrieve",
+        tags=["campaigns"],
+        responses={
+            200: CampaignDetailSerializer,
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
     def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         campaign = self.get_object()
         data = CampaignSerializer(campaign, context={"request": request}).data
@@ -189,6 +272,26 @@ class CampaignMissionListCreateView(
         context["campaign"] = self.campaign
         return context
 
+    @extend_schema(operation_id="campaigns_missions_list", tags=["campaigns"])
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        operation_id="campaigns_missions_create",
+        tags=["campaigns"],
+        responses={
+            201: MissionSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: repeated action, or campaign not in PROMOTION"
+            ),
+            403: OpenApiResponse(
+                description="User cannot manage missions in this campaign"
+            ),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         if not can_manage_campaign(request.user, self.campaign):
             raise PermissionDenied("You cannot manage missions in this campaign.")
@@ -214,6 +317,19 @@ class CampaignParticipantListView(CampaignStatusSyncMixin, generics.ListAPIView)
     serializer_class = CampaignParticipantSerializer
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        operation_id="campaigns_participants_list",
+        tags=["campaigns"],
+        responses={
+            200: CampaignParticipantSerializer(many=True),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self) -> QuerySet[CampaignParticipant]:
         campaign = get_object_or_404(
             _visible_campaigns(self.request.user), pk=self.kwargs["campaign_id"]
@@ -228,6 +344,23 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        operation_id="campaigns_join",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            201: CampaignParticipantSerializer,
+            400: OpenApiResponse(
+                description="{'detail': ...}: campaign not active or user already enrolled"
+            ),
+            403: OpenApiResponse(
+                description="{'detail': ...}: user is not a member of this campaign's clan"
+            ),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not approved"
+            ),
+        },
+    )
     def post(self, request: Request, campaign_id: Any) -> Response:
         campaign = get_object_or_404(
             Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED),
@@ -309,6 +442,17 @@ class MissionProgressView(CampaignStatusSyncMixin, APIView):
         self._require_participation(request, mission)
         return self.get_or_create_progress(request, mission)
 
+    @extend_schema(
+        operation_id="campaigns_mission_progress_retrieve",
+        tags=["campaigns"],
+        responses={
+            200: UserMissionProgressSerializer,
+            403: OpenApiResponse(
+                description="User must join the campaign before tracking mission progress"
+            ),
+            404: OpenApiResponse(description="Mission does not exist"),
+        },
+    )
     def get(self, request: Request, mission_id: Any) -> Response:
         progress = self.get_progress(request, mission_id)
         return Response(UserMissionProgressSerializer(progress).data)
@@ -323,6 +467,25 @@ class CampaignProposalListCreateView(
     permission_classes = [IsAuthenticated]
     pagination_class = CampaignPagination
 
+    @extend_schema(
+        operation_id="campaigns_proposals_list",
+        tags=["campaigns"],
+        parameters=[
+            OpenApiParameter(
+                "approval_status",
+                str,
+                enum=[
+                    Campaign.ApprovalStatus.PENDING,
+                    Campaign.ApprovalStatus.APPROVED,
+                    Campaign.ApprovalStatus.REJECTED,
+                ],
+                description="Filter proposals by approval status.",
+            ),
+        ],
+    )
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self) -> QuerySet[Campaign]:
         user = self.request.user
         queryset = Campaign.objects.filter(scope=Campaign.Scope.GLOBAL)
@@ -335,6 +498,17 @@ class CampaignProposalListCreateView(
             queryset = queryset.filter(approval_status=approval_status)
         return queryset.order_by("-created_at")
 
+    @extend_schema(
+        operation_id="campaigns_proposals_create",
+        tags=["campaigns"],
+        responses={
+            201: CampaignProposalSerializer,
+            400: OpenApiResponse(description="VALIDATION_ERROR: field errors"),
+            403: OpenApiResponse(
+                description="Administrators create global campaigns directly"
+            ),
+        },
+    )
     def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         if request.user.role == GlobalRole.ADMIN:
             raise PermissionDenied("Administrators create global campaigns directly.")
@@ -353,6 +527,19 @@ class CampaignProposalApproveView(CampaignStatusSyncMixin, APIView):
 
     permission_classes = [IsAdmin]
 
+    @extend_schema(
+        operation_id="campaigns_proposals_approve",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            200: CampaignProposalSerializer,
+            400: OpenApiResponse(description="Proposal is not pending review"),
+            403: OpenApiResponse(
+                description="Only administrators can approve proposals"
+            ),
+            404: OpenApiResponse(description="Proposal does not exist"),
+        },
+    )
     def post(self, request: Request, campaign_id: Any) -> Response:
         try:
             campaign = approve_campaign(request.user, campaign_id)
@@ -366,6 +553,21 @@ class CampaignProposalRejectView(CampaignStatusSyncMixin, APIView):
 
     permission_classes = [IsAdmin]
 
+    @extend_schema(
+        operation_id="campaigns_proposals_reject",
+        tags=["campaigns"],
+        request=CampaignRejectSerializer,
+        responses={
+            200: CampaignProposalSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: proposal not pending, or missing rejection_reason"
+            ),
+            403: OpenApiResponse(
+                description="Only administrators can reject proposals"
+            ),
+            404: OpenApiResponse(description="Proposal does not exist"),
+        },
+    )
     def post(self, request: Request, campaign_id: Any) -> Response:
         serializer = CampaignRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

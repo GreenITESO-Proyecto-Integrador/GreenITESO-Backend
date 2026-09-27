@@ -421,3 +421,65 @@ class TestPrivateCampaignCreationRules:
 
         assert response.status_code == 403
         assert Campaign.objects.count() == 0
+
+
+@pytest.mark.django_db
+class TestCampaignParticipatingFilterAndIsParticipant:
+    def test_participating_filter_returns_only_enrolled_campaigns_combined_with_status(
+        self, api_client: APIClient, user: User
+    ) -> None:
+        joined_in_progress = Campaign.objects.create(
+            **campaign_data(
+                title="joined-in-progress",
+                creator=user,
+                status=Campaign.Status.IN_PROGRESS,
+            )
+        )
+        CampaignParticipant.objects.create(campaign=joined_in_progress, user=user)
+        joined_finished = Campaign.objects.create(
+            **campaign_data(
+                title="joined-finished",
+                creator=user,
+                status=Campaign.Status.FINISHED,
+                start_date=timezone.now() - timedelta(days=3),
+                end_date=timezone.now() - timedelta(days=1),
+            )
+        )
+        CampaignParticipant.objects.create(campaign=joined_finished, user=user)
+        Campaign.objects.create(
+            **campaign_data(
+                title="not-joined",
+                creator=user,
+                status=Campaign.Status.IN_PROGRESS,
+                start_date=timezone.now() + timedelta(days=1),
+            )
+        )
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(
+            reverse("campaign-list"),
+            {"participating": "true", "status": "IN_PROGRESS"},
+        )
+
+        assert response.status_code == 200
+        assert {item["title"] for item in response.data["results"]} == {
+            "joined-in-progress"
+        }
+
+    def test_is_participant_is_correct_in_list_and_detail(
+        self, api_client: APIClient, user: User, other_user: User, campaign: Campaign
+    ) -> None:
+        CampaignParticipant.objects.create(campaign=campaign, user=user)
+        api_client.force_authenticate(user=user)
+
+        list_response = api_client.get(reverse("campaign-list"))
+        detail_response = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert list_response.data["results"][0]["is_participant"] is True
+        assert detail_response.data["is_participant"] is True
+
+        api_client.force_authenticate(user=other_user)
+        list_as_other = api_client.get(reverse("campaign-list"))
+        assert list_as_other.data["results"][0]["is_participant"] is False

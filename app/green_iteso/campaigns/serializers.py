@@ -25,6 +25,7 @@ class ActionMasterSerializer(serializers.ModelSerializer):
     class Meta:
         model = ActionMaster
         fields = ("code", "name", "description", "points")
+        ref_name = "CampaignActionMaster"
 
 
 class MissionSerializer(serializers.ModelSerializer):
@@ -75,6 +76,7 @@ class CampaignSerializer(serializers.ModelSerializer):
         allow_null=True,
         error_messages={"does_not_exist": "Clan does not exist or was deleted."},
     )
+    is_participant = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
@@ -91,6 +93,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "created_at",
             "missions",
             "approval_status",
+            "is_participant",
         )
         extra_kwargs = {
             "id": {"read_only": True},
@@ -159,6 +162,17 @@ class CampaignSerializer(serializers.ModelSerializer):
                 "Only the clan leader can create campaigns for this clan."
             )
         return attrs
+
+    def get_is_participant(self, instance: Campaign) -> bool:
+        """Return whether the request user is enrolled, using the annotation if present."""
+        annotated = getattr(instance, "is_participant", None)
+        if annotated is not None:
+            return bool(annotated)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return False
+        return instance.participants.filter(user=user).exists()
 
     def create(self, validated_data: dict[str, Any]) -> Campaign:
         """Create the campaign and its nested missions atomically."""
@@ -270,3 +284,21 @@ class UserMissionProgressSerializer(serializers.ModelSerializer):
         if target_count == 0:
             return 0.0
         return instance.current_count / target_count * 100
+
+
+class CampaignListItemSerializer(CampaignSerializer):
+    """Document the ``user_mission_progress`` field added by hand in list responses."""
+
+    user_mission_progress = UserMissionProgressSerializer(many=True, read_only=True)
+
+    class Meta(CampaignSerializer.Meta):
+        fields = (*CampaignSerializer.Meta.fields, "user_mission_progress")
+
+
+class CampaignDetailSerializer(CampaignListItemSerializer):
+    """Document the ``participants`` field added by hand in detail responses."""
+
+    participants = CampaignParticipantSerializer(many=True, read_only=True)
+
+    class Meta(CampaignListItemSerializer.Meta):
+        fields = (*CampaignListItemSerializer.Meta.fields, "participants")

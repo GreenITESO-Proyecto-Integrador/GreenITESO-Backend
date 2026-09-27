@@ -18,8 +18,10 @@ from green_iteso.campaigns.services import (
     compute_campaign_status,
     sync_campaign_statuses,
 )
-from green_iteso.campaigns.tests.helpers import assert_join_rejected_inactive
-from green_iteso.campaigns.tests.helpers import campaign_data
+from green_iteso.campaigns.tests.helpers import (
+    assert_join_rejected_inactive,
+    campaign_data,
+)
 
 DAY = timedelta(days=1)
 

@@ -233,8 +233,7 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
             Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED),
             pk=campaign_id,
         )
-        active_statuses = {Campaign.Status.PROMOTION, Campaign.Status.IN_PROGRESS}
-        if campaign.status not in active_statuses:
+        if campaign.status != Campaign.Status.PROMOTION:
             return Response(
                 {"detail": "Campaign is not active."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -274,7 +273,12 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
 
 
 class MissionProgressView(CampaignStatusSyncMixin, APIView):
-    """Read or update the authenticated user's progress for a mission."""
+    """Read-only view of the authenticated user's progress for a mission.
+
+    Progress is derived from ActionLog contributions by
+    ``campaigns.services.apply_action_log_to_missions`` /
+    ``revert_action_log_from_missions``; this endpoint cannot be written to.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -308,57 +312,6 @@ class MissionProgressView(CampaignStatusSyncMixin, APIView):
     def get(self, request: Request, mission_id: Any) -> Response:
         progress = self.get_progress(request, mission_id)
         return Response(UserMissionProgressSerializer(progress).data)
-
-    def patch(self, request: Request, mission_id: Any) -> Response:
-        mission = get_object_or_404(
-            Mission.objects.select_related("campaign"), pk=mission_id
-        )
-        self._require_participation(request, mission)
-        if mission.campaign.status == Campaign.Status.FINISHED:
-            return Response(
-                {"detail": "Cannot track progress for a finished campaign."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        with transaction.atomic():
-            progress = self.get_or_create_progress(request, mission)
-            progress = UserMissionProgress.objects.select_for_update().get(
-                pk=progress.pk
-            )
-            payload = request.data.copy()
-            increment = payload.pop("increment", None)
-            if increment is not None:
-                if "current_count" in payload:
-                    return Response(
-                        {"detail": "Send either increment or current_count, not both."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                try:
-                    payload["current_count"] = progress.current_count + int(increment)
-                except (TypeError, ValueError):
-                    return Response(
-                        {"increment": "Increment must be an integer."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-            serializer = UserMissionProgressSerializer(
-                progress, data=payload, partial=True
-            )
-            serializer.is_valid(raise_exception=True)
-            if (
-                serializer.validated_data.get("current_count", progress.current_count)
-                > mission.target_count
-            ):
-                return Response(
-                    {"current_count": "Progress cannot exceed the mission target."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            updated_progress = serializer.save(
-                is_completed=serializer.validated_data.get(
-                    "current_count", progress.current_count
-                )
-                >= mission.target_count
-            )
-        return Response(UserMissionProgressSerializer(updated_progress).data)
 
 
 class CampaignProposalListCreateView(

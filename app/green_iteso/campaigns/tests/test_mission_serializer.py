@@ -57,7 +57,7 @@ class TestMissionSerializer:
 @pytest.mark.django_db
 class TestMissionUniqueness:
     def test_inactive_action_is_rejected(
-        self, campaign: Campaign, action: ActionMaster
+        self, campaign: Campaign, action: ActionMaster  # pylint: disable=unused-argument
     ) -> None:
         action.is_active = False
         action.save(update_fields=["is_active"])
@@ -85,7 +85,10 @@ class TestMissionUniqueness:
         )
 
     def test_action_with_existing_mission_is_rejected(
-        self, campaign: Campaign, mission: Mission, action: ActionMaster
+        self,
+        campaign: Campaign,
+        mission: Mission,  # pylint: disable=unused-argument
+        action: ActionMaster,
     ) -> None:
         serializer = MissionSerializer(
             data={"action_id": action.pk, "target_count": 1},

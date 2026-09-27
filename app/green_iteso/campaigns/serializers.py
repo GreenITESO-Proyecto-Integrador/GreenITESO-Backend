@@ -120,11 +120,6 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be after start date."}
             )
-        if self.instance is None and start_date is not None:
-            if start_date <= timezone.now():
-                raise serializers.ValidationError(
-                    {"start_date": "Start date must be in the future."}
-                )
         if self.instance is None and end_date is not None:
             if end_date <= timezone.now():
                 raise serializers.ValidationError(
@@ -252,7 +247,7 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class CampaignRejectSerializer(serializers.Serializer):
+class CampaignRejectSerializer(serializers.Serializer):  # pylint: disable=abstract-method
     """Validate the reason required to reject a campaign proposal."""
 
     rejection_reason = serializers.CharField(allow_blank=False)

@@ -62,7 +62,7 @@ class TestCampaignMissionEndpoint:
         api_client: APIClient,
         admin_user: User,
         campaign: Campaign,
-        mission: Mission,
+        mission: Mission,  # pylint: disable=unused-argument
         action: ActionMaster,
     ) -> None:
         api_client.force_authenticate(user=admin_user)

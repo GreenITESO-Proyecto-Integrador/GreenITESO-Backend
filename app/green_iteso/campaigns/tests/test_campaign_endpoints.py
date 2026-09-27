@@ -357,3 +357,64 @@ class TestCampaignEndpoints:
         )
 
         assert response.status_code == 200
+
+
+@pytest.mark.django_db
+class TestPrivateCampaignCreationRules:
+    def test_private_campaign_to_institutional_clan_returns_400(
+        self, api_client: APIClient, user: User
+    ) -> None:
+        institutional = Clan.objects.create(
+            name="Institutional clan",
+            type=Clan.ClanType.INSTITUTIONAL,
+            created_by=user,
+        )
+        ClanMembership.objects.create(
+            user=user, clan=institutional, role=ClanMembership.MembershipRole.LEADER
+        )
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(
+                scope=Campaign.Scope.PRIVATE, target_clan=str(institutional.pk)
+            ),
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "target_clan" in response.data
+        assert Campaign.objects.count() == 0
+
+    def test_private_campaign_to_deleted_clan_returns_400(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        Clan.all_objects.filter(pk=clan.pk).update(deleted_at=timezone.now())
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "target_clan" in response.data
+        assert Campaign.objects.count() == 0
+
+    def test_admin_not_leader_cannot_create_private_campaign(
+        self, api_client: APIClient, admin_user: User, clan: Clan
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+
+        assert response.status_code == 403
+        assert Campaign.objects.count() == 0

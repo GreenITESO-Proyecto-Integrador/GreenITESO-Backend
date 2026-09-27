@@ -15,7 +15,10 @@ from green_iteso.campaigns.models import (
     Campaign,
     CampaignParticipant,
 )
-from green_iteso.campaigns.tests.helpers import campaign_data
+from green_iteso.campaigns.tests.helpers import (
+    assert_join_rejected_inactive,
+    campaign_data,
+)
 
 
 @pytest.mark.django_db
@@ -42,12 +45,7 @@ class TestCampaignJoinEndpoint:
         campaign = campaign_factory(status=status)
         api_client.force_authenticate(user=user)
 
-        response = api_client.post(
-            reverse("campaign-join", kwargs={"campaign_id": campaign.pk})
-        )
-
-        assert response.status_code == 400
-        assert response.data["detail"] == "Campaign is not active."
+        assert_join_rejected_inactive(api_client, campaign)
 
     def test_join_private_campaign_rejected_without_clan_membership(
         self,

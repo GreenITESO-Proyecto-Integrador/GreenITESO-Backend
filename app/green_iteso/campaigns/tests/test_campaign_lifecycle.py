@@ -18,6 +18,7 @@ from green_iteso.campaigns.services import (
     compute_campaign_status,
     sync_campaign_statuses,
 )
+from green_iteso.campaigns.tests.helpers import assert_join_rejected_inactive
 from green_iteso.campaigns.tests.helpers import campaign_data
 
 DAY = timedelta(days=1)
@@ -228,12 +229,7 @@ class TestLifecycleEndpoints:
         )
         api_client.force_authenticate(user=user)
 
-        response = api_client.post(
-            reverse("campaign-join", kwargs={"campaign_id": campaign.pk})
-        )
-
-        assert response.status_code == 400
-        assert response.data["detail"] == "Campaign is not active."
+        assert_join_rejected_inactive(api_client, campaign)
 
 
 @pytest.mark.django_db

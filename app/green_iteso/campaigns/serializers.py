@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionMaster
+from green_iteso.core.roles import GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .services import (
@@ -154,6 +155,21 @@ class CampaignSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
+        if (
+            self.instance is None
+            and user is not None
+            and scope == Campaign.Scope.PRIVATE
+            and target_clan.type == Clan.ClanType.INSTITUTIONAL
+            and user.role != GlobalRole.ADMIN
+        ):
+            raise serializers.ValidationError(
+                {
+                    "target_clan": (
+                        "Only administrators can create campaigns for an "
+                        "institutional clan."
+                    )
+                }
+            )
         if (
             self.instance is None
             and user is not None

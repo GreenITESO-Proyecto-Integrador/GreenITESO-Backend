@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import cached_property
 from typing import Any
 
 from django.db import IntegrityError, transaction
@@ -9,7 +10,7 @@ from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
@@ -22,8 +23,10 @@ from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .serializers import (
     CampaignParticipantSerializer,
     CampaignSerializer,
+    MissionSerializer,
     UserMissionProgressSerializer,
 )
+from .services import can_manage_campaign
 
 
 class CampaignPagination(PageNumberPagination):
@@ -132,6 +135,49 @@ class CampaignDetailView(generics.RetrieveAPIView):
             request.user, [campaign.pk]
         ).get(str(campaign.pk), [])
         return Response(data)
+
+
+class CampaignMissionListCreateView(generics.ListCreateAPIView):
+    """List a campaign's missions or add one while it is in promotion."""
+
+    serializer_class = MissionSerializer
+    permission_classes = [IsAuthenticated]
+
+    @cached_property
+    def campaign(self) -> Campaign:
+        return get_object_or_404(
+            _visible_campaigns(self.request.user), pk=self.kwargs["campaign_id"]
+        )
+
+    def get_queryset(self) -> QuerySet[Mission]:
+        return (
+            Mission.objects.filter(campaign=self.campaign)
+            .select_related("action")
+            .order_by("id")
+        )
+
+    def get_serializer_context(self) -> dict[str, Any]:
+        context = super().get_serializer_context()
+        context["campaign"] = self.campaign
+        return context
+
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        if not can_manage_campaign(request.user, self.campaign):
+            raise PermissionDenied("You cannot manage missions in this campaign.")
+        if self.campaign.status != Campaign.Status.PROMOTION:
+            raise ValidationError(
+                "Missions can only be added while the campaign is in promotion."
+            )
+        return super().create(request, *args, **kwargs)
+
+    def perform_create(self, serializer: MissionSerializer) -> None:
+        try:
+            with transaction.atomic():
+                serializer.save(campaign=self.campaign)
+        except IntegrityError as error:
+            raise ValidationError(
+                {"action_id": "This action already has a mission in this campaign."}
+            ) from error
 
 
 class CampaignParticipantListView(generics.ListAPIView):

@@ -28,8 +28,9 @@ class MissionSerializer(serializers.ModelSerializer):
     action = ActionMasterSerializer(read_only=True)
     action_id = serializers.PrimaryKeyRelatedField(
         source="action",
-        queryset=ActionMaster.objects.all(),
+        queryset=ActionMaster.objects.filter(is_active=True),
         write_only=True,
+        error_messages={"does_not_exist": "Action does not exist or is inactive."},
     )
     target_count = serializers.IntegerField(
         min_value=1,
@@ -43,6 +44,20 @@ class MissionSerializer(serializers.ModelSerializer):
             "id": {"read_only": True},
             "campaign": {"read_only": True},
         }
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Reject an action that already has a mission in the context campaign."""
+        campaign = self.context.get("campaign")
+        if (
+            campaign is not None
+            and Mission.objects.filter(
+                campaign=campaign, action=attrs.get("action")
+            ).exists()
+        ):
+            raise serializers.ValidationError(
+                {"action_id": "This action already has a mission in this campaign."}
+            )
+        return attrs
 
 
 class CampaignSerializer(serializers.ModelSerializer):
@@ -70,6 +85,15 @@ class CampaignSerializer(serializers.ModelSerializer):
             "created_at": {"read_only": True},
             "creator": {"read_only": True},
         }
+
+    def validate_missions(self, missions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Reject nested missions that repeat an action."""
+        action_ids = [mission["action"].pk for mission in missions]
+        if len(action_ids) != len(set(action_ids)):
+            raise serializers.ValidationError(
+                "Each action can appear only once per campaign."
+            )
+        return missions
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Validate campaign dates and scope-specific clan requirements."""

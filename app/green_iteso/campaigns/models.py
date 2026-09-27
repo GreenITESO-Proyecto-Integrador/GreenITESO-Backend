@@ -100,6 +100,9 @@ class Mission(models.Model):
             models.CheckConstraint(
                 condition=Q(target_count__gt=0), name="mission_target_positive"
             ),
+            models.UniqueConstraint(
+                fields=["campaign", "action"], name="mission_campaign_action_unique"
+            ),
         ]
 
     def __str__(self) -> str:

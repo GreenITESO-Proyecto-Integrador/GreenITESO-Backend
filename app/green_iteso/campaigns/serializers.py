@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
@@ -13,7 +12,11 @@ from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionMaster
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
-from .services import can_create_campaign, compute_campaign_status
+from .services import (
+    can_create_campaign,
+    compute_campaign_status,
+    create_campaign_with_missions,
+)
 
 
 class ActionMasterSerializer(serializers.ModelSerializer):
@@ -87,12 +90,14 @@ class CampaignSerializer(serializers.ModelSerializer):
             "end_date",
             "created_at",
             "missions",
+            "approval_status",
         )
         extra_kwargs = {
             "id": {"read_only": True},
             "created_at": {"read_only": True},
             "creator": {"read_only": True},
             "status": {"read_only": True},
+            "approval_status": {"read_only": True},
         }
 
     def validate_missions(self, missions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -155,17 +160,78 @@ class CampaignSerializer(serializers.ModelSerializer):
             )
         return attrs
 
-    @transaction.atomic
     def create(self, validated_data: dict[str, Any]) -> Campaign:
         """Create the campaign and its nested missions atomically."""
         missions_data = validated_data.pop("missions", [])
         validated_data["status"] = compute_campaign_status(
             validated_data["start_date"], validated_data["end_date"], timezone.now()
         )
-        campaign = Campaign.objects.create(**validated_data)
-        for mission_data in missions_data:
-            Mission.objects.create(campaign=campaign, **mission_data)
-        return campaign
+        return create_campaign_with_missions(validated_data, missions_data)
+
+
+class CampaignProposalSerializer(serializers.ModelSerializer):
+    """Serialize a user's proposal for a global campaign pending admin review."""
+
+    missions = MissionSerializer(many=True, required=False)
+
+    class Meta:
+        model = Campaign
+        fields = (
+            "id",
+            "title",
+            "description",
+            "scope",
+            "status",
+            "approval_status",
+            "creator",
+            "start_date",
+            "end_date",
+            "created_at",
+            "missions",
+            "reviewed_by",
+            "reviewed_at",
+            "rejection_reason",
+        )
+        extra_kwargs = {
+            "id": {"read_only": True},
+            "created_at": {"read_only": True},
+            "creator": {"read_only": True},
+            "scope": {"read_only": True},
+            "status": {"read_only": True},
+            "approval_status": {"read_only": True},
+            "reviewed_by": {"read_only": True},
+            "reviewed_at": {"read_only": True},
+            "rejection_reason": {"read_only": True},
+        }
+
+    def validate_missions(self, missions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Reject nested missions that repeat an action."""
+        action_ids = [mission["action"].pk for mission in missions]
+        if len(action_ids) != len(set(action_ids)):
+            raise serializers.ValidationError(
+                "Each action can appear only once per campaign."
+            )
+        return missions
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Validate the proposed campaign's dates."""
+        start_date = attrs.get("start_date")
+        end_date = attrs.get("end_date")
+        if start_date is not None and end_date is not None and start_date >= end_date:
+            raise serializers.ValidationError(
+                {"end_date": "End date must be after start date."}
+            )
+        if end_date is not None and end_date <= timezone.now():
+            raise serializers.ValidationError(
+                {"end_date": "End date must be in the future."}
+            )
+        return attrs
+
+
+class CampaignRejectSerializer(serializers.Serializer):
+    """Validate the reason required to reject a campaign proposal."""
+
+    rejection_reason = serializers.CharField(allow_blank=False)
 
 
 class CampaignParticipantSerializer(serializers.ModelSerializer):

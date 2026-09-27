@@ -7,6 +7,7 @@ from typing import Any
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q, QuerySet
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -17,15 +18,25 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from green_iteso.accounts.models import ClanMembership
+from green_iteso.core.permissions import IsAdmin
+from green_iteso.core.roles import GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .serializers import (
     CampaignParticipantSerializer,
+    CampaignProposalSerializer,
+    CampaignRejectSerializer,
     CampaignSerializer,
     MissionSerializer,
     UserMissionProgressSerializer,
 )
-from .services import can_manage_campaign, sync_campaign_statuses
+from .services import (
+    approve_campaign,
+    can_manage_campaign,
+    propose_global_campaign,
+    reject_campaign,
+    sync_campaign_statuses,
+)
 
 
 class CampaignStatusSyncMixin:
@@ -44,10 +55,14 @@ class CampaignPagination(PageNumberPagination):
 
 def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
     """Return campaigns the user may see: global, or private clans they belong to."""
-    return Campaign.objects.filter(
-        Q(scope=Campaign.Scope.GLOBAL)
-        | Q(scope=Campaign.Scope.PRIVATE, target_clan__memberships__user=user)
-    ).distinct()
+    return (
+        Campaign.objects.filter(
+            Q(scope=Campaign.Scope.GLOBAL)
+            | Q(scope=Campaign.Scope.PRIVATE, target_clan__memberships__user=user)
+        )
+        .filter(approval_status=Campaign.ApprovalStatus.APPROVED)
+        .distinct()
+    )
 
 
 def _progress_by_campaign(
@@ -207,7 +222,10 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request: Request, campaign_id: Any) -> Response:
-        campaign = get_object_or_404(Campaign, pk=campaign_id)
+        campaign = get_object_or_404(
+            Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED),
+            pk=campaign_id,
+        )
         active_statuses = {Campaign.Status.PROMOTION, Campaign.Status.IN_PROGRESS}
         if campaign.status not in active_statuses:
             return Response(
@@ -327,3 +345,69 @@ class MissionProgressView(CampaignStatusSyncMixin, APIView):
                 >= mission.target_count
             )
         return Response(UserMissionProgressSerializer(updated_progress).data)
+
+
+class CampaignProposalListCreateView(
+    CampaignStatusSyncMixin, generics.ListCreateAPIView
+):
+    """List global campaign proposals or submit a new one for admin review."""
+
+    serializer_class = CampaignProposalSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = CampaignPagination
+
+    def get_queryset(self) -> QuerySet[Campaign]:
+        user = self.request.user
+        queryset = Campaign.objects.filter(scope=Campaign.Scope.GLOBAL)
+        if user.role == GlobalRole.ADMIN:
+            queryset = queryset.exclude(creator__role=GlobalRole.ADMIN)
+        else:
+            queryset = queryset.filter(creator=user)
+        approval_status = self.request.query_params.get("approval_status")
+        if approval_status:
+            queryset = queryset.filter(approval_status=approval_status)
+        return queryset.order_by("-created_at")
+
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        if request.user.role == GlobalRole.ADMIN:
+            raise PermissionDenied("Administrators create global campaigns directly.")
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        campaign = propose_global_campaign(request.user, serializer.validated_data)
+        output_serializer = self.get_serializer(campaign)
+        headers = self.get_success_headers(output_serializer.data)
+        return Response(
+            output_serializer.data, status=status.HTTP_201_CREATED, headers=headers
+        )
+
+
+class CampaignProposalApproveView(CampaignStatusSyncMixin, APIView):
+    """Approve a pending global campaign proposal."""
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        try:
+            campaign = approve_campaign(request.user, campaign_id)
+        except Campaign.DoesNotExist as error:
+            raise Http404 from error
+        return Response(CampaignProposalSerializer(campaign).data)
+
+
+class CampaignProposalRejectView(CampaignStatusSyncMixin, APIView):
+    """Reject a pending global campaign proposal with a required reason."""
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        serializer = CampaignRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            campaign = reject_campaign(
+                request.user,
+                campaign_id,
+                serializer.validated_data["rejection_reason"],
+            )
+        except Campaign.DoesNotExist as error:
+            raise Http404 from error
+        return Response(CampaignProposalSerializer(campaign).data)

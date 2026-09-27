@@ -21,6 +21,11 @@ class Campaign(models.Model):
         IN_PROGRESS = "IN_PROGRESS", "In progress"
         FINISHED = "FINISHED", "Finished"
 
+    class ApprovalStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)
@@ -44,6 +49,20 @@ class Campaign(models.Model):
     end_date = models.DateTimeField()
     # Approved results snapshot; campaign-close behavior belongs to the service.
     podium_snapshot = models.JSONField(null=True, blank=True)
+    approval_status = models.CharField(
+        max_length=10,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.APPROVED,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_campaigns",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -67,6 +86,18 @@ class Campaign(models.Model):
             models.CheckConstraint(
                 condition=Q(status__in=["PROMOTION", "IN_PROGRESS", "FINISHED"]),
                 name="campaign_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(approval_status__in=["PENDING", "APPROVED", "REJECTED"]),
+                name="campaign_approval_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(scope="PRIVATE") | Q(approval_status="APPROVED")),
+                name="campaign_private_always_approved",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(approval_status="REJECTED") | ~Q(rejection_reason="")),
+                name="campaign_rejection_has_reason",
             ),
         ]
         indexes = [

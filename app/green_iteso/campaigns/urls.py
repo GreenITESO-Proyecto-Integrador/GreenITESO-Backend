@@ -8,11 +8,29 @@ from .views import (
     CampaignListCreateView,
     CampaignMissionListCreateView,
     CampaignParticipantListView,
+    CampaignProposalApproveView,
+    CampaignProposalListCreateView,
+    CampaignProposalRejectView,
     MissionProgressView,
 )
 
 urlpatterns = [
     path("campaigns/", CampaignListCreateView.as_view(), name="campaign-list"),
+    path(
+        "campaigns/proposals/",
+        CampaignProposalListCreateView.as_view(),
+        name="campaign-proposals",
+    ),
+    path(
+        "campaigns/proposals/<uuid:campaign_id>/approve/",
+        CampaignProposalApproveView.as_view(),
+        name="campaign-proposal-approve",
+    ),
+    path(
+        "campaigns/proposals/<uuid:campaign_id>/reject/",
+        CampaignProposalRejectView.as_view(),
+        name="campaign-proposal-reject",
+    ),
     path(
         "campaigns/<uuid:campaign_id>/",
         CampaignDetailView.as_view(),

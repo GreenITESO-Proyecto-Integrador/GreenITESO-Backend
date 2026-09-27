@@ -32,7 +32,8 @@ def can_create_campaign(user: Any, scope: str, target_clan: Clan | None) -> bool
     """Return whether the user may create a campaign with the given scope.
 
     Global campaigns are admin-only. Private campaigns can only be created by
-    the leader of the target clan; being an admin grants no access to them.
+    the leader of the target clan; admins may view private campaigns but
+    cannot create them.
     """
     if scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
@@ -45,7 +46,8 @@ def can_manage_campaign(user: Any, campaign: Campaign) -> bool:
     """Return whether the user may manage the campaign's missions.
 
     Global campaigns are managed only by admins. Private campaigns are managed
-    only by the leader of the target clan; admins have no access to them.
+    only by the leader of the target clan; admins may view private campaigns
+    but cannot manage their missions.
     """
     if campaign.scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN

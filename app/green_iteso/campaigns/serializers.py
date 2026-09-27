@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
@@ -12,7 +13,7 @@ from green_iteso.accounts.models import Clan
 from green_iteso.actions.models import ActionMaster
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
-from .services import can_create_campaign
+from .services import can_create_campaign, compute_campaign_status
 
 
 class ActionMasterSerializer(serializers.ModelSerializer):
@@ -111,6 +112,11 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be after start date."}
             )
+        if self.instance is None and end_date is not None:
+            if end_date <= timezone.now():
+                raise serializers.ValidationError(
+                    {"end_date": "End date must be in the future."}
+                )
 
         scope = attrs.get("scope", getattr(self.instance, "scope", None))
         target_clan = attrs.get(
@@ -153,6 +159,9 @@ class CampaignSerializer(serializers.ModelSerializer):
     def create(self, validated_data: dict[str, Any]) -> Campaign:
         """Create the campaign and its nested missions atomically."""
         missions_data = validated_data.pop("missions", [])
+        validated_data["status"] = compute_campaign_status(
+            validated_data["start_date"], validated_data["end_date"], timezone.now()
+        )
         campaign = Campaign.objects.create(**validated_data)
         for mission_data in missions_data:
             Mission.objects.create(campaign=campaign, **mission_data)

@@ -8,6 +8,7 @@ class CampaignAdmin(admin.ModelAdmin):
     list_display = ("title", "scope", "status", "start_date", "end_date", "creator")
     list_filter = ("scope", "status")
     search_fields = ("title",)
+    readonly_fields = ("status",)
 
 
 @admin.register(Mission)

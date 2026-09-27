@@ -54,7 +54,14 @@ class CampaignPagination(PageNumberPagination):
 
 
 def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
-    """Return campaigns the user may see: global, or private clans they belong to."""
+    """Return campaigns the user may see.
+
+    Global admins see every approved campaign, global and private, without
+    needing clan membership. Everyone else sees global campaigns plus
+    private campaigns of clans they belong to.
+    """
+    if getattr(user, "role", None) == GlobalRole.ADMIN:
+        return Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED)
     return (
         Campaign.objects.filter(
             Q(scope=Campaign.Scope.GLOBAL)

@@ -67,6 +67,30 @@ class CampaignSeedContext:
 
 
 @dataclass(frozen=True)
+class DemoClanSpec:
+    """Stable identity and presentation of one synthetic clan."""
+
+    key: str
+    name: str
+    clan_type: str
+    privacy: str
+    description: str = DEMO_PRIVATE_CLAN_DESCRIPTION
+
+
+@dataclass(frozen=True)
+class DemoCampaignScenario:
+    """One synthetic campaign shape and its selected participants."""
+
+    key: str
+    scope: str
+    status: str
+    target_clan: Clan | None
+    start_date: datetime
+    end_date: datetime
+    participants: list[User]
+
+
+@dataclass(frozen=True)
 class DemoSeedMetadata:
     """Catalog and mode metadata used after fixture creation."""
 
@@ -192,40 +216,34 @@ def get_or_create_demo_user(
 
 
 def get_or_create_demo_clan(
-    key: str,
-    *,
-    name: str,
-    clan_type: str,
-    privacy: str,
-    created_by: User | None,
-    description: str = DEMO_PRIVATE_CLAN_DESCRIPTION,
+    spec: DemoClanSpec, *, created_by: User | None
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
-    clan = Clan.all_objects.filter(pk=demo_id("clan", key)).first()
+    clan = Clan.all_objects.filter(pk=demo_id("clan", spec.key)).first()
     if clan is not None:
         allowed_descriptions = (
             (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
-            if description == DEMO_PRIVATE_CLAN_DESCRIPTION
-            else (description,)
+            if spec.description == DEMO_PRIVATE_CLAN_DESCRIPTION
+            else (spec.description,)
         )
         if (
             clan.deleted_at is not None
-            or clan.type != clan_type
+            or clan.type != spec.clan_type
             or not clan.description.startswith(allowed_descriptions)
         ):
             raise CommandError(
                 "Demo clan identity collision; existing clan was preserved."
             )
         return clan, False
-    if Clan.all_objects.filter(name=name).exists():
+    if Clan.all_objects.filter(name=spec.name).exists():
         raise CommandError("Demo clan identity collision; existing clan was preserved.")
     return (
         Clan.objects.create(
-            id=demo_id("clan", key),
-            name=name,
-            description=description,
-            type=clan_type,
-            privacy=privacy,
+            id=demo_id("clan", spec.key),
+            name=spec.name,
+            description=spec.description,
+            type=spec.clan_type,
+            privacy=spec.privacy,
             created_by=created_by,
         ),
         True,
@@ -274,12 +292,14 @@ def create_dev_institutional_clans() -> tuple[list[Clan], dict[uuid.UUID, str]]:
     careers: dict[uuid.UUID, str] = {}
     for index in range(1, 4):
         clan, _ = get_or_create_demo_clan(
-            f"institutional-{index:02d}",
-            name=f"Demo institutional clan {index:02d}",
-            clan_type=Clan.ClanType.INSTITUTIONAL,
-            privacy=Clan.Privacy.PUBLIC,
+            DemoClanSpec(
+                key=f"institutional-{index:02d}",
+                name=f"Demo institutional clan {index:02d}",
+                clan_type=Clan.ClanType.INSTITUTIONAL,
+                privacy=Clan.Privacy.PUBLIC,
+                description=DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
+            ),
             created_by=None,
-            description=DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
         )
         clans.append(clan)
         careers[clan.pk] = f"DEMO-CAREER-{index:02d}"
@@ -289,17 +309,21 @@ def create_dev_institutional_clans() -> tuple[list[Clan], dict[uuid.UUID, str]]:
 def create_private_clans(users: list[User]) -> list[Clan]:
     """Create the two private clans used by the contextual demo."""
     private_one, _ = get_or_create_demo_clan(
-        "private-01",
-        name="Demo private clan 01",
-        clan_type=Clan.ClanType.PRIVATE,
-        privacy=Clan.Privacy.PRIVATE_INVITE,
+        DemoClanSpec(
+            key="private-01",
+            name="Demo private clan 01",
+            clan_type=Clan.ClanType.PRIVATE,
+            privacy=Clan.Privacy.PRIVATE_INVITE,
+        ),
         created_by=users[0],
     )
     private_two, _ = get_or_create_demo_clan(
-        "private-02",
-        name="Demo private clan 02",
-        clan_type=Clan.ClanType.PRIVATE,
-        privacy=Clan.Privacy.PRIVATE_INVITE,
+        DemoClanSpec(
+            key="private-02",
+            name="Demo private clan 02",
+            clan_type=Clan.ClanType.PRIVATE,
+            privacy=Clan.Privacy.PRIVATE_INVITE,
+        ),
         created_by=users[1],
     )
     return [private_one, private_two]
@@ -414,61 +438,53 @@ def create_additional_campaigns(
 ) -> tuple[int, int]:
     """Cover upcoming, finished, and private campaign views with synthetic rows."""
     scenarios = (
-        (
-            "upcoming",
-            Campaign.Scope.GLOBAL,
-            Campaign.Status.PROMOTION,
-            None,
-            as_of + timedelta(days=7),
-            as_of + timedelta(days=14),
-            [],
+        DemoCampaignScenario(
+            key="upcoming",
+            scope=Campaign.Scope.GLOBAL,
+            status=Campaign.Status.PROMOTION,
+            target_clan=None,
+            start_date=as_of + timedelta(days=7),
+            end_date=as_of + timedelta(days=14),
+            participants=[],
         ),
-        (
-            "finished",
-            Campaign.Scope.GLOBAL,
-            Campaign.Status.FINISHED,
-            None,
-            as_of - timedelta(days=30),
-            as_of - timedelta(days=1),
-            users[:8],
+        DemoCampaignScenario(
+            key="finished",
+            scope=Campaign.Scope.GLOBAL,
+            status=Campaign.Status.FINISHED,
+            target_clan=None,
+            start_date=as_of - timedelta(days=30),
+            end_date=as_of - timedelta(days=1),
+            participants=users[:8],
         ),
-        (
-            "private",
-            Campaign.Scope.PRIVATE,
-            Campaign.Status.IN_PROGRESS,
-            private_clans[0],
-            as_of - timedelta(days=7),
-            as_of + timedelta(days=7),
-            users[:16:2],
+        DemoCampaignScenario(
+            key="private",
+            scope=Campaign.Scope.PRIVATE,
+            status=Campaign.Status.IN_PROGRESS,
+            target_clan=private_clans[0],
+            start_date=as_of - timedelta(days=7),
+            end_date=as_of + timedelta(days=7),
+            participants=users[:16:2],
         ),
     )
     created_count = 0
-    for index, (
-        key,
-        scope,
-        status,
-        target_clan,
-        start_date,
-        end_date,
-        participants,
-    ) in enumerate(scenarios):
+    for index, scenario in enumerate(scenarios):
         campaign, was_created = Campaign.objects.get_or_create(
-            pk=demo_id("campaign", key),
+            pk=demo_id("campaign", scenario.key),
             defaults={
-                "title": f"Demo {key} campaign",
+                "title": f"Demo {scenario.key} campaign",
                 "description": DEMO_CAMPAIGN_DESCRIPTION,
-                "scope": scope,
-                "status": status,
+                "scope": scenario.scope,
+                "status": scenario.status,
                 "creator": users[0],
-                "target_clan": target_clan,
-                "start_date": start_date,
-                "end_date": end_date,
+                "target_clan": scenario.target_clan,
+                "start_date": scenario.start_date,
+                "end_date": scenario.end_date,
             },
         )
         if not was_created and (
             campaign.creator_id != users[0].pk
-            or campaign.scope != scope
-            or campaign.target_clan_id != getattr(target_clan, "pk", None)
+            or campaign.scope != scenario.scope
+            or campaign.target_clan_id != getattr(scenario.target_clan, "pk", None)
             or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
         ):
             raise CommandError(
@@ -476,7 +492,7 @@ def create_additional_campaigns(
             )
         created_count += was_created
         mission, mission_created = Mission.objects.get_or_create(
-            pk=demo_id("mission", key),
+            pk=demo_id("mission", scenario.key),
             defaults={
                 "campaign": campaign,
                 "action": actions[index % len(actions)],
@@ -490,9 +506,9 @@ def create_additional_campaigns(
             raise CommandError(
                 "Demo mission identity collision; existing mission was preserved."
             )
-        for user in participants:
+        for user in scenario.participants:
             CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
-        create_mission_progress(participants, [mission])
+        create_mission_progress(scenario.participants, [mission])
     return created_count, len(scenarios)
 
 
@@ -753,7 +769,7 @@ def create_log_seed_context(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    additional_created, additional_missions = create_additional_campaigns(
+    additional_created, additional_scenarios = create_additional_campaigns(
         users, actions, private_clans, as_of
     )
     return LogSeedContext(
@@ -766,8 +782,8 @@ def create_log_seed_context(
             institutional_clans=institutional_clans,
             user_created=user_created,
             campaigns_created=int(campaign_created) + additional_created,
-            campaign_count=1 + additional_missions,
-            mission_count=len(missions) + additional_missions,
+            campaign_count=1 + additional_scenarios,
+            mission_count=len(missions) + additional_scenarios,
             shared_dev=shared_dev,
         ),
     )

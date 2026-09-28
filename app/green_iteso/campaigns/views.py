@@ -30,6 +30,7 @@ from .serializers import (
     CampaignProposalSerializer,
     CampaignRejectSerializer,
     CampaignSerializer,
+    CampaignUpdateSerializer,
     MissionSerializer,
     UserMissionProgressSerializer,
 )
@@ -244,6 +245,44 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
             request.user, [campaign.pk]
         ).get(str(campaign.pk), [])
         return Response(data)
+
+    @extend_schema(
+        operation_id="campaigns_partial_update",
+        tags=["campaigns"],
+        request=CampaignUpdateSerializer,
+        responses={
+            200: CampaignSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: non-editable fields, invalid dates, "
+                "or campaign not in PROMOTION"
+            ),
+            403: OpenApiResponse(description="User cannot manage this campaign"),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def patch(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        visible = get_object_or_404(
+            _visible_campaigns(request.user).select_related("target_clan"),
+            pk=kwargs["campaign_id"],
+        )
+        if not can_manage_campaign(request.user, visible):
+            raise PermissionDenied("You cannot edit this campaign.")
+        with transaction.atomic():
+            campaign = Campaign.objects.select_for_update().get(pk=visible.pk)
+            if campaign.status != Campaign.Status.PROMOTION:
+                raise ValidationError(
+                    "Campaigns can only be edited while in promotion."
+                )
+            serializer = CampaignUpdateSerializer(
+                campaign, data=request.data, partial=True
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        return Response(
+            CampaignSerializer(campaign, context={"request": request}).data
+        )
 
 
 class CampaignMissionListCreateView(

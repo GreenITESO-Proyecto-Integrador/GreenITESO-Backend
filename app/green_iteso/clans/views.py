@@ -63,7 +63,7 @@ class ClanViewSet(
             raise ValidationError(str(exc)) from exc
 
     @action(detail=True, methods=["post"], url_path="select-active")
-    def select_active(self, request: Request, pk: str | None = None) -> Response:
+    def select_active(self, request: Request, pk: str | None = None) -> Response:  # pylint: disable=unused-argument
         """Mark this clan as the caller's active private clan (T2-35)."""
         clan = self.get_object()
         try:

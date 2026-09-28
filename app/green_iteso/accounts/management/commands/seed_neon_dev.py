@@ -36,7 +36,9 @@ DEV_SYNTHETIC_CATALOG_SHA256_ENV = "NEON_DEV_SYNTHETIC_CATALOG_SHA256"
 
 def load_dev_synthetic_catalog() -> CatalogData:
     """Require the fixed dev-only fixture pinned by its environment digest."""
-    expected_digest = os.environ.get(DEV_SYNTHETIC_CATALOG_SHA256_ENV, "").strip().lower()
+    expected_digest = (
+        os.environ.get(DEV_SYNTHETIC_CATALOG_SHA256_ENV, "").strip().lower()
+    )
     if len(expected_digest) != 64 or any(
         character not in "0123456789abcdef" for character in expected_digest
     ):

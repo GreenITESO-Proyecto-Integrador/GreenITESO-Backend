@@ -57,17 +57,19 @@ python app/manage.py seed_demo --as-of 2030-01-15T12:00:00+00:00
 ```
 
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
-clanes privados, membresías, una campaña global activa, misiones, progreso y
-logs `APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
+clanes privados y membresías. Incluye cuatro campañas: una global activa,
+una global futura, una global terminada con ocho participantes y una privada
+activa con ocho participantes de su clan. Las cinco misiones permiten probar
+progreso y listas con y sin participación. También crea 24 logs
+`APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
 deterministas; ejecutarlo varias veces conserva una sola copia, pero si un ID
 determinista existente no coincide con la identidad demo esperada, el comando
 se detiene en vez de adoptar o modificar el registro. Las fotos son
 solo claves de objeto locales (`demo-only/...jpg`), nunca URLs firmadas ni
 archivos reales.
 
-`--as-of` fija el reloj de la campaña para que una demo repetible no dependa de
-la fecha actual. Si se omite, se usa la hora actual para una ventana relativa
-de 30 días.
+`--as-of` fija las ventanas de las campañas para una demo repetible. Si se
+omite, se usa la hora actual.
 
 ## Datos sintéticos en Neon dev (opt-in, T11/T12)
 
@@ -109,11 +111,21 @@ El comando comprueba el ambiente, host, rol, TLS configurado y TLS de la
 conexión; exige `--confirm-target dev`; valida el catálogo completo antes de
 escribir; y carga catálogo y demo en una transacción. Los usuarios sintéticos
 son `STUDENT` (nunca `ADMIN`/`STAFF`), con correo `example.invalid` y sin
-identidad Firebase ni contraseña. IDs y claves son deterministas, los choques
+identidad Microsoft Entra ni contraseña. Si el catálogo aprobado aún no tiene
+clanes porque falta el mapeo canónico de carreras, el comando crea tres clanes
+institucionales **sintéticos exclusivos de dev** con nombres `Demo institutional
+clan` y carreras `DEMO-CAREER`. No se agregan a la fixture aprobada ni a
+staging/production. IDs y claves son deterministas, los choques
 se rechazan y una segunda ejecución es idempotente. Esta operación no forma
 parte de la migración al merge ni de un deploy automático. No se cargan semillas
 en staging/preprod ni en production. **El comando se implementó y probó sólo con
 PostgreSQL 18 local; no se ejecutó contra Neon.**
+
+Estos registros sirven para consultar relaciones y estados, pero no permiten
+iniciar sesión como esos usuarios: no se crea un bypass de autenticación en
+Neon dev. Los flujos Admin/Staff, amistades y propuestas de campaña necesitarán
+escenarios adicionales cuando se integren sus PRs de modelo y API; este
+dataset no acredita esas historias por sí solo.
 
 ## Liberación aprobada solo de catálogo
 
@@ -154,8 +166,8 @@ decisión registrada de Product.
 
 ## Identidad y Admin local
 
-Los usuarios demo no tienen `firebase_uid` ni contraseña. Eso evita simular un
-login de Firebase y evita publicar una contraseña universal. Para usar Django
+Los usuarios demo no tienen identidad Microsoft Entra ni contraseña. Eso evita
+simular un login institucional y evita publicar una contraseña universal. Para usar Django
 Admin en local, crea tu propia cuenta administrativa:
 
 ```sh
@@ -163,6 +175,6 @@ python app/manage.py createsuperuser
 ```
 
 Admin está disponible únicamente con `DEBUG=true` en el entorno local. En
-staging y producción la autenticación de la aplicación sigue siendo Firebase
-verificado para cuentas institucionales; estas semillas no crean un bypass ni
+staging y producción la autenticación institucional se verifica con Microsoft
+Entra; estas semillas no crean un bypass ni
 un endpoint de autenticación alternativo.

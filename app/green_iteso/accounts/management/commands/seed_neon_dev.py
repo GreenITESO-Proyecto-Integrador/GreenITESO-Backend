@@ -132,6 +132,6 @@ class Command(BaseCommand):
         return (
             f"Seeded Neon dev demo: {result.user_count} student users "
             f"({result.user_created} created), {result.private_clan_count} private clans, "
-            f"{result.created_logs} action logs, {result.mission_count} missions, "
-            f"campaign_created={result.campaign_created}."
+            f"{result.created_logs} action logs, {result.campaign_count} campaigns "
+            f"({result.campaigns_created} created), {result.mission_count} missions."
         )

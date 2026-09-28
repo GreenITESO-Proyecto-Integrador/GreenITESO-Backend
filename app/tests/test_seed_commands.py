@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,12 +14,16 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from green_iteso.accounts.management.commands.bootstrap_dev import demo_id
+from green_iteso.accounts.management.commands.bootstrap_dev import (
+    demo_id,
+    seed_demo_data,
+)
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands import release_catalog
 from green_iteso.actions.management.commands.load_catalog import (
     LOCAL_DATABASE_HOSTS,
     load_catalog_content,
+    load_catalog_data,
     load_catalog_file,
     stable_reference_id,
 )
@@ -50,6 +55,29 @@ def test_product_candidate_remains_inactive_draft_without_clans() -> None:
     assert len(catalog.actions) == 3
     assert not catalog.clans
     assert all(not action["is_active"] for action in catalog.actions)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_shared_dev_seed_supports_catalog_without_canonical_careers() -> None:
+    """Dev-only placeholder clans must not require an official career mapping."""
+    candidate = Path(__file__).resolve().parents[2] / "docs/catalog-candidate-v1.json"
+    catalog = load_catalog_file(candidate)
+    load_catalog_data(catalog)
+    as_of = datetime(2030, 1, 15, 12, tzinfo=UTC)
+
+    first = seed_demo_data(catalog, as_of, shared_dev=True)
+    second = seed_demo_data(catalog, as_of, shared_dev=True)
+
+    assert first.user_count == 20
+    assert first.created_logs == 24
+    assert second.user_created == 0
+    assert second.created_logs == 0
+    assert Clan.objects.filter(type=Clan.ClanType.INSTITUTIONAL).count() == 3
+    assert all(
+        clan.name.startswith("Demo institutional clan ")
+        for clan in Clan.objects.filter(type=Clan.ClanType.INSTITUTIONAL)
+    )
+    assert UserProfile.objects.filter(institutional_clan__isnull=False).count() == 20
 
 
 @pytest.mark.django_db(transaction=True)
@@ -146,6 +174,20 @@ def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> No
         "contributions": ActionLogMissionContribution.objects.count(),
     }
     assert User.objects.count() == 20
+    assert Campaign.objects.count() == 4
+    assert set(Campaign.objects.values_list("status", flat=True)) == {
+        Campaign.Status.PROMOTION,
+        Campaign.Status.IN_PROGRESS,
+        Campaign.Status.FINISHED,
+    }
+    assert (
+        Campaign.objects.filter(
+            scope=Campaign.Scope.PRIVATE, target_clan__isnull=False
+        ).count()
+        == 1
+    )
+    finished_campaign = Campaign.objects.get(status=Campaign.Status.FINISHED)
+    assert CampaignParticipant.objects.filter(campaign=finished_campaign).count() == 8
     assert ActionLog.objects.filter(status=ActionLog.Status.APPROVED).exists()
     assert ActionLog.objects.filter(status=ActionLog.Status.PENDING_AUDIT).exists()
     assert ActionLog.objects.filter(

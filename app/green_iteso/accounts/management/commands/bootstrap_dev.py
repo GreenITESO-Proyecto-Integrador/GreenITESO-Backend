@@ -43,6 +43,9 @@ DEMO_STATUSES = (
 DEMO_PRIVATE_CLAN_DESCRIPTION = (
     "Synthetic demo clan; not an institutional catalog value."
 )
+DEMO_INSTITUTIONAL_CLAN_DESCRIPTION = (
+    "Synthetic dev-only institutional placeholder; not a canonical career."
+)
 LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION = (
     "Synthetic local-only demo clan; not an institutional catalog value."
 )
@@ -69,7 +72,9 @@ class DemoSeedMetadata:
 
     institutional_clans: list[Clan]
     user_created: int
-    campaign_created: bool
+    campaigns_created: int
+    campaign_count: int
+    mission_count: int
     shared_dev: bool
 
 
@@ -113,9 +118,10 @@ class DemoSeedResult:
     user_count: int
     user_created: int
     private_clan_count: int
+    campaign_count: int
     mission_count: int
     created_logs: int
-    campaign_created: bool
+    campaigns_created: int
 
 
 def demo_id(kind: str, key: str) -> uuid.UUID:
@@ -192,24 +198,32 @@ def get_or_create_demo_clan(
     clan_type: str,
     privacy: str,
     created_by: User | None,
+    description: str = DEMO_PRIVATE_CLAN_DESCRIPTION,
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
-    clan = Clan.objects.filter(pk=demo_id("clan", key)).first()
+    clan = Clan.all_objects.filter(pk=demo_id("clan", key)).first()
     if clan is not None:
-        if clan.type != clan_type or not clan.description.startswith(
+        allowed_descriptions = (
             (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
+            if description == DEMO_PRIVATE_CLAN_DESCRIPTION
+            else (description,)
+        )
+        if (
+            clan.deleted_at is not None
+            or clan.type != clan_type
+            or not clan.description.startswith(allowed_descriptions)
         ):
             raise CommandError(
                 "Demo clan identity collision; existing clan was preserved."
             )
         return clan, False
-    if Clan.objects.filter(name=name).exists():
+    if Clan.all_objects.filter(name=name).exists():
         raise CommandError("Demo clan identity collision; existing clan was preserved.")
     return (
         Clan.objects.create(
             id=demo_id("clan", key),
             name=name,
-            description=DEMO_PRIVATE_CLAN_DESCRIPTION,
+            description=description,
             type=clan_type,
             privacy=privacy,
             created_by=created_by,
@@ -252,6 +266,24 @@ def get_catalog_institutional_clans(catalog: CatalogData) -> list[Clan]:
     if not clan_ids or len(clans) != len(clan_ids):
         raise CommandError("The catalog did not create all institutional clans.")
     return clans
+
+
+def create_dev_institutional_clans() -> tuple[list[Clan], dict[uuid.UUID, str]]:
+    """Provide explicit dev-only career placeholders until E2 maps real careers."""
+    clans: list[Clan] = []
+    careers: dict[uuid.UUID, str] = {}
+    for index in range(1, 4):
+        clan, _ = get_or_create_demo_clan(
+            f"institutional-{index:02d}",
+            name=f"Demo institutional clan {index:02d}",
+            clan_type=Clan.ClanType.INSTITUTIONAL,
+            privacy=Clan.Privacy.PUBLIC,
+            created_by=None,
+            description=DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
+        )
+        clans.append(clan)
+        careers[clan.pk] = f"DEMO-CAREER-{index:02d}"
+    return clans, careers
 
 
 def create_private_clans(users: list[User]) -> list[Clan]:
@@ -372,6 +404,96 @@ def create_campaign_and_missions(
     for user in users:
         CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
     return campaign, missions, campaign_created
+
+
+def create_additional_campaigns(
+    users: list[User],
+    actions: list[ActionMaster],
+    private_clans: list[Clan],
+    as_of: datetime,
+) -> tuple[int, int]:
+    """Cover upcoming, finished, and private campaign views with synthetic rows."""
+    scenarios = (
+        (
+            "upcoming",
+            Campaign.Scope.GLOBAL,
+            Campaign.Status.PROMOTION,
+            None,
+            as_of + timedelta(days=7),
+            as_of + timedelta(days=14),
+            [],
+        ),
+        (
+            "finished",
+            Campaign.Scope.GLOBAL,
+            Campaign.Status.FINISHED,
+            None,
+            as_of - timedelta(days=30),
+            as_of - timedelta(days=1),
+            users[:8],
+        ),
+        (
+            "private",
+            Campaign.Scope.PRIVATE,
+            Campaign.Status.IN_PROGRESS,
+            private_clans[0],
+            as_of - timedelta(days=7),
+            as_of + timedelta(days=7),
+            users[:16:2],
+        ),
+    )
+    created_count = 0
+    for index, (
+        key,
+        scope,
+        status,
+        target_clan,
+        start_date,
+        end_date,
+        participants,
+    ) in enumerate(scenarios):
+        campaign, was_created = Campaign.objects.get_or_create(
+            pk=demo_id("campaign", key),
+            defaults={
+                "title": f"Demo {key} campaign",
+                "description": DEMO_CAMPAIGN_DESCRIPTION,
+                "scope": scope,
+                "status": status,
+                "creator": users[0],
+                "target_clan": target_clan,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+        if not was_created and (
+            campaign.creator_id != users[0].pk
+            or campaign.scope != scope
+            or campaign.target_clan_id != getattr(target_clan, "pk", None)
+            or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+        ):
+            raise CommandError(
+                "Demo campaign identity collision; existing campaign was preserved."
+            )
+        created_count += was_created
+        mission, mission_created = Mission.objects.get_or_create(
+            pk=demo_id("mission", key),
+            defaults={
+                "campaign": campaign,
+                "action": actions[index % len(actions)],
+                "target_count": index + 2,
+            },
+        )
+        if not mission_created and (
+            mission.campaign_id != campaign.pk
+            or mission.action_id != actions[index % len(actions)].pk
+        ):
+            raise CommandError(
+                "Demo mission identity collision; existing mission was preserved."
+            )
+        for user in participants:
+            CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
+        create_mission_progress(participants, [mission])
+    return created_count, len(scenarios)
 
 
 def add_mission_contribution(
@@ -611,22 +733,28 @@ def create_log_seed_context(
 ) -> LogSeedContext:
     """Resolve the catalog and deterministic fixtures needed by the seed."""
     users, user_created = create_demo_users(shared_dev=shared_dev)
-    institutional_clans = get_catalog_institutional_clans(catalog)
+    if shared_dev and not catalog.clans:
+        institutional_clans, careers = create_dev_institutional_clans()
+    else:
+        institutional_clans = get_catalog_institutional_clans(catalog)
+        careers = (
+            {
+                stable_reference_id("institutional-clan", item["key"]): item["career"]
+                for item in catalog.clans
+            }
+            if shared_dev
+            else None
+        )
     private_clans = create_private_clans(users)
-    careers = (
-        {
-            stable_reference_id("institutional-clan", item["key"]): item["career"]
-            for item in catalog.clans
-        }
-        if shared_dev
-        else None
-    )
     profiles = create_profiles_and_memberships(
         users, institutional_clans, private_clans, as_of, careers=careers
     )
     actions = get_catalog_actions(catalog)
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
+    )
+    additional_created, additional_missions = create_additional_campaigns(
+        users, actions, private_clans, as_of
     )
     return LogSeedContext(
         users=users,
@@ -635,10 +763,12 @@ def create_log_seed_context(
         actions=actions,
         campaign=CampaignSeedContext(campaign, missions, as_of),
         metadata=DemoSeedMetadata(
-            institutional_clans,
-            user_created,
-            campaign_created,
-            shared_dev,
+            institutional_clans=institutional_clans,
+            user_created=user_created,
+            campaigns_created=int(campaign_created) + additional_created,
+            campaign_count=1 + additional_missions,
+            mission_count=len(missions) + additional_missions,
+            shared_dev=shared_dev,
         ),
     )
 
@@ -657,9 +787,10 @@ def seed_demo_data(
         user_count=len(context.users),
         user_created=context.metadata.user_created,
         private_clan_count=len(context.private_clans),
-        mission_count=len(context.campaign.missions),
+        campaign_count=context.metadata.campaign_count,
+        mission_count=context.metadata.mission_count,
         created_logs=created_logs,
-        campaign_created=context.metadata.campaign_created,
+        campaigns_created=context.metadata.campaigns_created,
     )
 
 
@@ -689,6 +820,7 @@ class Command(BaseCommand):
         message = (
             f"Bootstrapped local demo: {result.user_count} users ({result.user_created} created), "
             f"{result.private_clan_count} private clans, {result.created_logs} action logs, "
-            f"{result.mission_count} missions, campaign_created={result.campaign_created}."
+            f"{result.campaign_count} campaigns ({result.campaigns_created} created), "
+            f"{result.mission_count} missions."
         )
         return message

@@ -145,6 +145,9 @@ pedirle a IT que apruebe `GroupMember.Read.All`.
 Con `MICROSOFT_AUTH_MODE=mock` (valor por defecto en `.env.example`), el
 backend acepta un `id_token` con el prefijo `mock:`:
 
+`compose.yaml` pasa este valor al contenedor `app`; sin esa variable el
+backend usaría Entra y los tokens `mock:` no servirían.
+
 ```sh
 # Email simple
 curl -X POST localhost:8000/api/v1/auth/login/ \

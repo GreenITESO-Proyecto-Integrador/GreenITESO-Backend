@@ -204,6 +204,43 @@ class CampaignSerializer(serializers.ModelSerializer):
         return create_campaign_with_missions(validated_data, missions_data)
 
 
+class CampaignUpdateSerializer(serializers.ModelSerializer):
+    """Validate edits to a promotion campaign's title, description and dates."""
+
+    class Meta:
+        model = Campaign
+        fields = ("title", "description", "start_date", "end_date")
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Reject non-editable fields and inconsistent or past-ending dates."""
+        unknown = sorted(set(self.initial_data) - set(self.fields))
+        if unknown:
+            raise serializers.ValidationError(
+                {field: "This field cannot be edited." for field in unknown}
+            )
+        start_date = attrs.get("start_date", self.instance.start_date)
+        end_date = attrs.get("end_date", self.instance.end_date)
+        if start_date >= end_date:
+            raise serializers.ValidationError(
+                {"end_date": "End date must be after start date."}
+            )
+        if end_date <= timezone.now():
+            raise serializers.ValidationError(
+                {"end_date": "End date must be in the future."}
+            )
+        return attrs
+
+    def update(self, instance: Campaign, validated_data: dict[str, Any]) -> Campaign:
+        """Save the edits and recompute the lifecycle status from the dates."""
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.status = compute_campaign_status(
+            instance.start_date, instance.end_date, timezone.now()
+        )
+        instance.save(update_fields=[*validated_data, "status"])
+        return instance
+
+
 class CampaignProposalSerializer(serializers.ModelSerializer):
     """Serialize a user's proposal for a global campaign pending admin review."""
 

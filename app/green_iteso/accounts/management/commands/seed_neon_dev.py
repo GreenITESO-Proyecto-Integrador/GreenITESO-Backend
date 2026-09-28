@@ -1,4 +1,4 @@
-"""Load approved synthetic demo data into only the shared Neon dev database."""
+"""Load pinned synthetic demo data into only the shared Neon dev database."""
 
 from __future__ import annotations
 
@@ -25,37 +25,37 @@ from green_iteso.actions.management.commands.load_catalog import (
 from green_iteso.core.database import require_connection_tls
 from green_iteso.settings.neon_endpoints import canonical_neon_host
 
-APPROVED_CATALOG = (
+DEV_SYNTHETIC_CATALOG = (
     Path(__file__).resolve().parents[3]
     / "actions"
     / "fixtures"
-    / "catalog_approved.json"
+    / "catalog_dev_synthetic_v1.json"
 )
-APPROVED_CATALOG_SHA256_ENV = "NEON_DEV_APPROVED_CATALOG_SHA256"
+DEV_SYNTHETIC_CATALOG_SHA256_ENV = "NEON_DEV_SYNTHETIC_CATALOG_SHA256"
 
 
-def load_approved_catalog() -> CatalogData:
-    """Require a Product-approved fixture pinned by its dev-environment digest."""
-    expected_digest = os.environ.get(APPROVED_CATALOG_SHA256_ENV, "").strip().lower()
+def load_dev_synthetic_catalog() -> CatalogData:
+    """Require the fixed dev-only fixture pinned by its environment digest."""
+    expected_digest = os.environ.get(DEV_SYNTHETIC_CATALOG_SHA256_ENV, "").strip().lower()
     if len(expected_digest) != 64 or any(
         character not in "0123456789abcdef" for character in expected_digest
     ):
         raise CommandError(
-            f"{APPROVED_CATALOG_SHA256_ENV} must contain the approved fixture SHA-256."
+            f"{DEV_SYNTHETIC_CATALOG_SHA256_ENV} must contain the dev fixture SHA-256."
         )
     try:
-        contents = APPROVED_CATALOG.read_bytes()
+        contents = DEV_SYNTHETIC_CATALOG.read_bytes()
     except OSError as error:
         raise CommandError(
-            f"Could not read the canonical approved catalog {APPROVED_CATALOG}: {error}"
+            f"Could not read the fixed dev synthetic catalog {DEV_SYNTHETIC_CATALOG}: {error}"
         ) from error
     actual_digest = hashlib.sha256(contents).hexdigest()
     if not hmac.compare_digest(actual_digest, expected_digest):
         raise CommandError(
-            "The canonical approved catalog does not match its approved SHA-256."
+            "The dev synthetic catalog does not match its pinned SHA-256."
         )
     return load_catalog_content(
-        contents, source=str(APPROVED_CATALOG), expected_status="APPROVED"
+        contents, source=str(DEV_SYNTHETIC_CATALOG), expected_status="DRAFT"
     )
 
 
@@ -100,9 +100,9 @@ def ensure_tls_connection() -> None:
 
 
 class Command(BaseCommand):
-    """Seed approved synthetic demo data into Neon dev, never other branches."""
+    """Seed pinned synthetic demo data into Neon dev, never other branches."""
 
-    help = "Load approved demo data into the explicitly confirmed Neon dev database."
+    help = "Load synthetic demo data into the explicitly confirmed Neon dev database."
 
     def add_arguments(self, parser: Any) -> None:
         parser.add_argument(
@@ -121,7 +121,7 @@ class Command(BaseCommand):
                 "Shared seed writes require the explicit --confirm-target dev option."
             )
         ensure_neon_dev_target()
-        catalog = load_approved_catalog()
+        catalog = load_dev_synthetic_catalog()
         as_of: datetime = parse_as_of(options.get("as_of"))
         ensure_tls_connection()
 

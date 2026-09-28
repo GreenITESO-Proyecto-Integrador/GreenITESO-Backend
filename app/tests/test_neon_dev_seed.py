@@ -51,18 +51,18 @@ def approved_payload() -> dict[str, Any]:
 
 def pin_catalog_digest(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
-        seed_neon_dev.APPROVED_CATALOG_SHA256_ENV,
+        seed_neon_dev.DEV_SYNTHETIC_CATALOG_SHA256_ENV,
         hashlib.sha256(path.read_bytes()).hexdigest(),
     )
 
 
 @pytest.mark.django_db(transaction=True)
-def test_neon_dev_seed_rejects_draft_catalog_before_database_access(
+def test_neon_dev_seed_rejects_approved_catalog_before_database_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "draft.json"
-    path.write_text(DEFAULT_CATALOG.read_text(encoding="utf-8"), encoding="utf-8")
-    monkeypatch.setattr(seed_neon_dev, "APPROVED_CATALOG", path)
+    path = tmp_path / "approved.json"
+    path.write_text(json.dumps(approved_payload()), encoding="utf-8")
+    monkeypatch.setattr(seed_neon_dev, "DEV_SYNTHETIC_CATALOG", path)
     pin_catalog_digest(path, monkeypatch)
     monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
     monkeypatch.setattr(
@@ -71,7 +71,7 @@ def test_neon_dev_seed_rejects_draft_catalog_before_database_access(
         lambda: (_ for _ in ()).throw(AssertionError("DB must not be touched")),
     )
 
-    with pytest.raises(CommandError, match="APPROVED"):
+    with pytest.raises(CommandError, match="DRAFT"):
         call_command("seed_neon_dev", confirm_target="dev", verbosity=0)
 
 
@@ -80,18 +80,21 @@ def test_neon_dev_seed_requires_explicit_target_confirmation() -> None:
         call_command("seed_neon_dev", confirm_target="", verbosity=0)
 
 
-def test_neon_dev_seed_requires_independently_pinned_catalog_digest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_neon_dev_seed_requires_independently_pinned_synthetic_digest(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "catalog_approved.json"
-    path.write_text(json.dumps(approved_payload()), encoding="utf-8")
-    monkeypatch.setattr(seed_neon_dev, "APPROVED_CATALOG", path)
-    monkeypatch.delenv(seed_neon_dev.APPROVED_CATALOG_SHA256_ENV, raising=False)
+    path = seed_neon_dev.DEV_SYNTHETIC_CATALOG
+    monkeypatch.delenv(seed_neon_dev.DEV_SYNTHETIC_CATALOG_SHA256_ENV, raising=False)
     with pytest.raises(CommandError, match="SHA-256"):
-        seed_neon_dev.load_approved_catalog()
-    monkeypatch.setenv(seed_neon_dev.APPROVED_CATALOG_SHA256_ENV, "0" * 64)
+        seed_neon_dev.load_dev_synthetic_catalog()
+    monkeypatch.setenv(seed_neon_dev.DEV_SYNTHETIC_CATALOG_SHA256_ENV, "0" * 64)
     with pytest.raises(CommandError, match="does not match"):
-        seed_neon_dev.load_approved_catalog()
+        seed_neon_dev.load_dev_synthetic_catalog()
+    pin_catalog_digest(path, monkeypatch)
+    catalog = seed_neon_dev.load_dev_synthetic_catalog()
+    assert len(catalog.categories) == 4
+    assert len(catalog.actions) == 6
+    assert not catalog.clans
 
 
 def test_neon_dev_seed_does_not_accept_an_arbitrary_catalog_path() -> None:
@@ -352,11 +355,9 @@ def test_shared_dev_seed_rejects_existing_demo_log_with_wrong_clan() -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_neon_dev_command_is_idempotent_and_loads_its_fixed_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "catalog_approved.json"
-    path.write_text(json.dumps(approved_payload()), encoding="utf-8")
-    monkeypatch.setattr(seed_neon_dev, "APPROVED_CATALOG", path)
+    path = seed_neon_dev.DEV_SYNTHETIC_CATALOG
     pin_catalog_digest(path, monkeypatch)
     monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
     monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
@@ -368,6 +369,8 @@ def test_neon_dev_command_is_idempotent_and_loads_its_fixed_catalog(
 
     assert first_counts == (20, 24)
     assert (User.objects.count(), ActionLog.objects.count()) == first_counts
+    assert ActionCategory.objects.count() == 4
+    assert ActionMaster.objects.count() == 6
     assert set(User.objects.values_list("role", flat=True)) == {User.Role.STUDENT}
     assert not ActionLogMissionContribution.objects.exclude(
         action_log__status=ActionLog.Status.APPROVED
@@ -376,11 +379,9 @@ def test_neon_dev_command_is_idempotent_and_loads_its_fixed_catalog(
 
 @pytest.mark.django_db(transaction=True)
 def test_neon_dev_command_rolls_back_catalog_if_demo_seed_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "catalog_approved.json"
-    path.write_text(json.dumps(approved_payload()), encoding="utf-8")
-    monkeypatch.setattr(seed_neon_dev, "APPROVED_CATALOG", path)
+    path = seed_neon_dev.DEV_SYNTHETIC_CATALOG
     pin_catalog_digest(path, monkeypatch)
     monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
     monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)

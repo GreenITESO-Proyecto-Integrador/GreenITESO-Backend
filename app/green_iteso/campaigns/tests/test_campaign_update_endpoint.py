@@ -131,7 +131,14 @@ class TestCampaignUpdateEndpoint:
         campaign_factory: Any,
         approval_status: str,
     ) -> None:
-        proposal = campaign_factory(approval_status=approval_status)
+        proposal = campaign_factory(
+            approval_status=approval_status,
+            rejection_reason=(
+                "Not suitable"
+                if approval_status == Campaign.ApprovalStatus.REJECTED
+                else ""
+            ),
+        )
         api_client.force_authenticate(user=admin_user)
 
         response = api_client.patch(_url(proposal), {"title": "x"}, format="json")

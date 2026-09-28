@@ -210,6 +210,13 @@ WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
 
 DATABASE_URL = required("DATABASE_URL")
+if MICROSOFT_AUTH_MODE == "mock" and urlsplit(DATABASE_URL).hostname not in {
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "db",
+}:
+    raise RuntimeError("MICROSOFT_AUTH_MODE=mock requires a local PostgreSQL host.")
 DATABASES = {
     "default": database_from_url(
         DATABASE_URL,

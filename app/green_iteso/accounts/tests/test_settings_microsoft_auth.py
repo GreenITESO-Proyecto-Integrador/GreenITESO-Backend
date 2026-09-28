@@ -71,6 +71,22 @@ def test_mock_mode_is_accepted_in_local_dev() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_mock_mode_rejects_remote_database_even_from_local_process() -> None:
+    result = _check_settings(
+        DJANGO_ENV="dev",
+        DJANGO_DEPLOYED="false",
+        DJANGO_CONNECTION_ROLE="app",
+        MICROSOFT_AUTH_MODE="mock",
+        DATABASE_URL=(
+            "postgresql://u:p@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/neondb"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "local PostgreSQL" in result.stderr
+    assert "ep-lively" not in result.stderr
+
+
 def test_unknown_auth_mode_is_rejected() -> None:
     result = _check_settings(
         DJANGO_ENV="dev",

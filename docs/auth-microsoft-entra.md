@@ -159,7 +159,14 @@ curl -X POST localhost:8000/api/v1/auth/login/ \
 
 El `access_token` se ignora en modo mock. `MICROSOFT_AUTH_MODE=mock` se
 rechaza al arrancar Django si `DJANGO_ENV` no es `dev` o si
-`DJANGO_DEPLOYED=true`.
+`DJANGO_DEPLOYED=true`, o si `DATABASE_URL` apunta a un host PostgreSQL que
+no sea `127.0.0.1`, `localhost`, `::1` o `db`. No uses credenciales de Neon en
+un proceso con mock auth: el modo mock acepta identidades arbitrarias y está
+pensado sólo para una base de desarrollo local descartable. Los usuarios
+`demo-XX@example.invalid` creados por `bootstrap_dev` no pueden iniciar sesión
+por este endpoint porque no usan el dominio institucional. Un flujo interactivo
+para esos personajes requiere una herramienta local aparte; no está habilitado
+en Neon dev desplegado.
 
 ## Contrato para el frontend (T2-12)
 

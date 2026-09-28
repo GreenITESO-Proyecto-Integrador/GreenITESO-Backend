@@ -94,13 +94,15 @@ The standalone Neon workflow runs only while `CLOUD_DEPLOYMENT_ENABLED` is not
 single migration path, avoiding concurrent duplicate jobs against the same
 branch.
 `db_smoke --check-grants` requires schema USAGE without CREATE; table
-SELECT/INSERT/UPDATE/DELETE without TRUNCATE on every public table; sequence
+SELECT/INSERT/UPDATE/DELETE without TRUNCATE on application tables, but only
+SELECT on `django_migrations`; sequence
 USAGE; and presence of every managed Django table. A database owner or
 superuser is **not** a valid app credential. Grant defaults must be established
 for the direct migrator role so future migration-created tables/sequences are
-usable by the app role. The current all-table grant includes DML on
-`django_migrations`; that is an observed least-privilege exception to revisit
-before production, not a claim that the app role is minimally scoped. See
+usable by the app role. The Infra owner must reapply and verify role grants
+after a migration creates or restores the ledger, before this smoke and before
+new traffic; default privileges cannot exempt one table. Until that operation
+is automated and verified, a writable ledger fails the release closed. See
 [the smoke contract](database-smoke.md).
 
 Add these environment-scoped secrets to both GitHub Environments `dev` and

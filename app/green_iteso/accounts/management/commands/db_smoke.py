@@ -152,11 +152,20 @@ def _check_app_grants(cursor: Any) -> tuple[int, int]:
         "WHERE n.nspname = 'public' AND c.relkind = 'S'"
     )
     sequence_grants = cursor.fetchall()
+    required_tables = _expected_managed_tables() | {"django_migrations"}
     if (
         schema_grants != (True, False)
         or not table_grants
-        or not _expected_managed_tables().issubset({row[0] for row in table_grants})
-        or any(row[1:] != (True, True, True, True, False) for row in table_grants)
+        or not required_tables.issubset({row[0] for row in table_grants})
+        or any(
+            row[1:]
+            != (
+                (True, False, False, False, False)
+                if row[0] == "django_migrations"
+                else (True, True, True, True, False)
+            )
+            for row in table_grants
+        )
         or any(row != (True,) for row in sequence_grants)
     ):
         raise AppGrantMismatchError

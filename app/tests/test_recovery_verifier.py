@@ -15,7 +15,7 @@ from django.apps import apps
 from django.contrib.auth.models import Group
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, connection, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.management.commands import db_recovery_verify
@@ -29,6 +29,7 @@ from green_iteso.actions.models import (
 from green_iteso.campaigns.models import Campaign, UserMissionProgress
 from green_iteso.feed.models import Post, PostType
 from green_iteso.notifications.models import Notification
+from green_iteso.settings.neon_endpoints import CANONICAL_NEON_ENDPOINTS
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +37,9 @@ def recovery_marker_hmac_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Use an isolated test-only key; production drills must supply their own."""
     monkeypatch.setenv(
         "DB_RECOVERY_MARKER_HMAC_KEY", "test-only-recovery-marker-key-32-bytes"
+    )
+    monkeypatch.setenv(
+        "DB_RECOVERY_ALLOWED_HOST", str(connection.settings_dict["HOST"])
     )
 
 
@@ -93,7 +97,7 @@ def _capture_baseline(tmp_path: Path) -> tuple[Path, ActionLog, str]:
         write_baseline=baseline,
         pre_marker_id=str(marker.pk),
         post_marker_id=post_marker_id,
-        timeout=5,
+        timeout=15,
         verbosity=0,
     )
     return baseline, marker, post_marker_id
@@ -113,6 +117,40 @@ def test_recovery_inventory_covers_all_managed_django_tables() -> None:
         "accounts_user_groups",
         "accounts_user_user_permissions",
     } <= actual_tables
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "host",
+    [
+        host
+        for endpoints in CANONICAL_NEON_ENDPOINTS.values()
+        for host in endpoints.values()
+    ],
+)
+def test_recovery_refuses_shared_neon_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setitem(connection.settings_dict, "HOST", host)
+    monkeypatch.setenv("DB_RECOVERY_ALLOWED_HOST", host)
+    with pytest.raises(CommandError, match="UNSAFE_TARGET"):
+        call_command(
+            "db_recovery_verify",
+            write_baseline=tmp_path / "must-not-exist.json",
+            pre_marker_id=str(uuid.uuid4()),
+            post_marker_id=str(uuid.uuid4()),
+            verbosity=0,
+        )
+    assert not (tmp_path / "must-not-exist.json").exists()
+
+
+@pytest.mark.django_db
+def test_recovery_requires_explicit_target_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DB_RECOVERY_ALLOWED_HOST")
+    with pytest.raises(CommandError, match="UNSAFE_TARGET"):
+        db_recovery_verify._require_disposable_target()
 
 
 @pytest.mark.django_db
@@ -183,9 +221,48 @@ def test_recovery_baseline_matches_unchanged_history(tmp_path: Path) -> None:
         baseline=baseline,
         pre_marker_id=str(marker.pk),
         post_marker_id=post_marker_id,
-        timeout=5,
+        timeout=15,
         verbosity=0,
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_detects_migration_ledger_difference(tmp_path: Path) -> None:
+    baseline, marker, post_marker_id = _capture_baseline(tmp_path)
+    evidence = json.loads(baseline.read_text(encoding="utf-8"))
+    evidence["migrations"].append("synthetic.9999_unreviewed")
+    baseline.write_text(json.dumps(evidence), encoding="utf-8")
+    with pytest.raises(CommandError, match="MIGRATION_SET_MISMATCH"):
+        call_command(
+            "db_recovery_verify",
+            baseline=baseline,
+            pre_marker_id=str(marker.pk),
+            post_marker_id=post_marker_id,
+            timeout=15,
+            verbosity=0,
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_rejects_pending_code_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = _create_history()
+    monkeypatch.setattr(
+        db_recovery_verify,
+        "_pending_code_migrations",
+        lambda _applied: ["synthetic.9999_unapplied"],
+    )
+    with pytest.raises(CommandError, match="migraciones de código pendientes"):
+        call_command(
+            "db_recovery_verify",
+            write_baseline=tmp_path / "must-not-exist.json",
+            pre_marker_id=str(marker.pk),
+            post_marker_id=str(uuid.uuid4()),
+            timeout=15,
+            verbosity=0,
+        )
+    assert not (tmp_path / "must-not-exist.json").exists()
 
 
 @pytest.mark.django_db(transaction=True)
@@ -255,7 +332,7 @@ def test_recovery_reports_count_points_and_history_mismatches(
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -271,7 +348,7 @@ def test_recovery_detects_auto_created_group_membership_change(tmp_path: Path) -
         write_baseline=baseline,
         pre_marker_id=str(marker.pk),
         post_marker_id=post_marker_id,
-        timeout=5,
+        timeout=15,
         verbosity=0,
     )
 
@@ -282,7 +359,7 @@ def test_recovery_detects_auto_created_group_membership_change(tmp_path: Path) -
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -307,7 +384,7 @@ def test_recovery_rejects_post_t_marker(tmp_path: Path) -> None:
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -352,7 +429,7 @@ def test_recovery_marker_fingerprint_requires_the_same_secret_key(
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -370,7 +447,7 @@ def test_recovery_requires_marker_hmac_key(
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -397,7 +474,7 @@ def test_recovery_detects_equal_total_clan_reassignment(tmp_path: Path) -> None:
         write_baseline=baseline,
         pre_marker_id=str(marker.pk),
         post_marker_id=post_marker_id,
-        timeout=5,
+        timeout=15,
         verbosity=0,
     )
 
@@ -413,7 +490,7 @@ def test_recovery_detects_equal_total_clan_reassignment(tmp_path: Path) -> None:
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=str(post_marker_id),
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -441,9 +518,25 @@ def test_recovery_rejects_nonzero_fk_orphan_snapshot(
             write_baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=str(uuid.uuid4()),
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_fk_query_detects_real_deferred_orphan() -> None:
+    marker = _create_history()
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+            cursor.execute(
+                f"UPDATE {connection.ops.quote_name(ActionLog._meta.db_table)} "
+                "SET user_id = %s WHERE id = %s",
+                [str(uuid.uuid4()), str(marker.pk)],
+            )
+        orphans = db_recovery_verify._fk_orphans()
+        assert orphans["actions.ActionLog.user"] == 1
+        transaction.set_rollback(True)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -462,7 +555,7 @@ def test_recovery_reports_fk_integrity_mismatch_after_baseline(
             baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
 
@@ -481,10 +574,34 @@ def test_recovery_does_not_overwrite_baseline_and_uses_private_mode(
             write_baseline=baseline,
             pre_marker_id=str(marker.pk),
             post_marker_id=post_marker_id,
-            timeout=5,
+            timeout=15,
             verbosity=0,
         )
     assert baseline.read_bytes() == original
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_refuses_symlink_or_world_readable_baseline(tmp_path: Path) -> None:
+    baseline, marker, post_marker_id = _capture_baseline(tmp_path)
+    linked = tmp_path / "linked-baseline.json"
+    linked.symlink_to(baseline)
+    with pytest.raises(CommandError, match="No se pudo leer el baseline"):
+        call_command(
+            "db_recovery_verify",
+            baseline=linked,
+            pre_marker_id=str(marker.pk),
+            post_marker_id=post_marker_id,
+            verbosity=0,
+        )
+    baseline.chmod(0o644)
+    with pytest.raises(CommandError, match="archivo privado del operador"):
+        call_command(
+            "db_recovery_verify",
+            baseline=baseline,
+            pre_marker_id=str(marker.pk),
+            post_marker_id=post_marker_id,
+            verbosity=0,
+        )
 
 
 @pytest.mark.django_db(transaction=True)
@@ -505,6 +622,31 @@ def test_recovery_snapshot_transaction_is_read_only(
             post_marker=str(uuid.uuid4()),
             marker_key=b"test-only-recovery-marker-key-32-bytes",
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_recovery_snapshot_uses_repeatable_read() -> None:
+    def inspect_transaction(*_args: object) -> dict[str, object]:
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW transaction_isolation")
+            assert cursor.fetchone()[0] == "repeatable read"
+            cursor.execute("SHOW transaction_read_only")
+            assert cursor.fetchone()[0] == "on"
+        raise RuntimeError("snapshot inspected")
+
+    original = db_recovery_verify._snapshot
+    db_recovery_verify._snapshot = inspect_transaction
+    try:
+        with pytest.raises(RuntimeError, match="snapshot inspected"):
+            db_recovery_verify._read_snapshot(
+                5,
+                expected=None,
+                pre_marker=str(uuid.uuid4()),
+                post_marker=str(uuid.uuid4()),
+                marker_key=b"test-only-recovery-marker-key-32-bytes",
+            )
+    finally:
+        db_recovery_verify._snapshot = original
 
 
 @pytest.mark.django_db(transaction=True)

@@ -42,9 +42,16 @@ comparar; no la escribas en el repositorio ni junto a la evidencia.
 
 Define `PRE_MARKER_ID` con el UUID de un ActionLog sintético existente y `POST_MARKER_ID` con un UUID reservado que todavía no existe. Antes de ejecutar, carga `DB_RECOVERY_MARKER_HMAC_KEY` desde el gestor de secretos acordado y conserva acceso a la misma clave para la comparación. Captura el baseline antes de la operación de recuperación:
 
+Configura `DB_RECOVERY_ALLOWED_HOST` con el hostname exacto de la base local
+aislada o de la rama Neon temporal aprobada (sin esquema, contraseña ni puerto).
+El comando exige `DJANGO_ENV=dev` y `DJANGO_DEPLOYED=false`; rechaza los
+endpoints canónicos compartidos de dev, staging y production aun si el
+hostname autorizado coincide. Usa un directorio privado para el baseline:
+
 ```sh
+RECOVERY_DIR="$(mktemp -d)"
 python app/manage.py db_recovery_verify \
-  --write-baseline /tmp/recovery-baseline.json \
+  --write-baseline "$RECOVERY_DIR/baseline.json" \
   --pre-marker-id "$PRE_MARKER_ID" \
   --post-marker-id "$POST_MARKER_ID" \
   --timeout 10
@@ -54,7 +61,7 @@ Después de restaurar la copia o rama desechable, compara el estado recuperado:
 
 ```sh
 python app/manage.py db_recovery_verify \
-  --baseline /tmp/recovery-baseline.json \
+  --baseline "$RECOVERY_DIR/baseline.json" \
   --pre-marker-id "$PRE_MARKER_ID" \
   --post-marker-id "$POST_MARKER_ID" \
   --timeout 10
@@ -79,7 +86,8 @@ completa, exactamente una cuenta por cada FK/OneToOne inspeccionada y cero
 referencias huérfanas, fingerprints de marcadores válidos y marcadores distintos.
 La ruta de salida
 se crea exclusivamente con permisos 0600; si ya existe, el comando falla para
-preservar la evidencia anterior.
+preservar la evidencia anterior. La lectura rechaza enlaces simbólicos,
+archivos no regulares y archivos que no sean del operador con permisos 0600.
 
 `--timeout` acepta de `0.1` a `60` segundos. El límite se aplica a la conexión,
 `statement_timeout`, `lock_timeout` y al tiempo total del proceso, incluyendo

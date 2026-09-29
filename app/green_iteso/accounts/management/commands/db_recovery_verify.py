@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import stat
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -28,6 +29,7 @@ from green_iteso.accounts.management.commands.db_smoke import (
     _start_read_only_transaction,
 )
 from green_iteso.actions.models import ActionLog
+from green_iteso.settings.neon_endpoints import CANONICAL_NEON_ENDPOINTS
 
 BASELINE_VERSION = 4
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -227,7 +229,19 @@ def _snapshot(pre_id: str, post_id: str, marker_key: bytes) -> dict[str, Any]:
 def _load_baseline(path: Path) -> dict[str, Any]:
     """Load and minimally validate a baseline without echoing file contents."""
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        file_descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not (
+                stat.S_ISREG(metadata.st_mode)
+                and stat.S_IMODE(metadata.st_mode) == 0o600
+                and metadata.st_uid == os.getuid()
+                and metadata.st_nlink == 1
+            ):
+                raise CommandError(
+                    "El baseline de recuperación debe ser un archivo privado del operador."
+                )
+            value = json.load(handle)
     except (OSError, ValueError):
         raise CommandError("No se pudo leer el baseline de recuperación.") from None
     if not isinstance(value, dict) or value.get("format") != BASELINE_VERSION:
@@ -455,6 +469,30 @@ def _marker_hmac_key() -> bytes:
     return key
 
 
+def _require_disposable_target() -> None:
+    """Require an explicitly selected local or temporary database host."""
+    actual_host = str(connection.settings_dict.get("HOST") or "").lower()
+    allowed_host = os.environ.get("DB_RECOVERY_ALLOWED_HOST", "").lower()
+    canonical_hosts = {
+        host.lower()
+        for environment in CANONICAL_NEON_ENDPOINTS.values()
+        for host in environment.values()
+    }
+    if (
+        os.environ.get("DJANGO_ENV") != "dev"
+        or os.environ.get("DJANGO_DEPLOYED", "").lower() != "false"
+        or not allowed_host
+        or actual_host != allowed_host
+        or actual_host in canonical_hosts
+    ):
+        raise CommandError(
+            "RECOVERY_VERIFY ERROR\n"
+            "diagnostico: UNSAFE_TARGET\n"
+            "detalle: Seleccione explícitamente un host local o una rama "
+            "desechable de Neon; los endpoints compartidos no están permitidos."
+        )
+
+
 def _write_baseline(path: Path, snapshot: dict[str, Any]) -> None:
     """Create a private baseline without replacing existing evidence."""
     fk_orphans = snapshot["action_logs"]["fk_orphans"]
@@ -531,6 +569,7 @@ class Command(BaseCommand):
             raise CommandError("--timeout debe estar entre 0.1 y 60 segundos.")
 
         baseline_path, write_path, pre_marker, post_marker = _parse_mode(dict(options))
+        _require_disposable_target()
 
         bounded_options: dict[str, object] | None = None
         original_options: dict[str, object] = {}

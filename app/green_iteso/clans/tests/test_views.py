@@ -127,28 +127,35 @@ def test_retrieve_clan_returns_member_roster() -> None:
 
 
 @pytest.mark.django_db
-def test_select_active_clan_endpoint_activates_membership() -> None:
-    leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
-    clan = create_private_clan(name="Roster Test", created_by=leader)
-    client = APIClient()
-    client.force_authenticate(leader)
-
-    response = client.post(f"/api/v1/clans/{clan.id}/select-active/")
-
-    assert response.status_code == 200
-    assert response.json()["id"] == str(clan.id)
-
-
-@pytest.mark.django_db
-def test_select_active_clan_endpoint_rejects_non_member() -> None:
+def test_retrieve_private_invite_clan_404s_for_non_member() -> None:
     leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
     outsider = User.objects.create_user(
         email="outsider@iteso.mx", password="local-only"
     )
-    clan = create_private_clan(name="Roster Test", created_by=leader)
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
     client = APIClient()
     client.force_authenticate(outsider)
 
-    response = client.post(f"/api/v1/clans/{clan.id}/select-active/")
+    response = client.get(f"/api/v1/clans/{clan.id}/")
 
-    assert response.status_code == 400
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_list_clans_excludes_private_invite_clan_for_non_member() -> None:
+    leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    client = APIClient()
+    client.force_authenticate(outsider)
+
+    response = client.get("/api/v1/clans/")
+
+    names = [row["name"] for row in response.json()["results"]]
+    assert "Secret Clan" not in names

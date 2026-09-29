@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from django.db.models import QuerySet
 from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -20,11 +19,16 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
 )
-from .services import (
-    assign_institutional_clan,
-    create_private_clan,
-    select_active_private_clan,
-)
+from .services import assign_institutional_clan, create_private_clan
+
+
+def _validation_error_from(
+    exc: ValueError, *, field: str | None = None
+) -> ValidationError:
+    """Convert a domain ValueError into a DRF ValidationError (shared across actions)."""
+    if field:
+        return ValidationError({field: str(exc)})
+    return ValidationError(str(exc))
 
 
 class ClanViewSet(
@@ -43,7 +47,9 @@ class ClanViewSet(
         return ClanSerializer
 
     def get_queryset(self) -> QuerySet[Clan]:
-        queryset = list_active_clans(search=self.request.query_params.get("search", ""))
+        queryset = list_active_clans(
+            user=self.request.user, search=self.request.query_params.get("search", "")
+        )
         if self.action == "retrieve":
             return queryset.prefetch_related("memberships__user")
         return queryset
@@ -60,17 +66,7 @@ class ClanViewSet(
                 created_by=self.request.user,
             )
         except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
-
-    @action(detail=True, methods=["post"], url_path="select-active")
-    def select_active(self, request: Request, pk: str | None = None) -> Response:  # pylint: disable=unused-argument
-        """Mark this clan as the caller's active private clan (T2-35)."""
-        clan = self.get_object()
-        try:
-            select_active_private_clan(user=request.user, clan=clan)
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
-        return Response(ClanDetailSerializer(clan).data, status=status.HTTP_200_OK)
+            raise _validation_error_from(exc) from exc
 
 
 class InstitutionalClanAssignmentView(APIView):
@@ -90,7 +86,7 @@ class InstitutionalClanAssignmentView(APIView):
                 user=request.user, career=payload.validated_data["career"]
             )
         except ValueError as exc:
-            raise ValidationError({"career": str(exc)}) from exc
+            raise _validation_error_from(exc, field="career") from exc
         return Response(
             InstitutionalAssignmentSerializer(profile).data,
             status=status.HTTP_200_OK,

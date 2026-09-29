@@ -152,12 +152,8 @@ class PrivateClanLimitExceededError(ValueError):
     """Raised when BR-04's five-private-clan membership limit would be exceeded."""
 
 
-class NotAClanMemberError(ValueError):
-    """Raised when the user has no membership in the target clan."""
-
-
-class NotAPrivateClanError(ValueError):
-    """Raised when trying to select a non-private clan as the active private clan."""
+class InvalidClanPrivacyError(ValueError):
+    """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
 
 
 def _is_already_leading_a_clan(user: User) -> bool:
@@ -193,6 +189,10 @@ def create_private_clan(
     sequence so two concurrent requests from the same user cannot both pass
     the BR-04 checks before either membership row exists.
     """
+
+    if privacy not in Clan.Privacy.values:
+        raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+
     locked_user = User.objects.select_for_update().get(pk=created_by.pk)
 
     if _is_already_leading_a_clan(locked_user):
@@ -218,41 +218,11 @@ def create_private_clan(
             created_by=locked_user,
         )
     except IntegrityError as exc:
+        if "clan_name_unique_when_alive" not in str(exc):
+            raise
         raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
 
     ClanMembership.objects.create(
         user=locked_user, clan=clan, role=ClanMembership.MembershipRole.LEADER
     )
     return clan
-
-
-@transaction.atomic
-def select_active_private_clan(*, user: User, clan: Clan) -> ClanMembership:
-    """Mark ``clan`` as the caller's single active private clan (T2-35).
-
-    Only one membership per user may have ``is_active_private=True`` at a
-    time (enforced by the ``membership_one_active_private_per_user``
-    partial-unique constraint). The user row is locked for the duration of
-    the check-then-act sequence, mirroring ``create_private_clan``, so two
-    concurrent selections by the same user can't both clear-then-set and
-    briefly leave two (or zero) active rows.
-    """
-    locked_user = User.objects.select_for_update().get(pk=user.pk)
-
-    if clan.type != Clan.ClanType.PRIVATE:
-        raise NotAPrivateClanError("Only private clans can be selected as active.")
-
-    try:
-        membership = ClanMembership.objects.get(user=locked_user, clan=clan)
-    except ClanMembership.DoesNotExist as exc:
-        raise NotAClanMemberError("User is not a member of this clan.") from exc
-
-    ClanMembership.objects.filter(user=locked_user, is_active_private=True).exclude(
-        pk=membership.pk
-    ).update(is_active_private=False)
-
-    if not membership.is_active_private:
-        membership.is_active_private = True
-        membership.save(update_fields=["is_active_private"])
-
-    return membership

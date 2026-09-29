@@ -12,15 +12,13 @@ from green_iteso.clans.services import (
     AlreadyLeadingAClanError,
     DuplicateClanLeaderError,
     DuplicateClanNameError,
+    InvalidClanPrivacyError,
     MembershipClanMismatchError,
-    NotAClanMemberError,
-    NotAPrivateClanError,
     PrivateClanLimitExceededError,
     assign_institutional_clan,
     assign_leader,
     create_clan,
     create_private_clan,
-    select_active_private_clan,
 )
 
 
@@ -369,45 +367,6 @@ class CreatePrivateClanTests(TestCase):
         with self.assertRaises(PrivateClanLimitExceededError):
             create_private_clan(name="Sexto", created_by=self.user)
 
-
-class SelectActivePrivateClanTests(TestCase):
-    """Tests for services.select_active_private_clan (T2-35)."""
-
-    def setUp(self) -> None:
-        self.user = User.objects.create_user(
-            email="member@iteso.mx", password="pass1234"
-        )
-
-    def test_activates_membership(self) -> None:
-        clan = Clan.objects.create(name="Clan A", type=Clan.ClanType.PRIVATE)
-        ClanMembership.objects.create(user=self.user, clan=clan)
-
-        membership = select_active_private_clan(user=self.user, clan=clan)
-
-        self.assertTrue(membership.is_active_private)
-
-    def test_deactivates_previous_active_membership(self) -> None:
-        clan_a = Clan.objects.create(name="Clan A", type=Clan.ClanType.PRIVATE)
-        clan_b = Clan.objects.create(name="Clan B", type=Clan.ClanType.PRIVATE)
-        membership_a = ClanMembership.objects.create(
-            user=self.user, clan=clan_a, is_active_private=True
-        )
-        ClanMembership.objects.create(user=self.user, clan=clan_b)
-
-        select_active_private_clan(user=self.user, clan=clan_b)
-
-        membership_a.refresh_from_db()
-        self.assertFalse(membership_a.is_active_private)
-
-    def test_rejects_non_member(self) -> None:
-        clan = Clan.objects.create(name="Clan A", type=Clan.ClanType.PRIVATE)
-
-        with self.assertRaises(NotAClanMemberError):
-            select_active_private_clan(user=self.user, clan=clan)
-
-    def test_rejects_institutional_clan(self) -> None:
-        clan = Clan.objects.create(name="ISC", type=Clan.ClanType.INSTITUTIONAL)
-        ClanMembership.objects.create(user=self.user, clan=clan)
-
-        with self.assertRaises(NotAPrivateClanError):
-            select_active_private_clan(user=self.user, clan=clan)
+    def test_rejects_invalid_privacy_value(self) -> None:
+        with self.assertRaises(InvalidClanPrivacyError):
+            create_private_clan(name="Bad", created_by=self.user, privacy="NOT_REAL")

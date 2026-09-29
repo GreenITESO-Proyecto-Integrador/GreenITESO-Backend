@@ -17,15 +17,20 @@ from green_iteso.campaigns.models import (
 from green_iteso.campaigns.serializers import (
     CampaignSerializer,
 )
-from green_iteso.campaigns.tests.helpers import FakeRequest, campaign_data
+from green_iteso.campaigns.tests.helpers import (
+    FakeRequest,
+    campaign_data,
+    default_missions,
+)
 
 
 @pytest.mark.django_db
 class TestCampaignSerializer:
     def test_global_campaign_without_clan_is_valid(
-        self, user: User  # pylint: disable=unused-argument
+        self,
+        user: User,  # pylint: disable=unused-argument
     ) -> None:
-        serializer = CampaignSerializer(data=campaign_data())
+        serializer = CampaignSerializer(data=campaign_data(missions=default_missions()))
 
         assert serializer.is_valid(), serializer.errors
 
@@ -51,7 +56,11 @@ class TestCampaignSerializer:
 
     def test_private_campaign_with_clan_is_valid(self, clan: Clan) -> None:
         serializer = CampaignSerializer(
-            data=campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=clan.pk)
+            data=campaign_data(
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan.pk,
+                missions=default_missions(),
+            )
         )
 
         assert serializer.is_valid(), serializer.errors
@@ -124,7 +133,8 @@ class TestCampaignSerializer:
 
     def test_global_scope_allowed_for_admin(self, admin_user: User) -> None:
         serializer = CampaignSerializer(
-            data=campaign_data(), context={"request": FakeRequest(user=admin_user)}
+            data=campaign_data(missions=default_missions()),
+            context={"request": FakeRequest(user=admin_user)},
         )
 
         assert serializer.is_valid(), serializer.errors
@@ -145,7 +155,11 @@ class TestCampaignSerializer:
             user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
         )
         serializer = CampaignSerializer(
-            data=campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=clan.pk),
+            data=campaign_data(
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan.pk,
+                missions=default_missions(),
+            ),
             context={"request": FakeRequest(user=user)},
         )
 

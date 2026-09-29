@@ -79,19 +79,14 @@ def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
     needing clan membership. Everyone else sees global campaigns plus
     private campaigns of clans they belong to.
     """
-    approved = Campaign.objects.filter(
-        approval_status=Campaign.ApprovalStatus.APPROVED
-    )
-    live_private = Q(
-        scope=Campaign.Scope.PRIVATE, target_clan__deleted_at__isnull=True
-    )
+    approved = Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED)
+    live_private = Q(scope=Campaign.Scope.PRIVATE, target_clan__deleted_at__isnull=True)
     if getattr(user, "role", None) == GlobalRole.ADMIN:
         return approved.filter(Q(scope=Campaign.Scope.GLOBAL) | live_private)
     return approved.filter(
         Q(scope=Campaign.Scope.GLOBAL)
         | Q(live_private, target_clan__memberships__user=user)
     ).distinct()
-    )
 
 
 def _annotate_is_participant(
@@ -196,9 +191,13 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
         return super().post(request, *args, **kwargs)
 
     def get_queryset(self) -> QuerySet[Campaign]:
-        queryset = _annotate_is_participant(
-            _visible_campaigns(self.request.user), self.request.user
-        ).select_related("target_clan").prefetch_related("missions__action", "participants")
+        queryset = (
+            _annotate_is_participant(
+                _visible_campaigns(self.request.user), self.request.user
+            )
+            .select_related("target_clan")
+            .prefetch_related("missions__action", "participants")
+        )
         scope = self.request.query_params.get("scope")
         scopes = [
             value.strip()

@@ -57,7 +57,9 @@ class TestMissionSerializer:
 @pytest.mark.django_db
 class TestMissionUniqueness:
     def test_inactive_action_is_rejected(
-        self, campaign: Campaign, action: ActionMaster  # pylint: disable=unused-argument
+        self,
+        campaign: Campaign,  # pylint: disable=unused-argument
+        action: ActionMaster,
     ) -> None:
         action.is_active = False
         action.save(update_fields=["is_active"])

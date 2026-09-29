@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from green_iteso.accounts.models import User
 from green_iteso.campaigns.models import Campaign
 from green_iteso.campaigns.serializers import CampaignSerializer
-from green_iteso.campaigns.tests.helpers import campaign_data
+from green_iteso.campaigns.tests.helpers import campaign_data, default_missions
 
 
 @pytest.mark.django_db
@@ -21,7 +21,7 @@ class TestCampaignStatusReadOnly:
 
         response = api_client.post(
             reverse("campaign-list"),
-            campaign_data(status=Campaign.Status.FINISHED),
+            campaign_data(status=Campaign.Status.FINISHED, missions=default_missions()),
             format="json",
         )
 

@@ -21,6 +21,7 @@ from green_iteso.campaigns.services import (
 from green_iteso.campaigns.tests.helpers import (
     assert_join_rejected_inactive,
     campaign_data,
+    default_missions,
 )
 
 DAY = timedelta(days=1)
@@ -165,7 +166,11 @@ class TestLifecycleEndpoints:
 
         response = api_client.post(
             reverse("campaign-list"),
-            campaign_data(start_date=now + DAY, end_date=now + 2 * DAY),
+            campaign_data(
+                start_date=now + DAY,
+                end_date=now + 2 * DAY,
+                missions=default_missions(),
+            ),
             format="json",
         )
 
@@ -180,7 +185,11 @@ class TestLifecycleEndpoints:
 
         response = api_client.post(
             reverse("campaign-list"),
-            campaign_data(start_date=now - DAY, end_date=now + DAY),
+            campaign_data(
+                start_date=now - DAY,
+                end_date=now + DAY,
+                missions=default_missions(),
+            ),
             format="json",
         )
 

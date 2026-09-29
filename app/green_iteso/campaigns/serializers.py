@@ -150,8 +150,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {
                     "target_clan": (
-                        "Private campaigns must target a private or "
-                        "institutional clan."
+                        "Private campaigns must target a private or institutional clan."
                     )
                 }
             )

@@ -17,7 +17,7 @@ from green_iteso.campaigns.models import (
     Mission,
     UserMissionProgress,
 )
-from green_iteso.campaigns.tests.helpers import campaign_data
+from green_iteso.campaigns.tests.helpers import campaign_data, default_missions
 
 
 @pytest.mark.django_db
@@ -126,7 +126,7 @@ class TestCampaignEndpoints:
         clan: Clan,
         scope: str,
     ) -> None:
-        data = campaign_data(scope=scope)
+        data = campaign_data(scope=scope, missions=default_missions())
         if scope == Campaign.Scope.PRIVATE:
             data["target_clan"] = str(clan.pk)
             ClanMembership.objects.create(
@@ -206,7 +206,11 @@ class TestCampaignEndpoints:
 
         response = api_client.post(
             reverse("campaign-list"),
-            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            campaign_data(
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=str(clan.pk),
+                missions=default_missions(),
+            ),
             format="json",
         )
 
@@ -571,7 +575,11 @@ class TestCanManageField:
 
         create_response = api_client.post(
             reverse("campaign-list"),
-            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            campaign_data(
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=str(clan.pk),
+                missions=default_missions(),
+            ),
             format="json",
         )
         assert create_response.status_code == 201

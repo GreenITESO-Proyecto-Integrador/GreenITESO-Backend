@@ -19,7 +19,7 @@ from green_iteso.campaigns.services import (
     reject_campaign,
     sync_campaign_statuses,
 )
-from green_iteso.campaigns.tests.helpers import campaign_data
+from green_iteso.campaigns.tests.helpers import campaign_data, default_missions
 
 DAY = timedelta(days=1)
 
@@ -31,6 +31,7 @@ def proposal_payload(**overrides: object) -> dict[str, object]:
         "description": "A proposal",
         "start_date": now + timedelta(hours=1),
         "end_date": now + timedelta(days=7),
+        "missions": default_missions(),
     }
     data.update(overrides)
     return data

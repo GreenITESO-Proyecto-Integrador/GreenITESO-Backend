@@ -105,6 +105,8 @@ def second_action(action_category: ActionCategory) -> ActionMaster:
 
 @pytest.fixture
 def private_campaign(
-    user: User, clan: Clan, campaign_factory: Any  # pylint: disable=unused-argument
+    user: User,  # pylint: disable=unused-argument
+    clan: Clan,
+    campaign_factory: Any,
 ) -> Campaign:
     return campaign_factory(scope=Campaign.Scope.PRIVATE, target_clan=clan)

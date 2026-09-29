@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import textwrap
@@ -519,7 +520,10 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "group: db-release-${{ inputs.environment }}" in workflow
     assert "queue: max" in workflow
     assert "migration" in workflow.lower()
-    assert "actions/upload-artifact@v4" in workflow
+    assert (
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4"
+        in workflow
+    )
     assert "verify-source-release.sh" in workflow
     assert workflow.index(
         "Verify successful source release provenance"
@@ -615,7 +619,10 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "cancel-in-progress" not in workflow
     assert "secrets." not in workflow.split("  migrate:", 1)[0]
     assert "workflow_dispatch:" not in workflow
-    assert "uses: actions/setup-python@v5" in workflow
+    assert (
+        "uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5"
+        in workflow
+    )
     assert 'python-version: "3.14"' in workflow
     assert "pull_request:" not in workflow
     assert "github.event.pull_request.merged" not in workflow
@@ -662,6 +669,23 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "scripts/rehearse-migration-conflict.py" in tests_workflow
     assert "group: db-release-${{ inputs.environment }}" in WORKFLOW.read_text()
     assert "queue: max" in WORKFLOW.read_text()
+
+
+def test_direct_ci_workflows_use_read_only_unpersisted_checkout() -> None:
+    for filename in ("tests.yaml", "pipeline-tests.yml"):
+        workflow = (ROOT / ".github" / "workflows" / filename).read_text()
+        assert "permissions:\n  contents: read\n" in workflow
+        assert "persist-credentials: false" in workflow
+
+
+def test_secret_bearing_release_workflows_pin_external_actions() -> None:
+    for filename in ("database-migrations.yml", "_deploy.yml"):
+        workflow = (ROOT / ".github" / "workflows" / filename).read_text()
+        external_actions = re.findall(r"uses: ([^\s#]+)", workflow)
+        for action in external_actions:
+            if action.startswith("./"):
+                continue
+            assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (filename, action)
 
 
 def _run_migration_gate(

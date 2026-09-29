@@ -364,7 +364,7 @@ def test_workflows_make_both_gates_required_and_use_read_only_permissions() -> N
     assert "DEV_EVIDENCE_MODE: pull_request" in promotion
     assert "DEV_EVIDENCE_MODE: staging_merge" in migrations
     assert "actions: read" in migrations
-    assert "upload-artifact@v4" in migrations
+    assert "upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4" in migrations
     assert (
         "dev-db-evidence-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}"
         in migrations

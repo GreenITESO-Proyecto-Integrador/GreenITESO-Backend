@@ -26,6 +26,12 @@ def member() -> User:
 
 
 @pytest.fixture
+def successor() -> User:
+    """A third user, used as the target of a leadership transfer."""
+    return User.objects.create_user(email="successor@iteso.mx", password="local-only")
+
+
+@pytest.fixture
 def clan(leader: User) -> Clan:
     """A private clan created and led by ``leader``."""
     return create_clan(

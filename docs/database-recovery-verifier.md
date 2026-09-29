@@ -28,6 +28,12 @@ demuestra que PITR, Neon o Cloud Run funcionen. La evidencia debe obtenerse en
 una base desechable del ensayo de recuperación y revisarse antes de usarla en
 un ambiente compartido.
 
+La comparación cubre únicamente tablas administradas por los modelos Django.
+No inspecciona ni valida `neon_auth.*` ni otros esquemas ajenos a Django:
+un resultado `RECOVERY_VERIFY OK` **no** demuestra que la configuración de
+autenticación heredada sea segura o esté aislada. Ese control requiere una
+revisión y aprobación independiente antes de clonar la rama para el ensayo.
+
 ## Flujo
 
 El marcador `pre` representa un `ActionLog` sintético creado antes del punto T.

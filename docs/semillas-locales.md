@@ -51,9 +51,9 @@ habilita para bases compartidas.
 Después de migrar, crea los datos de ejemplo:
 
 ```sh
-python app/manage.py bootstrap_dev --as-of 2030-01-15T12:00:00+00:00
+python app/manage.py bootstrap_dev
 # Alias compatible:
-python app/manage.py seed_demo --as-of 2030-01-15T12:00:00+00:00
+python app/manage.py seed_demo
 ```
 
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
@@ -68,8 +68,12 @@ se detiene en vez de adoptar o modificar el registro. Las fotos son
 solo claves de objeto locales (`demo-only/...jpg`), nunca URLs firmadas ni
 archivos reales.
 
-`--as-of` fija las ventanas de las campañas para una demo repetible. Si se
-omite, se usa la hora actual.
+Por defecto, las ventanas de campañas se calculan con la hora actual. Usa
+`--as-of` sólo para pruebas con el reloj fijado en la misma fecha: una fecha
+futura usada hoy puede dejar un estado visible incompatible con las ventanas
+cuando se integre la sincronización de campañas de PR #111. La semilla es
+idempotente y una segunda ejecución no mueve las fechas de campañas existentes;
+para escenarios temporales nuevos usa una base local descartable recién creada.
 
 ## Datos sintéticos en Neon dev (opt-in, T11/T12)
 
@@ -95,8 +99,7 @@ DJANGO_CONNECTION_ROLE=app \
 NEON_DEV_SYNTHETIC_CATALOG_SHA256="$DEV_SYNTHETIC_CATALOG_SHA256" \
 DATABASE_URL="$NEON_DEV_DATABASE_URL" \
 python app/manage.py seed_neon_dev \
-  --confirm-target dev \
-  --as-of 2030-01-15T12:00:00+00:00
+  --confirm-target dev
 ```
 
 El comando comprueba el ambiente, host, rol, TLS configurado y TLS de la

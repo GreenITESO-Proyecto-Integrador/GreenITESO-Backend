@@ -26,6 +26,7 @@ class TestMissionProgressEndpoint:
 
         assert first_response.status_code == 200
         assert first_response.data["current_count"] == 0
+        assert first_response.data["mission"] == mission.pk
         assert second_response.data["current_count"] == 0
         assert (
             UserMissionProgress.objects.filter(user=user, mission=mission).count() == 1

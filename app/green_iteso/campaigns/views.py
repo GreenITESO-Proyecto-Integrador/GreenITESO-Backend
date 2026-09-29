@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from green_iteso.accounts.models import ClanMembership
 from green_iteso.core.permissions import IsAdmin
-from green_iteso.core.roles import GlobalRole
+from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .serializers import (
@@ -55,6 +55,21 @@ class CampaignPagination(PageNumberPagination):
     """Paginate campaign collections with the API's fixed page size."""
 
     page_size = 20
+
+
+def _leader_clan_ids(user: Any) -> set[Any]:
+    """Return the ids of live clans the user leads, or an empty set.
+
+    Precomputed once per request so serializing many campaigns' ``can_manage``
+    does not issue a leadership query per campaign.
+    """
+    if not getattr(user, "is_authenticated", False):
+        return set()
+    return set(
+        ClanMembership.objects.filter(
+            user=user, role=ClanRole.LEADER, clan__deleted_at__isnull=True
+        ).values_list("clan_id", flat=True)
+    )
 
 
 def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
@@ -118,6 +133,11 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
     serializer_class = CampaignSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = CampaignPagination
+
+    def get_serializer_context(self) -> dict[str, Any]:
+        context = super().get_serializer_context()
+        context["leader_clan_ids"] = _leader_clan_ids(self.request.user)
+        return context
 
     @extend_schema(
         operation_id="campaigns_list",
@@ -237,7 +257,11 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
     )
     def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         campaign = self.get_object()
-        data = CampaignSerializer(campaign, context={"request": request}).data
+        context = {
+            "request": request,
+            "leader_clan_ids": _leader_clan_ids(request.user),
+        }
+        data = CampaignSerializer(campaign, context=context).data
         data["participants"] = CampaignParticipantSerializer(
             campaign.participants.all(), many=True, context={"request": request}
         ).data
@@ -280,9 +304,11 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
             )
             serializer.is_valid(raise_exception=True)
             serializer.save()
-        return Response(
-            CampaignSerializer(campaign, context={"request": request}).data
-        )
+        context = {
+            "request": request,
+            "leader_clan_ids": _leader_clan_ids(request.user),
+        }
+        return Response(CampaignSerializer(campaign, context=context).data)
 
 
 class CampaignMissionListCreateView(

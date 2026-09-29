@@ -58,19 +58,45 @@ def can_create_campaign(user: Any, scope: str, target_clan: Clan | None) -> bool
     return False
 
 
-def can_manage_campaign(user: Any, campaign: Campaign) -> bool:
+def _resolve_can_manage(
+    user: Any, campaign: Campaign, leader_clan_ids: set[Any] | None = None
+) -> bool:
     """Return whether the user may manage the campaign's missions.
 
     Global campaigns are managed only by admins. Private campaigns targeting
     an institutional clan are admin-only; other private campaigns are
-    managed by the leader of the target clan.
+    managed by the leader of the target clan. When ``leader_clan_ids`` is
+    given, it is used instead of querying ``ClanMembership`` for leadership,
+    letting callers precompute it once for a batch of campaigns.
     """
     if campaign.scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN
     target_clan = campaign.target_clan
     if target_clan is not None and target_clan.type == Clan.ClanType.INSTITUTIONAL:
         return _is_admin_for_institutional_clan(user, target_clan)
+    if leader_clan_ids is not None:
+        return target_clan is not None and target_clan.pk in leader_clan_ids
     return is_clan_leader(user, target_clan)
+
+
+def can_manage_campaign(user: Any, campaign: Campaign) -> bool:
+    """Return whether the user may manage the campaign's missions."""
+    return _resolve_can_manage(user, campaign)
+
+
+def can_manage_campaign_for_user(
+    user: Any, campaign: Campaign, leader_clan_ids: set[Any] | None = None
+) -> bool:
+    """Return whether an (possibly unauthenticated) user may manage a campaign.
+
+    Unlike :func:`can_manage_campaign`, this tolerates an unauthenticated or
+    ``None`` user, returning ``False`` for it. ``leader_clan_ids`` lets a
+    caller reuse a single precomputed set of clans the user leads across
+    many campaigns instead of a per-campaign membership query.
+    """
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    return _resolve_can_manage(user, campaign, leader_clan_ids)
 
 
 def compute_campaign_status(

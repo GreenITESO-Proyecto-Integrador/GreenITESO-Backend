@@ -60,7 +60,7 @@ jobs:
 
     steps:
       - name: Check out approved release
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.release_sha }}
           fetch-depth: 1
@@ -126,14 +126,14 @@ jobs:
           done
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
       - name: Recheck release ref before the release script
         env:
@@ -179,7 +179,7 @@ jobs:
 
       - name: Record successful release digest
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-digest-${{ inputs.environment }}-${{ inputs.release_sha }}
           path: release-record.txt
@@ -188,7 +188,7 @@ jobs:
 
       - name: Publish successful dev migration evidence
         if: success() && inputs.environment == 'dev'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dev-cloud-db-evidence-${{ inputs.release_sha }}-${{ github.run_id }}
           path: dev-db-evidence.txt

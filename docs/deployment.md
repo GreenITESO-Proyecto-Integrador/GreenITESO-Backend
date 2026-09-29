@@ -31,7 +31,13 @@ The `Promote` workflow only opens PRs (`dev` → `preprod`, then `preprod` →
 `main`); it never updates protected refs directly. It refuses a target branch
 that does not exist. The `Enforce promotion chain` check requires the matching
 source branch to belong to this repository; a fork with the same branch name
-does not qualify. Keep the legacy `prod` branch and unused GitHub environment
+does not qualify. GitHub places checks triggered by a PR opened with the
+workflow's `GITHUB_TOKEN` in an approval-required state. A repository writer
+must select **Approve workflows to run** on that promotion PR before the
+required `test` and `Enforce promotion chain` checks can pass; a human PR review
+does not substitute for starting those checks. A GitHub App installation token
+or fine-grained PAT would remove that extra workflow-run approval, but neither
+is configured here. Keep the legacy `prod` branch and unused GitHub environment
 intact until a separately approved cutover.
 For `dev` → `preprod`, Promote first requires evidence that the **exact dev
 SHA** passed Django tests and then its dev database migration plus app-role
@@ -110,9 +116,14 @@ Add these environment-scoped secrets to both GitHub Environments `dev` and
 role), `DATABASE_URL_UNPOOLED` (direct migrator role), `DJANGO_SECRET_KEY`, and
 `DJANGO_ALLOWED_HOSTS`. The preprod URLs must connect to Neon `staging`, not a
 Git branch named `staging`. Secret values must never enter the repository,
-workflow logs, or issue comments. They are not configured by this change.
-Both deployed URLs must use `sslmode=verify-full` and a trusted CA that libpq
-can actually load (for example, a validated `sslrootcert` path in the runtime).
+workflow logs, or issue comments. As of 2026-09-29, all four names are
+configured in each non-production Environment, but runner connectivity and
+authentication remain unverified until the first protected merge.
+Both deployed URLs must use either `sslmode=verify-full` with a trusted CA that
+libpq can actually load, or Neon `sslmode=require` with
+`channel_binding=require`. Do not remove channel binding from the latter; see
+the [database development guide](database-development.md) for the connection
+contract and canonical host checks.
 The local macOS read-only smoke needed `/etc/ssl/cert.pem`; that path is not a
 portable Cloud Run or GitHub setting. Validate the runtime trust store before
 activating the environment secret, without printing the URL.

@@ -20,7 +20,7 @@ jobs:
       eligible: ${{ steps.evaluate.outputs.eligible }}
     steps:
       - name: Check out trusted default-branch gate
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
@@ -63,7 +63,7 @@ jobs:
 
     steps:
       - name: Check out the tested merge commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -71,7 +71,7 @@ jobs:
           path: source
 
       - name: Check out trusted migration gate code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
@@ -97,7 +97,7 @@ jobs:
 
       - name: Set up Python
         if: steps.mode.outputs.eligible == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.14"
 
@@ -173,7 +173,7 @@ jobs:
 
       - name: Publish successful dev migration evidence
         if: success() && github.event.workflow_run.head_branch == 'dev' && steps.current.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dev-db-evidence-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}
           path: source/dev-migration-evidence.txt

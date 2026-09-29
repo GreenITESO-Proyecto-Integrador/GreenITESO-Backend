@@ -15,6 +15,7 @@ from green_iteso.core.roles import GlobalRole
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .services import (
     can_create_campaign,
+    can_manage_campaign_for_user,
     compute_campaign_status,
     create_campaign_with_missions,
 )
@@ -78,6 +79,7 @@ class CampaignSerializer(serializers.ModelSerializer):
         error_messages={"does_not_exist": "Clan does not exist or was deleted."},
     )
     is_participant = serializers.SerializerMethodField()
+    can_manage = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
@@ -95,6 +97,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "missions",
             "approval_status",
             "is_participant",
+            "can_manage",
         )
         extra_kwargs = {
             "id": {"read_only": True},
@@ -194,6 +197,17 @@ class CampaignSerializer(serializers.ModelSerializer):
         if user is None or not getattr(user, "is_authenticated", False):
             return False
         return instance.participants.filter(user=user).exists()
+
+    def get_can_manage(self, instance: Campaign) -> bool:
+        """Return whether the request user may manage this campaign.
+
+        Uses ``context["leader_clan_ids"]`` when the view precomputed it, to
+        avoid a per-campaign leadership query.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        leader_clan_ids = self.context.get("leader_clan_ids")
+        return can_manage_campaign_for_user(user, instance, leader_clan_ids)
 
     def create(self, validated_data: dict[str, Any]) -> Campaign:
         """Create the campaign and its nested missions atomically."""
@@ -318,6 +332,7 @@ class CampaignParticipantSerializer(serializers.ModelSerializer):
 class UserMissionProgressSerializer(serializers.ModelSerializer):
     """Serialize a user's progress toward a mission."""
 
+    mission = serializers.PrimaryKeyRelatedField(read_only=True)
     target_count = serializers.IntegerField(
         source="mission.target_count", read_only=True
     )
@@ -326,6 +341,7 @@ class UserMissionProgressSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserMissionProgress
         fields = (
+            "mission",
             "current_count",
             "is_completed",
             "target_count",

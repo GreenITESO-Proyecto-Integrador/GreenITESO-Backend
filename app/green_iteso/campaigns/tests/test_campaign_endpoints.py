@@ -108,12 +108,9 @@ class TestCampaignEndpoints:
 
         UserMissionProgress.objects.create(user=user, mission=mission, current_count=2)
         with_progress = api_client.get(url)
-        assert (
-            with_progress.data["results"][0]["user_mission_progress"][0][
-                "current_count"
-            ]
-            == 2
-        )
+        progress_entry = with_progress.data["results"][0]["user_mission_progress"][0]
+        assert progress_entry["current_count"] == 2
+        assert progress_entry["mission"] == mission.pk
 
     def test_unauthenticated_list_is_rejected(self, api_client: APIClient) -> None:
         response = api_client.get(reverse("campaign-list"))
@@ -264,6 +261,7 @@ class TestCampaignEndpoints:
         assert len(response.data["missions"]) == 1
         assert len(response.data["participants"]) == 1
         assert response.data["user_mission_progress"][0]["current_count"] == 1
+        assert response.data["user_mission_progress"][0]["mission"] == mission.pk
 
     def test_missing_campaign_detail_is_404(
         self, api_client: APIClient, user: User
@@ -483,3 +481,125 @@ class TestCampaignParticipatingFilterAndIsParticipant:
         api_client.force_authenticate(user=other_user)
         list_as_other = api_client.get(reverse("campaign-list"))
         assert list_as_other.data["results"][0]["is_participant"] is False
+
+
+@pytest.mark.django_db
+class TestCanManageField:
+    def test_global_campaign_can_manage_true_for_admin_false_for_student(
+        self, api_client: APIClient, user: User, admin_user: User, campaign: Campaign
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+        as_admin = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+        assert as_admin.data["can_manage"] is True
+
+        api_client.force_authenticate(user=user)
+        as_student = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+        assert as_student.data["can_manage"] is False
+
+    def test_private_campaign_can_manage_true_for_leader_false_for_member(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        ClanMembership.objects.create(
+            user=other_user, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+        )
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        url = reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+
+        api_client.force_authenticate(user=user)
+        assert api_client.get(url).data["can_manage"] is True
+
+        api_client.force_authenticate(user=other_user)
+        assert api_client.get(url).data["can_manage"] is False
+
+    def test_institutional_private_campaign_can_manage_admin_only(
+        self, api_client: APIClient, user: User, admin_user: User
+    ) -> None:
+        institutional = Clan.objects.create(
+            name="Institutional clan",
+            type=Clan.ClanType.INSTITUTIONAL,
+            created_by=user,
+        )
+        ClanMembership.objects.create(
+            user=user, clan=institutional, role=ClanMembership.MembershipRole.LEADER
+        )
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=institutional,
+            )
+        )
+        url = reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+
+        api_client.force_authenticate(user=admin_user)
+        assert api_client.get(url).data["can_manage"] is True
+
+        other_clan = Clan.objects.create(
+            name="Other clan", type=Clan.ClanType.PRIVATE, created_by=user
+        )
+        other_private = Campaign.objects.create(
+            **campaign_data(
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=other_clan,
+            )
+        )
+        other_url = reverse("campaign-detail", kwargs={"campaign_id": other_private.pk})
+        assert api_client.get(other_url).data["can_manage"] is False
+
+    def test_can_manage_present_in_list_and_create_responses(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        ClanMembership.objects.create(
+            user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        )
+        api_client.force_authenticate(user=user)
+
+        create_response = api_client.post(
+            reverse("campaign-list"),
+            campaign_data(scope=Campaign.Scope.PRIVATE, target_clan=str(clan.pk)),
+            format="json",
+        )
+        assert create_response.status_code == 201
+        assert create_response.data["can_manage"] is True
+
+        list_response = api_client.get(reverse("campaign-list"))
+        assert list_response.data["results"][0]["can_manage"] is True
+
+    def test_can_manage_query_count_does_not_grow_with_campaign_count(
+        self, api_client: APIClient, user: User, django_assert_max_num_queries: Any
+    ) -> None:
+        clans = [
+            Clan.objects.create(
+                name=f"Clan {index}", type=Clan.ClanType.PRIVATE, created_by=user
+            )
+            for index in range(5)
+        ]
+        for clan in clans:
+            ClanMembership.objects.create(
+                user=user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+            )
+            Campaign.objects.create(
+                **campaign_data(
+                    creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+                )
+            )
+        api_client.force_authenticate(user=user)
+
+        with django_assert_max_num_queries(20):
+            response = api_client.get(reverse("campaign-list"))
+
+        assert response.status_code == 200
+        assert len(response.data["results"]) == 5
+        assert all(item["can_manage"] is True for item in response.data["results"])

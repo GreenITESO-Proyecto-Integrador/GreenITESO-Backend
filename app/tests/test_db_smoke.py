@@ -39,7 +39,8 @@ def test_grant_smoke_rejects_a_missing_managed_model_table() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
-def test_grant_smoke_accepts_a_restricted_postgres_app_role() -> None:
+@pytest.mark.parametrize("ledger_writable", [False, True])
+def test_grant_smoke_requires_read_only_migration_ledger(ledger_writable: bool) -> None:
     """Exercise the SQL privilege checks with an actual NOLOGIN role."""
     role = f"smoke_app_{uuid.uuid4().hex}"
     with connection.cursor() as cursor:
@@ -50,14 +51,23 @@ def test_grant_smoke_accepts_a_restricted_postgres_app_role() -> None:
             cursor.execute(
                 f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{role}"'
             )
+            if not ledger_writable:
+                cursor.execute(
+                    f'REVOKE INSERT, UPDATE, DELETE ON TABLE public.django_migrations FROM "{role}"'
+                )
             cursor.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
             cursor.execute(f'SET ROLE "{role}"')
             try:
-                table_count, sequence_count = _check_app_grants(cursor)
+                if ledger_writable:
+                    with pytest.raises(AppGrantMismatchError):
+                        _check_app_grants(cursor)
+                else:
+                    table_count, sequence_count = _check_app_grants(cursor)
             finally:
                 cursor.execute("RESET ROLE")
-        assert table_count >= 23
-        assert sequence_count >= 9
+        if not ledger_writable:
+            assert table_count >= 23
+            assert sequence_count >= 9
     finally:
         with connection.cursor() as cursor:
             cursor.execute(f'DROP OWNED BY "{role}"')

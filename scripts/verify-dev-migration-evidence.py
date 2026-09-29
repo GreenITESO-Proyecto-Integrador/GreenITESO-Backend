@@ -256,7 +256,33 @@ def _source_sha_for_staging_merge(api: GitHub, merge_sha: str) -> str:
             and pr["head"]["repo"].get("full_name") == api.repository
             and isinstance(pr["head"].get("sha"), str)
         ):
-            return pr["head"]["sha"]
+            source_sha = pr["head"]["sha"]
+            if not SHA_PATTERN.fullmatch(source_sha):
+                raise EvidenceError("The promotion source SHA is invalid.")
+            if not SHA_PATTERN.fullmatch(merge_sha):
+                raise EvidenceError("The staging merge SHA is invalid.")
+            source_commit = api.get(f"git/commits/{source_sha}")
+            staging_commit = api.get(f"git/commits/{merge_sha}")
+            source_tree = (
+                source_commit.get("tree") if isinstance(source_commit, dict) else None
+            )
+            staging_tree = (
+                staging_commit.get("tree") if isinstance(staging_commit, dict) else None
+            )
+            if not (
+                isinstance(source_tree, dict)
+                and isinstance(staging_tree, dict)
+                and isinstance(source_tree.get("sha"), str)
+                and SHA_PATTERN.fullmatch(source_tree["sha"])
+                and isinstance(staging_tree.get("sha"), str)
+                and SHA_PATTERN.fullmatch(staging_tree["sha"])
+            ):
+                raise EvidenceError("GitHub returned invalid promotion tree metadata.")
+            if source_tree["sha"] != staging_tree["sha"]:
+                raise EvidenceError(
+                    "Staging merge tree differs from the dev source tree proven by migration evidence."
+                )
+            return source_sha
     raise EvidenceError(
         f"Staging SHA {merge_sha} is not the exact merge commit of a same-repository dev-to-preprod promotion PR."
     )

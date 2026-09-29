@@ -12,6 +12,9 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import (
+    TokenBlacklistView as SimpleJWTTokenBlacklistView,
+)
 from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRefreshView
 
 from green_iteso.core.permissions import IsAdmin
@@ -115,12 +118,28 @@ def _flatten_validation_detail(detail: object) -> str:
 
 
 class TokenRefreshView(SimpleJWTTokenRefreshView):
-    """Exchange a refresh token for a new access token.
+    """Exchange a refresh token for a new access token (T2-11).
 
-    Full refresh-token lifecycle work (rotation, blacklist, logout) is
-    T2-11's story; this is simplejwt's stock behavior so the refresh token
-    ``LoginView`` already issues is redeemable in the meantime.
+    ``ROTATE_REFRESH_TOKENS``/``BLACKLIST_AFTER_ROTATION`` make this also
+    return a new refresh token and blacklist the one just redeemed, so each
+    refresh token is single-use.
     """
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_refresh"
+
+
+class LogoutView(SimpleJWTTokenBlacklistView):
+    """Blacklist a refresh token so it can no longer be redeemed (T2-11).
+
+    Subclasses simplejwt's stock ``TokenBlacklistView`` (same relationship
+    ``TokenRefreshView`` above has to its own simplejwt base): it takes no
+    access token, so a client whose access token already expired can still
+    log out, and its ``get_authenticate_header`` override keeps an invalid
+    refresh token's ``AuthenticationFailed`` at 401 even though the view has
+    no real authenticator to challenge with (DRF otherwise downgrades that
+    to 403).
+    """
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_logout"

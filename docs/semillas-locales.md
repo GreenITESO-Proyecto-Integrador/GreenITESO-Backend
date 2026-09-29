@@ -110,8 +110,12 @@ clan` y carreras `DEMO-CAREER`. No se agregan a la futura fixture aprobada ni a
 staging/production. IDs y claves son deterministas, los choques
 se rechazan y una segunda ejecución es idempotente. Esta operación no forma
 parte de la migración al merge ni de un deploy automático. No se cargan semillas
-en staging/preprod ni en production. **El comando se implementó y probó sólo con
-PostgreSQL 18 local; no se ejecutó contra Neon.**
+en staging/preprod ni en production. El comando se probó con PostgreSQL 18
+local y se ejecutó con autorización en Neon `dev` el 2026-09-28; el
+[registro de T12](https://github.com/GreenITESO-Proyecto-Integrador/GreenITESO-Infra/issues/12#issuecomment-5880568568)
+documenta el dataset sintético y confirma que staging/production siguen sin
+datos demo. Esta ejecución manual no implica aprobación del catálogo
+institucional ni sustituye la revisión/merge de este PR.
 
 Estos registros sirven para consultar relaciones y estados, pero no permiten
 iniciar sesión como esos usuarios: no se crea un bypass de autenticación en

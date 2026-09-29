@@ -18,16 +18,17 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
 )
-from .services import assign_institutional_clan, create_clan
+from .services import assign_institutional_clan, create_clan, dissolve_clan
 
 
 class ClanViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, and create clans under /api/v1/clans/."""
+    """List, retrieve, create, and dissolve clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
@@ -41,6 +42,10 @@ class ClanViewSet(
             description=serializer.validated_data.get("description", ""),
             created_by=self.request.user,
         )
+
+    def perform_destroy(self, instance: Clan) -> None:
+        """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
+        dissolve_clan(clan=instance, actor=self.request.user)
 
 
 class InstitutionalClanAssignmentView(APIView):

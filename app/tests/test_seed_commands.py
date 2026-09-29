@@ -21,6 +21,7 @@ from green_iteso.accounts.management.commands.bootstrap_dev import (
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands import release_catalog
 from green_iteso.actions.management.commands.load_catalog import (
+    DEFAULT_CATALOG,
     LOCAL_DATABASE_HOSTS,
     load_catalog_content,
     load_catalog_data,
@@ -78,6 +79,30 @@ def test_shared_dev_seed_supports_catalog_without_canonical_careers() -> None:
         for clan in Clan.objects.filter(type=Clan.ClanType.INSTITUTIONAL)
     )
     assert UserProfile.objects.filter(institutional_clan__isnull=False).count() == 20
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("shared_dev", [False, True])
+def test_demo_seed_refuses_to_revive_a_dissolved_clan(shared_dev: bool) -> None:
+    """A rerun must preserve soft-deleted demo clans and existing activity."""
+    candidate = Path(__file__).resolve().parents[2] / "docs/catalog-candidate-v1.json"
+    catalog = load_catalog_file(candidate if shared_dev else DEFAULT_CATALOG)
+    load_catalog_data(catalog)
+    as_of = datetime(2030, 1, 15, 12, tzinfo=UTC)
+    seed_demo_data(catalog, as_of, shared_dev=shared_dev)
+    clan = Clan.objects.get(name="Demo private clan 01")
+    Clan.all_objects.filter(pk=clan.pk).update(deleted_at=timezone.now())
+    before = (User.objects.count(), ActionLog.objects.count(), Clan.all_objects.count())
+
+    with pytest.raises(CommandError, match="identity collision"):
+        seed_demo_data(catalog, as_of, shared_dev=shared_dev)
+
+    assert (
+        User.objects.count(),
+        ActionLog.objects.count(),
+        Clan.all_objects.count(),
+    ) == before
+    assert Clan.all_objects.get(pk=clan.pk).deleted_at is not None
 
 
 @pytest.mark.django_db(transaction=True)

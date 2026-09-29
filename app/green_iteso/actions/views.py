@@ -104,7 +104,9 @@ class ActionLogCreateView(views.APIView):
                     ).update(total_points=F("total_points") + action.points)
 
                 if private_clan:
-                    type(private_clan).objects.filter(pk=private_clan.pk).update(
+                    # Credit the ActionLog snapshot even if the clan was
+                    # dissolved after the active membership was read.
+                    type(private_clan).all_objects.filter(pk=private_clan.pk).update(
                         total_points=F("total_points") + action.points
                     )
 

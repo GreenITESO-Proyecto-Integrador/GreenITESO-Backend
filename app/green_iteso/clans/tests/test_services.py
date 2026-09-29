@@ -445,7 +445,10 @@ def test_dissolve_clan_serializes_against_concurrent_leadership_transfer() -> No
 
     outcomes: dict[str, str] = {}
 
-    def transfer_leadership() -> None:
+    # Named apart from the imported ``transfer_leadership`` service: this
+    # helper swaps the roles directly through the ORM to race the row lock,
+    # and shadowing the service here would hide which one a reader is seeing.
+    def transfer_via_orm() -> None:
         with transaction.atomic():
             Clan.all_objects.select_for_update().get(pk=clan.pk)
             leader_membership.role = ClanMembership.MembershipRole.MEMBER
@@ -462,7 +465,7 @@ def test_dissolve_clan_serializes_against_concurrent_leadership_transfer() -> No
             outcomes["dissolve"] = "rejected"
 
     threads = [
-        threading.Thread(target=transfer_leadership),
+        threading.Thread(target=transfer_via_orm),
         threading.Thread(target=dissolve),
     ]
     for thread in threads:

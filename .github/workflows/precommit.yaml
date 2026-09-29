@@ -18,32 +18,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          headerPattern: "^([A-Za-z]+)(?:\\(([^)]+)\\))?[:/]\\s*(.+)$"
-          headerPatternCorrespondence: |
-            type
-            scope
-            subject
           types: |
             feat
-            Feat
             fix
-            Fix
             docs
-            Docs
             style
-            Style
             refactor
-            Refactor
             perf
-            Perf
             test
-            Test
             build
-            Build
             ci
-            Ci
             chore
-            Chore
             revert
-            Revert
           requireScope: false

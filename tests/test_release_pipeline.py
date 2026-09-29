@@ -620,7 +620,7 @@ def test_neon_migrations_only_run_after_protected_nonproduction_branch_updates()
     assert "secrets." not in workflow.split("  migrate:", 1)[0]
     assert "workflow_dispatch:" not in workflow
     assert (
-        "uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5"
+        "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0"
         in workflow
     )
     assert 'python-version: "3.14"' in workflow
@@ -686,6 +686,22 @@ def test_secret_bearing_release_workflows_pin_external_actions() -> None:
             if action.startswith("./"):
                 continue
             assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (filename, action)
+
+
+def test_workflows_pin_node24_first_party_actions() -> None:
+    expected = {
+        "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",  # v7.0.1
+        "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",  # v7.0.0
+    }
+    seen: set[str] = set()
+    for workflow_path in (ROOT / ".github" / "workflows").glob("*.y*ml"):
+        workflow = workflow_path.read_text()
+        for action, revision in re.findall(
+            r"uses: (actions/(?:checkout|setup-python))@([^\s#]+)", workflow
+        ):
+            seen.add(action)
+            assert revision == expected[action], (workflow_path.name, action, revision)
+    assert seen == set(expected)
 
 
 def test_promotion_does_not_persist_its_write_token() -> None:

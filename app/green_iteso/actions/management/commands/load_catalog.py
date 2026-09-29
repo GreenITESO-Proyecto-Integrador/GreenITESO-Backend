@@ -50,6 +50,12 @@ def _text(value: object, field: str, *, maximum: int) -> str:
     return value.strip()
 
 
+def _optional_text(value: object, field: str, *, maximum: int) -> str:
+    if not isinstance(value, str) or len(value) > maximum:
+        raise CommandError(f"{field} must be a string of at most {maximum} characters.")
+    return value.strip()
+
+
 def _code(value: object, field: str) -> str:
     code = _text(value, field, maximum=50)
     if not CODE_PATTERN.fullmatch(code):
@@ -146,8 +152,14 @@ def _validate_categories(
                 "name": _text(
                     item.get("name"), f"categories[{index}].name", maximum=100
                 ),
-                "description": str(item.get("description", "")).strip(),
-                "icon": str(item.get("icon", "")).strip(),
+                "description": _optional_text(
+                    item.get("description", ""),
+                    f"categories[{index}].description",
+                    maximum=10000,
+                ),
+                "icon": _optional_text(
+                    item.get("icon", ""), f"categories[{index}].icon", maximum=100
+                ),
             }
         )
     return categories, category_codes
@@ -247,7 +259,11 @@ def _validate_clans(
                         maximum=10000,
                     )
                     if require_details
-                    else str(item.get("description", "")).strip()
+                    else _optional_text(
+                        item.get("description", ""),
+                        f"institutional_clans[{index}].description",
+                        maximum=10000,
+                    )
                 ),
                 "career": _text(
                     item.get("career")

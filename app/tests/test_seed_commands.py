@@ -58,6 +58,34 @@ def test_product_candidate_remains_inactive_draft_without_clans() -> None:
     assert all(not action["is_active"] for action in catalog.actions)
 
 
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("categories", "description"),
+        ("categories", "icon"),
+        ("institutional_clans", "description"),
+    ],
+)
+def test_draft_catalog_rejects_nontext_optional_fields(
+    section: str, field: str
+) -> None:
+    payload = json.loads(DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    payload[section][0][field] = {"unexpected": "object"}
+    with pytest.raises(CommandError, match=field):
+        load_catalog_content(json.dumps(payload), source="test")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_demo_seed_keeps_action_ids_stable_after_activation_change() -> None:
+    catalog = load_catalog_file(DEFAULT_CATALOG)
+    load_catalog_data(catalog)
+    as_of = datetime(2030, 1, 15, 12, tzinfo=UTC)
+    seed_demo_data(catalog, as_of)
+    assert ActionMaster.objects.get(code=catalog.actions[0]["code"]).is_active
+    ActionMaster.objects.filter(code=catalog.actions[0]["code"]).update(is_active=False)
+    assert seed_demo_data(catalog, as_of).created_logs == 0
+
+
 @pytest.mark.django_db(transaction=True)
 def test_shared_dev_seed_supports_catalog_without_canonical_careers() -> None:
     """Dev-only placeholder clans must not require an official career mapping."""

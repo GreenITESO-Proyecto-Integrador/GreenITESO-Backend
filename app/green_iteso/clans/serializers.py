@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.accounts.models import Clan, ClanMembership, UserProfile
 
 
 class ClanSerializer(serializers.ModelSerializer):
@@ -24,6 +24,15 @@ class ClanSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "privacy", "total_points", "created_at"]
+
+
+class ClanMembershipSerializer(serializers.ModelSerializer):
+    """Read-only view of a clan membership, e.g. to confirm an active-clan selection."""
+
+    class Meta:
+        model = ClanMembership
+        fields = ["id", "clan", "user", "role", "is_active_private", "joined_at"]
+        read_only_fields = fields
 
 
 class InstitutionalOnboardingSerializer(serializers.Serializer):

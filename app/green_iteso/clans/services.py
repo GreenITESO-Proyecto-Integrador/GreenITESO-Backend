@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 
@@ -134,3 +135,61 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
         defaults={"role": ClanMembership.MembershipRole.MEMBER},
     )
     return profile
+
+
+def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
+    """Enforce that only the leader of a private clan dissolves it (FR-CLAN-03).
+
+    Must be called with ``clan`` already locked via ``select_for_update`` in
+    the caller's transaction, and checks leadership against that locked row's
+    current membership state rather than a snapshot taken before the lock.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise PermissionDenied("Only private clans can be dissolved.")
+    is_leader = ClanMembership.objects.filter(
+        clan=clan, user=actor, role=ClanMembership.MembershipRole.LEADER
+    ).exists()
+    if not is_leader:
+        raise PermissionDenied("Only the clan leader can dissolve the clan.")
+
+
+@transaction.atomic
+def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
+    """Dissolve a private clan through a soft delete, preserving history (BR-09).
+
+    Memberships and ``total_points`` are kept so the points contributed by former
+    members stay consistent in the global scoreboards. The active private clan
+    selection is cleared instead, so future actions no longer credit the clan.
+
+    Locks the ``clan`` row before checking leadership, matching the discipline
+    ``assign_leader`` and ``ClanMembershipAdmin.save_model`` already use:
+    checking permission on an unlocked read and only then locking would leave
+    a window where a concurrent leadership transfer commits in between,
+    letting an actor who is no longer LEADER dissolve the clan anyway.
+    Locking first means whichever operation gets there first fully commits
+    before the other re-reads current state. ``all_objects`` is used for the
+    lock fetch (rather than the default ``objects`` manager, which excludes
+    soft-deleted rows) so a concurrent double-dissolve can still find the row
+    and return it idempotently instead of raising ``Clan.DoesNotExist``.
+
+    Args:
+        clan: Clan to dissolve.
+        actor: User requesting the dissolution; must be its LEADER.
+
+    Returns:
+        The dissolved clan, refreshed from the database.
+
+    Raises:
+        PermissionDenied: If the clan is institutional or the actor is not its leader.
+    """
+    locked = Clan.all_objects.select_for_update().get(pk=clan.pk)
+    _assert_can_dissolve(clan=locked, actor=actor)
+    if locked.deleted_at is not None:
+        # Already dissolved by a concurrent request: keep the original timestamp.
+        return locked
+    locked.deleted_at = timezone.now()
+    locked.save(update_fields=["deleted_at"])
+    ClanMembership.objects.filter(clan=locked, is_active_private=True).update(
+        is_active_private=False
+    )
+    return locked

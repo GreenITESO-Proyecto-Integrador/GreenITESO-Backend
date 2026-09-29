@@ -223,6 +223,7 @@ The three GitHub Environments exist. After the project and region choices are co
 - `DATABASE_URL_SECRET` (pooled runtime connection)
 - `DATABASE_URL_UNPOOLED_SECRET` (direct migration connection)
 - `DJANGO_ALLOWED_HOSTS`
+- `MICROSOFT_TENANT_ID` and `MICROSOFT_CLIENT_ID` (environment-scoped Entra application identifiers; required for deployed login and passed to each Cloud Run revision)
 
 The GCP project and region are intentionally unresolved pending the user’s
 choice. Until those values and Workload Identity Federation are configured, a

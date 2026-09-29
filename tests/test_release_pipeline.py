@@ -42,6 +42,8 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "DATABASE_URL_SECRET": "database-pooled",
         "DATABASE_URL_UNPOOLED_SECRET": "database-direct",
         "DJANGO_ALLOWED_HOSTS": "greeniteso.example",
+        "MICROSOFT_TENANT_ID": "test-tenant-id",
+        "MICROSOFT_CLIENT_ID": "test-client-id",
         "MIGRATION_JOB_NAME": "greeniteso-migrate-staging",
         "RUNTIME_SERVICE_ACCOUNT": "runtime@project.iam.gserviceaccount.com",
         "MIGRATION_SERVICE_ACCOUNT": "migrator@project.iam.gserviceaccount.com",
@@ -104,6 +106,18 @@ def test_release_requires_configuration() -> None:
     )
     assert result.returncode != 0
     assert "GCP_PROJECT_ID is required" in result.stderr
+
+
+def test_cloud_runtime_keeps_entra_configuration(tmp_path: Path) -> None:
+    result, log = _run_release(tmp_path)
+    assert result.returncode == 0, result.stderr
+    deploy = next(line for line in log.splitlines() if "run deploy" in line)
+    assert "MICROSOFT_TENANT_ID=test-tenant-id" in deploy
+    assert "MICROSOFT_CLIENT_ID=test-client-id" in deploy
+    reusable = WORKFLOW.read_text()
+    for name in ("MICROSOFT_TENANT_ID", "MICROSOFT_CLIENT_ID"):
+        assert f"{name}: ${{{{ secrets.{name} }}}}" in reusable
+        assert name in reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[0]
 
 
 def test_migration_failure_does_not_deploy(tmp_path: Path) -> None:

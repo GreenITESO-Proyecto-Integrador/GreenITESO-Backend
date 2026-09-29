@@ -64,6 +64,8 @@ class FakeGitHub:
                 "repo": {"full_name": REPOSITORY},
             },
         }
+        self.source_tree = "c" * 40
+        self.staging_tree = self.source_tree
         self.fail_at: str | None = None
 
     def get(self, endpoint: str) -> dict[str, Any] | list[Any]:
@@ -73,6 +75,10 @@ class FakeGitHub:
             return [self.dev_pr]
         if endpoint == f"commits/{STAGING_SHA}/pulls":
             return [self.staging_pr]
+        if endpoint == f"git/commits/{self.source_sha}":
+            return {"tree": {"sha": self.source_tree}}
+        if endpoint == f"git/commits/{STAGING_SHA}":
+            return {"tree": {"sha": self.staging_tree}}
         if endpoint.startswith("actions/runs/") and endpoint.endswith(
             "/jobs?per_page=100"
         ):
@@ -240,6 +246,18 @@ def test_staging_check_uses_exact_merged_dev_to_preprod_pr_head() -> None:
     fake = FakeGitHub()
     event = {"workflow_run": {"head_branch": "preprod", "head_sha": STAGING_SHA}}
     assert _verify_with(fake, event, "staging_merge") == SOURCE_SHA
+
+
+def test_staging_check_rejects_untested_merge_tree() -> None:
+    fake = FakeGitHub()
+    fake.staging_tree = "d" * 40
+    event = {"workflow_run": {"head_branch": "preprod", "head_sha": STAGING_SHA}}
+    try:
+        _verify_with(fake, event, "staging_merge")
+    except gate.EvidenceError as error:
+        assert "tree differs" in str(error)
+    else:
+        raise AssertionError("accepted staging merge tree differing from tested dev")
 
 
 def test_failed_or_skipped_migration_steps_do_not_prove_evidence() -> None:

@@ -5,14 +5,17 @@ and ActionLogCreateView's points-crediting side effects.
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
+from django.db import close_old_connections
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
-from green_iteso.actions.views import ActionLogCreateView
+from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
 
 
@@ -151,3 +154,60 @@ def test_action_credits_snapshot_clan_if_it_is_dissolved_during_submission() -> 
     private_clan.refresh_from_db()
     assert private_clan.deleted_at is not None
     assert private_clan.total_points == action.points
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
+    """Two admins racing on one pending log must not grant points twice."""
+    admin = User.objects.create_superuser(email="admin@iteso.mx", password="local-only")
+    student = User.objects.create_user(email="student@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Institutional", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(user=student, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="PHOTO",
+        category=category,
+        name="Photo",
+        description="Evidence",
+        points=10,
+        validation_type=ActionMaster.ValidationType.PHOTO,
+    )
+    log = ActionLog.objects.create(
+        user=student,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key="one-pending-log",
+        points_awarded=10,
+        status=ActionLog.Status.PENDING_AUDIT,
+    )
+    barrier = Barrier(2)
+    original_get = ActionLog.objects.get
+
+    def get_pending(*args: object, **kwargs: object) -> ActionLog:
+        result = original_get(*args, **kwargs)
+        if kwargs.get("status") == ActionLog.Status.PENDING_AUDIT:
+            barrier.wait(timeout=10)
+        return result
+
+    def approve(_: int) -> int:
+        close_old_connections()
+        try:
+            request = APIRequestFactory().patch(
+                f"/api/v1/action-logs/{log.pk}/audit/",
+                {"status": "APPROVED"},
+                format="json",
+            )
+            force_authenticate(request, user=admin)
+            return ActionLogAuditView.as_view()(request, log_id=log.pk).status_code
+        finally:
+            close_old_connections()
+
+    with patch.object(ActionLog.objects, "get", side_effect=get_pending):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(approve, range(2)))
+
+    assert sorted(statuses) == [200, 404]
+    profile.refresh_from_db()
+    clan.refresh_from_db()
+    assert profile.total_points == profile.available_points == 10
+    assert clan.total_points == 10

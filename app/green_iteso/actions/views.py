@@ -8,6 +8,7 @@ from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.notifications.models import Notification
 
@@ -135,18 +136,20 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
-        except ActionLog.DoesNotExist:
-            return Response(
-                {"error": "Pending action log not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
 
         with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status=ActionLog.Status.PENDING_AUDIT
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Pending action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
@@ -160,18 +163,18 @@ class ActionLogAuditView(views.APIView):
                     notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
             elif new_status == "APPROVED":
-                profile = action_log.user.profile
-                profile.total_points += action_log.points_awarded
-                profile.available_points += action_log.points_awarded
-                profile.save(update_fields=["total_points", "available_points"])
-
-                if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
-                    action_log.institutional_clan.save(update_fields=["total_points"])
-
-                if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                points = action_log.points_awarded
+                UserProfile.objects.filter(user_id=action_log.user_id).update(
+                    total_points=F("total_points") + points,
+                    available_points=F("available_points") + points,
+                )
+                Clan.all_objects.filter(pk=action_log.institutional_clan_id).update(
+                    total_points=F("total_points") + points
+                )
+                if action_log.credited_private_clan_id:
+                    Clan.all_objects.filter(
+                        pk=action_log.credited_private_clan_id
+                    ).update(total_points=F("total_points") + points)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

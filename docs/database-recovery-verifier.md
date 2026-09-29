@@ -52,7 +52,10 @@ Configura `DB_RECOVERY_ALLOWED_HOST` con el hostname exacto de la base local
 aislada o de la rama Neon temporal aprobada (sin esquema, contraseña ni puerto).
 El comando exige `DJANGO_ENV=dev` y `DJANGO_DEPLOYED=false`; rechaza los
 endpoints canónicos compartidos de dev, staging y production aun si el
-hostname autorizado coincide. Usa un directorio privado para el baseline:
+hostname autorizado coincide. Si usas una rama Neon temporal desde tu máquina,
+configura `MICROSOFT_AUTH_MODE=entra`: el modo `mock` del `.env.example` solo
+admite PostgreSQL local y bloquearía el inicio de Django con una URL de Neon.
+Usa un directorio privado para el baseline:
 
 ```sh
 RECOVERY_DIR="$(mktemp -d)"

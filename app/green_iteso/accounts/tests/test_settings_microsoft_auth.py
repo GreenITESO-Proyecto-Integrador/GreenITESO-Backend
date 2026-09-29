@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 APP_DIR = Path(__file__).resolve().parents[3]
 
 _BASE_ENV = {
@@ -26,7 +28,16 @@ _BASE_ENV = {
 def _check_settings(**overrides: str) -> subprocess.CompletedProcess[str]:
     env = {**_BASE_ENV, **overrides}
     return subprocess.run(
-        [sys.executable, "-c", "import django; django.setup()"],
+        [
+            sys.executable,
+            "-c",
+            (
+                "import django; django.setup(); "
+                "from django.conf import settings; "
+                "print(settings.MIDDLEWARE); "
+                "print(settings.CORS_ALLOWED_ORIGINS)"
+            ),
+        ],
         cwd=APP_DIR,
         env=env,
         capture_output=True,
@@ -54,6 +65,7 @@ def test_mock_mode_is_rejected_outside_dev_environment() -> None:
         DJANGO_DEPLOYED="true",
         DJANGO_CONNECTION_ROLE="app",
         MICROSOFT_AUTH_MODE="mock",
+        CORS_ALLOWED_ORIGINS="https://staging.example.com",
     )
 
     assert result.returncode != 0
@@ -81,3 +93,58 @@ def test_unknown_auth_mode_is_rejected() -> None:
 
     assert result.returncode != 0
     assert "MICROSOFT_AUTH_MODE" in result.stderr
+
+
+def test_development_cors_middleware_is_local_only() -> None:
+    result = _check_settings(
+        DJANGO_ENV="dev",
+        DJANGO_DEPLOYED="false",
+        DJANGO_CONNECTION_ROLE="app",
+        MICROSOFT_AUTH_MODE="mock",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "DevelopmentCorsMiddleware" in result.stdout
+    assert "['http://localhost:3000']" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "pooler_host"),
+    [
+        ("dev", "ep-lively-brook-ax4n0pys-pooler.c-4.us-east-2.aws.neon.tech"),
+        ("staging", "ep-withered-cake-axk8vlfi-pooler.c-4.us-east-2.aws.neon.tech"),
+    ],
+)
+def test_development_cors_middleware_is_not_loaded_when_deployed(
+    environment_name: str, pooler_host: str
+) -> None:
+    environment = {
+        **_BASE_ENV,
+        "DJANGO_ENV": environment_name,
+        "DJANGO_DEPLOYED": "true",
+        "DJANGO_CONNECTION_ROLE": "app",
+        "MICROSOFT_AUTH_MODE": "entra",
+        "CORS_ALLOWED_ORIGINS": "http://localhost:3000",
+        "DATABASE_URL": f"postgresql://user:password@{pooler_host}:5432/db?sslmode=verify-full",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import green_iteso.settings.base as settings; "
+                "print('green_iteso.core.middleware.DevelopmentCorsMiddleware' "
+                "in settings.MIDDLEWARE); "
+                "print(settings.CORS_ALLOWED_ORIGINS)"
+            ),
+        ],
+        cwd=APP_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines() == ["False", "[]"]

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
+
+from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.core.permissions import IsAdmin
+from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
 from .selectors import (
@@ -16,6 +20,7 @@ from .selectors import (
 )
 from .serializers import (
     ActionCategorySerializer,
+    ActionLogAuditSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
 )
@@ -128,23 +133,24 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
-                # pylint: disable=fixme
-                # TODO: Transactionalize point changes to avoid race conditions
-                # available_points is the spendable balance introduced by T2-02
-                # (see UserProfile.available_points); it accrues alongside
-                # total_points and only total_points is drawn down separately
-                # by the (future) redemption flow.
-                profile.total_points += action.points
-                profile.available_points += action.points
-                profile.save(update_fields=["total_points", "available_points"])
+                # Use database-side increments so concurrent approved actions
+                # and a shared-dev seed cannot overwrite each other's balance.
+                type(profile).objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action.points,
+                    available_points=F("available_points") + action.points,
+                )
 
                 if institutional_clan:
-                    institutional_clan.total_points += action.points
-                    institutional_clan.save(update_fields=["total_points"])
+                    type(institutional_clan).objects.filter(
+                        pk=institutional_clan.pk
+                    ).update(total_points=F("total_points") + action.points)
 
                 if private_clan:
-                    private_clan.total_points += action.points
-                    private_clan.save(update_fields=["total_points"])
+                    # Credit the ActionLog snapshot even if the clan was
+                    # dissolved after the active membership was read.
+                    type(private_clan).all_objects.filter(pk=private_clan.pk).update(
+                        total_points=F("total_points") + action.points
+                    )
 
         return Response(
             {
@@ -153,4 +159,61 @@ class ActionLogCreateView(views.APIView):
                 "log_id": action_log.id,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class ActionLogAuditView(views.APIView):
+    """API view for administrators to approve or reject pending action logs."""
+
+    permission_classes = [IsAdmin]
+
+    def patch(self, request: Request, log_id: str) -> Response:
+        """Process an audit decision and notify the user if rejected."""
+        serializer = ActionLogAuditSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        new_status = data["status"]
+        rejection_reason = data.get("rejection_reason", "")
+
+        with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status=ActionLog.Status.PENDING_AUDIT
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Pending action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            action_log.status = new_status
+            action_log.rejection_reason = rejection_reason
+            action_log.reviewed_by = request.user
+            action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
+
+            if new_status == "REJECTED":
+                Notification.objects.create(
+                    user=action_log.user,
+                    title="Evidencia Rechazada",
+                    message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
+                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                )
+            elif new_status == "APPROVED":
+                points = action_log.points_awarded
+                UserProfile.objects.filter(user_id=action_log.user_id).update(
+                    total_points=F("total_points") + points,
+                    available_points=F("available_points") + points,
+                )
+                Clan.all_objects.filter(pk=action_log.institutional_clan_id).update(
+                    total_points=F("total_points") + points
+                )
+                if action_log.credited_private_clan_id:
+                    Clan.all_objects.filter(
+                        pk=action_log.credited_private_clan_id
+                    ).update(total_points=F("total_points") + points)
+
+        return Response(
+            {"message": f"Action log {new_status.lower()} successfully."},
+            status=status.HTTP_200_OK,
         )

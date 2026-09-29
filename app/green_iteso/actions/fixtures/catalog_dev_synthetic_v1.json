@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "DRAFT",
+  "categories": [
+    {"code": "demo-mobility", "name": "DEMO mobility", "description": "Synthetic Neon dev data; not an ITESO policy.", "icon": "bike"},
+    {"code": "demo-water", "name": "DEMO water", "description": "Synthetic Neon dev data; not an ITESO policy.", "icon": "water"},
+    {"code": "demo-waste", "name": "DEMO waste", "description": "Synthetic Neon dev data; not an ITESO policy.", "icon": "recycle"},
+    {"code": "demo-energy", "name": "DEMO energy", "description": "Synthetic Neon dev data; not an ITESO policy.", "icon": "bolt"}
+  ],
+  "actions": [
+    {"code": "demo-bike-trip", "category_code": "demo-mobility", "name": "DEMO bicycle trip", "description": "Synthetic test action; points and impacts are fictitious.", "points": 1, "daily_limit": 3, "validation_type": "NONE", "co2_kg_factor": "0.100", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": true},
+    {"code": "demo-refill", "category_code": "demo-water", "name": "DEMO bottle refill", "description": "Synthetic test action; points and impacts are fictitious.", "points": 2, "daily_limit": 4, "validation_type": "NONE", "co2_kg_factor": "0.000", "water_liters_factor": "1.000", "plastic_kg_factor": "0.010", "is_active": true},
+    {"code": "demo-sort-photo", "category_code": "demo-waste", "name": "DEMO waste sorting photo", "description": "Synthetic test action; points and impacts are fictitious.", "points": 3, "daily_limit": 1, "validation_type": "PHOTO", "co2_kg_factor": "0.050", "water_liters_factor": "0.000", "plastic_kg_factor": "0.025", "is_active": true},
+    {"code": "demo-walk", "category_code": "demo-mobility", "name": "DEMO walk", "description": "Synthetic test action; points and impacts are fictitious.", "points": 1, "daily_limit": 2, "validation_type": "NONE", "co2_kg_factor": "0.000", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": true},
+    {"code": "demo-switch-off", "category_code": "demo-energy", "name": "DEMO switch off device", "description": "Synthetic test action; points and impacts are fictitious.", "points": 2, "daily_limit": 1, "validation_type": "PHOTO", "co2_kg_factor": "0.000", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": true},
+    {"code": "demo-retired", "category_code": "demo-waste", "name": "DEMO retired action", "description": "Synthetic inactive test action; never an institutional recommendation.", "points": 1, "daily_limit": 1, "validation_type": "NONE", "co2_kg_factor": "0.000", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": false}
+  ],
+  "institutional_clans": []
+}

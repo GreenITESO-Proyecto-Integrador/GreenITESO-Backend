@@ -195,7 +195,7 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
     def get_queryset(self) -> QuerySet[Campaign]:
         queryset = _annotate_is_participant(
             _visible_campaigns(self.request.user), self.request.user
-        ).prefetch_related("missions__action", "participants")
+        ).select_related("target_clan").prefetch_related("missions__action", "participants")
         scope = self.request.query_params.get("scope")
         scopes = [
             value.strip()

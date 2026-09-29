@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from django.core.cache import cache
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework_simplejwt.tokens import AccessToken
 
 from green_iteso.accounts.models import User
 
@@ -61,6 +64,20 @@ def test_refresh_token_exchanges_for_a_new_access_token() -> None:
     me_response = authenticated.get("/api/v1/users/me/")
     assert me_response.status_code == 200
     assert me_response.json()["email"] == "ana@iteso.mx"
+
+
+@pytest.mark.django_db
+def test_expired_access_token_is_rejected() -> None:
+    """T2-11 AC: an expired access token responds 401, not a silent pass-through."""
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    token = AccessToken.for_user(user)
+    token.set_exp(lifetime=timedelta(seconds=-1))
+
+    authenticated = APIClient()
+    authenticated.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+    response = authenticated.get("/api/v1/users/me/")
+
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

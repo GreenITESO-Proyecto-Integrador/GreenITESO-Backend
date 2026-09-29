@@ -62,3 +62,7 @@ htmlcov/
 
 # Dev container
 .devcontainer/.env
+
+# AI assistant local config (vexp)
+.codex/
+.github/copilot-instructions.md

@@ -185,6 +185,10 @@ class CampaignSerializer(serializers.ModelSerializer):
             raise PermissionDenied(
                 "Only the clan leader can create campaigns for this clan."
             )
+        if self.instance is None and not attrs.get("missions"):
+            raise serializers.ValidationError(
+                {"missions": "A campaign must have at least one mission."}
+            )
         return attrs
 
     def get_is_participant(self, instance: Campaign) -> bool:
@@ -310,6 +314,10 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
         if end_date is not None and end_date <= timezone.now():
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}
+            )
+        if not attrs.get("missions"):
+            raise serializers.ValidationError(
+                {"missions": "A campaign must have at least one mission."}
             )
         return attrs
 

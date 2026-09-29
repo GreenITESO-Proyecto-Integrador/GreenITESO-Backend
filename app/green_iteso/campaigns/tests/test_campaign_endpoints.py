@@ -165,17 +165,20 @@ class TestCampaignEndpoints:
         assert response.status_code == 400
         assert Campaign.objects.count() == before
 
-    def test_create_without_missions_succeeds(
-        self, api_client: APIClient, admin_user: User
+    @pytest.mark.parametrize("missions", [None, []])
+    def test_create_without_missions_is_rejected(
+        self, api_client: APIClient, admin_user: User, missions: list | None
     ) -> None:
         api_client.force_authenticate(user=admin_user)
+        data = campaign_data()
+        if missions is not None:
+            data["missions"] = missions
 
-        response = api_client.post(
-            reverse("campaign-list"), campaign_data(), format="json"
-        )
+        response = api_client.post(reverse("campaign-list"), data, format="json")
 
-        assert response.status_code == 201
-        assert Mission.objects.count() == 0
+        assert response.status_code == 400
+        assert "missions" in response.data
+        assert Campaign.objects.count() == 0
 
     @pytest.mark.parametrize("role", [User.Role.STUDENT, User.Role.STAFF])
     def test_global_create_rejects_non_admin(

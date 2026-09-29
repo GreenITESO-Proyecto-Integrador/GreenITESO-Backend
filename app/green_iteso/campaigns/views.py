@@ -79,15 +79,18 @@ def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
     needing clan membership. Everyone else sees global campaigns plus
     private campaigns of clans they belong to.
     """
+    approved = Campaign.objects.filter(
+        approval_status=Campaign.ApprovalStatus.APPROVED
+    )
+    live_private = Q(
+        scope=Campaign.Scope.PRIVATE, target_clan__deleted_at__isnull=True
+    )
     if getattr(user, "role", None) == GlobalRole.ADMIN:
-        return Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED)
-    return (
-        Campaign.objects.filter(
-            Q(scope=Campaign.Scope.GLOBAL)
-            | Q(scope=Campaign.Scope.PRIVATE, target_clan__memberships__user=user)
-        )
-        .filter(approval_status=Campaign.ApprovalStatus.APPROVED)
-        .distinct()
+        return approved.filter(Q(scope=Campaign.Scope.GLOBAL) | live_private)
+    return approved.filter(
+        Q(scope=Campaign.Scope.GLOBAL)
+        | Q(live_private, target_clan__memberships__user=user)
+    ).distinct()
     )
 
 

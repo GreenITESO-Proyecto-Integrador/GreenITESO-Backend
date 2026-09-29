@@ -94,9 +94,11 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         """List audit history for a user's role changes (ADMIN only)."""
         target_user = self.get_object()
         audits = target_user.role_audit_logs.all()
-        return Response(
-            UserRoleAuditSerializer(audits, many=True).data, status=status.HTTP_200_OK
-        )
+        page = self.paginate_queryset(audits)
+        if page is not None:
+            serializer = UserRoleAuditSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        return Response(UserRoleAuditSerializer(audits, many=True).data)
 
 
 class LoginView(APIView):

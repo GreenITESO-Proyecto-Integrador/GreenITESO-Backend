@@ -259,7 +259,7 @@ class UserRoleAudit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         "accounts.User",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="role_audit_logs",
     )
     changed_by = models.ForeignKey(

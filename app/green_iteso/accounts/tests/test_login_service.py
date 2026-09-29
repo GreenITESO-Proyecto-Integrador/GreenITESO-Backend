@@ -13,6 +13,7 @@ from green_iteso.accounts.exceptions import (
     AccountDisabledError,
     CannotDemoteLastAdminError,
     DomainNotAllowedError,
+    IdentityProviderUnavailableError,
     RequestValidationError,
 )
 from green_iteso.accounts.identity.base import ExternalIdentity
@@ -221,6 +222,22 @@ def test_first_login_assigns_staff_when_in_staff_emails(
 
     assert result.created is True
     assert result.user.role == User.Role.STAFF
+
+
+@pytest.mark.django_db
+def test_first_login_waits_for_directory_profile_before_creating_user() -> None:
+    identity = _identity(
+        email="profesor@iteso.mx",
+        job_title="",
+        directory_profile_available=False,
+    )
+
+    with pytest.raises(IdentityProviderUnavailableError):
+        login_with_microsoft(
+            id_token="t", access_token="a", provider=_StubProvider(identity)
+        )
+
+    assert not User.objects.filter(email="profesor@iteso.mx").exists()
 
 
 @pytest.mark.django_db

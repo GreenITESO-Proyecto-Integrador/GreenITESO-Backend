@@ -17,6 +17,7 @@ from .exceptions import (
     AccountDisabledError,
     CannotDemoteLastAdminError,
     DomainNotAllowedError,
+    IdentityProviderUnavailableError,
     RequestValidationError,
 )
 from .identity import ExternalIdentity, IdentityProvider, get_identity_provider
@@ -108,6 +109,8 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
                 raise AccountConflictError()
             user.microsoft_oid = oid
     if user is None:
+        if not identity.directory_profile_available:
+            raise IdentityProviderUnavailableError()
         initial_role = determine_initial_role(identity, email)
         user = User(email=email, microsoft_oid=oid, role=initial_role)
         user.set_unusable_password()
@@ -134,23 +137,31 @@ def update_user_role(*, admin_user: User, user: User, new_role: str) -> User:
     if new_role not in User.Role.values:
         raise RequestValidationError(f"Invalid role: {new_role}")
 
-    if user.pk == admin_user.pk and new_role != User.Role.ADMIN:
-        active_admins_count = User.objects.filter(
-            role=User.Role.ADMIN, is_active=True
-        ).count()
-        if active_admins_count <= 1:
+    with transaction.atomic():
+        active_admin_ids = list(
+            User.objects.select_for_update()
+            .filter(role=User.Role.ADMIN, is_active=True)
+            .order_by("pk")
+            .values_list("pk", flat=True)
+        )
+        locked_user = User.objects.select_for_update().get(pk=user.pk)
+
+        if (
+            locked_user.role == User.Role.ADMIN
+            and new_role != User.Role.ADMIN
+            and len(active_admin_ids) <= 1
+        ):
             raise CannotDemoteLastAdminError()
 
-    if user.role == new_role:
-        return user
+        if locked_user.role == new_role:
+            return locked_user
 
-    previous_role = user.role
-    with transaction.atomic():
-        user.role = new_role
-        user.save(update_fields=["role"])
+        previous_role = locked_user.role
+        locked_user.role = new_role
+        locked_user.save(update_fields=["role"])
 
         UserRoleAudit.objects.create(
-            user=user,
+            user=locked_user,
             changed_by=admin_user,
             previous_role=previous_role,
             new_role=new_role,
@@ -158,24 +169,24 @@ def update_user_role(*, admin_user: User, user: User, new_role: str) -> User:
 
         logger.info(
             "User role changed: target_user_id=%s previous_role=%s new_role=%s changed_by_id=%s",
-            user.pk,
+            locked_user.pk,
             previous_role,
             new_role,
             admin_user.pk,
         )
 
-        try:
-            change_msg = f"Role changed from {previous_role} to {new_role}"
-            LogEntry.objects.log_actions(
-                admin_user.pk,
-                [user],
-                action_flag=CHANGE,
-                change_message=change_msg,
-            )
-        except Exception:  # pragma: no cover
-            logger.exception("Failed to write admin LogEntry for role change")
+    try:
+        change_msg = f"Role changed from {previous_role} to {new_role}"
+        LogEntry.objects.log_actions(
+            admin_user.pk,
+            [locked_user],
+            action_flag=CHANGE,
+            change_message=change_msg,
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("Failed to write admin LogEntry for role change")
 
-    return user
+    return locked_user
 
 
 def _sync_profile(user: User, identity: ExternalIdentity) -> None:

@@ -9,7 +9,8 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+        ("accounts", "0009_friendship"),
+        ("accounts", "0009_profile_editing_fields"),
     ]
 
     operations = [
@@ -61,7 +62,7 @@ class Migration(migrations.Migration):
                 (
                     "user",
                     models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE,
+                        on_delete=django.db.models.deletion.PROTECT,
                         related_name="role_audit_logs",
                         to=settings.AUTH_USER_MODEL,
                     ),

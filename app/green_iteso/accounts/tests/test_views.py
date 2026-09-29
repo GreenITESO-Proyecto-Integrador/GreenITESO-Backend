@@ -184,7 +184,9 @@ def test_role_history_returns_audits_for_admin() -> None:
 
     response = client.get(f"/api/v1/users/{target.pk}/role-history/")
     assert response.status_code == 200
-    audits = response.json()
+    body = response.json()
+    assert body["count"] == 2
+    audits = body["results"]
     assert len(audits) == 2
     assert audits[0]["previous_role"] == "STAFF"
     assert audits[0]["new_role"] == "ADMIN"

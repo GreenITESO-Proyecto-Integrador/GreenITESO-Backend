@@ -41,7 +41,8 @@ class TransferLeadershipSerializer(serializers.Serializer):
 
 
 class ClanMembershipSerializer(serializers.ModelSerializer):
-    """Read-only view of a clan membership, e.g. to confirm a leadership change."""
+    """Read-only view of a clan membership, e.g. to confirm a leadership change
+    or an active-clan selection."""
 
     class Meta:
         model = ClanMembership

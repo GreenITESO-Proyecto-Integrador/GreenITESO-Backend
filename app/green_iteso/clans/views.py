@@ -22,6 +22,7 @@ from .serializers import (
     TransferLeadershipSerializer,
 )
 from .services import assign_institutional_clan, create_clan, dissolve_clan
+from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
 
 
@@ -73,6 +74,24 @@ class ClanViewSet(
             )
         except ValueError as exc:
             raise ValidationError({"successor_id": str(exc)}) from exc
+        return Response(ClanMembershipSerializer(membership).data)
+
+    @action(detail=True, methods=["post"], url_path="select-active")
+    def select_active(self, request: Request, **kwargs: object) -> Response:
+        """Set this clan as the caller's active private clan (T2-35).
+
+        Takes ``**kwargs`` rather than a named ``pk`` because the value is
+        never read directly here: ``self.get_object()`` already resolves it
+        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
+        queryset and permissions in the process.
+        """
+        clan = self.get_object()
+        try:
+            membership = select_active_private_clan_service(
+                user=request.user, clan=clan
+            )
+        except ValueError as exc:
+            raise ValidationError({"clan": str(exc)}) from exc
         return Response(ClanMembershipSerializer(membership).data)
 
 

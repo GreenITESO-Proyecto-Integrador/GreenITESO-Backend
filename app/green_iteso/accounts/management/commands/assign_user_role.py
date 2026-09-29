@@ -6,7 +6,9 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
 
-from green_iteso.accounts.models import User, UserRoleAudit
+from green_iteso.accounts.exceptions import CannotDemoteLastAdminError
+from green_iteso.accounts.models import User
+from green_iteso.accounts.services import update_user_role
 
 
 class Command(BaseCommand):
@@ -36,15 +38,10 @@ class Command(BaseCommand):
             )
             return
 
-        user.role = role
-        user.save(update_fields=["role"])
-
-        UserRoleAudit.objects.create(
-            user=user,
-            changed_by=None,
-            previous_role=previous_role,
-            new_role=role,
-        )
+        try:
+            update_user_role(admin_user=None, user=user, new_role=role)
+        except CannotDemoteLastAdminError as exc:
+            raise CommandError(str(exc.detail["error"]["message"])) from exc
 
         self.stdout.write(
             self.style.SUCCESS(

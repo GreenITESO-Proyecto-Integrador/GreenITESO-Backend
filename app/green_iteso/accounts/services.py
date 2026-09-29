@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth.models import update_last_login
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .exceptions import (
@@ -167,24 +168,35 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
     return user, created
 
 
-def update_user_role(*, admin_user: User, user: User, new_role: str) -> User:
+def update_user_role(*, admin_user: User | None, user: User, new_role: str) -> User:
     """Change the global role of a user, enforcing admin rules and recording audit."""
     if new_role not in User.Role.values:
         raise RequestValidationError(f"Invalid role: {new_role}")
 
     with transaction.atomic():
-        active_admin_ids = list(
+        locked_users = list(
             User.objects.select_for_update()
-            .filter(role=User.Role.ADMIN, is_active=True)
+            .filter(Q(role=User.Role.ADMIN, is_active=True) | Q(pk=user.pk))
             .order_by("pk")
-            .values_list("pk", flat=True)
         )
-        locked_user = User.objects.select_for_update().get(pk=user.pk)
+        locked_user = next(
+            (locked_user for locked_user in locked_users if locked_user.pk == user.pk),
+            None,
+        )
+        if locked_user is None:
+            raise User.DoesNotExist
 
         if (
             locked_user.role == User.Role.ADMIN
             and new_role != User.Role.ADMIN
-            and len(active_admin_ids) <= 1
+            and len(
+                [
+                    active_admin
+                    for active_admin in locked_users
+                    if active_admin.role == User.Role.ADMIN and active_admin.is_active
+                ]
+            )
+            <= 1
         ):
             raise CannotDemoteLastAdminError()
 
@@ -207,17 +219,18 @@ def update_user_role(*, admin_user: User, user: User, new_role: str) -> User:
             locked_user.pk,
             previous_role,
             new_role,
-            admin_user.pk,
+            admin_user.pk if admin_user is not None else None,
         )
 
     try:
-        change_msg = f"Role changed from {previous_role} to {new_role}"
-        LogEntry.objects.log_actions(
-            admin_user.pk,
-            [locked_user],
-            action_flag=CHANGE,
-            change_message=change_msg,
-        )
+        if admin_user is not None:
+            change_msg = f"Role changed from {previous_role} to {new_role}"
+            LogEntry.objects.log_actions(
+                admin_user.pk,
+                [locked_user],
+                action_flag=CHANGE,
+                change_message=change_msg,
+            )
     except Exception:  # pragma: no cover
         logger.exception("Failed to write admin LogEntry for role change")
 

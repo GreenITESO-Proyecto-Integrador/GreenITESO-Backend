@@ -45,3 +45,13 @@ def test_assign_user_role_warns_when_role_already_assigned() -> None:
 def test_assign_user_role_raises_error_for_nonexistent_user() -> None:
     with pytest.raises(CommandError, match="does not exist"):
         call_command("assign_user_role", "nobody@iteso.mx", "ADMIN")
+
+
+@pytest.mark.django_db
+def test_assign_user_role_cannot_demote_only_active_admin() -> None:
+    User.objects.create_user(
+        email="admin@iteso.mx", password=None, role=User.Role.ADMIN
+    )
+
+    with pytest.raises(CommandError, match="only active administrator"):
+        call_command("assign_user_role", "admin@iteso.mx", "STUDENT")

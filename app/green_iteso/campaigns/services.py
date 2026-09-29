@@ -260,7 +260,7 @@ def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProg
             ActionLogMissionContribution.objects.filter(
                 mission=mission, action_log__user=user
             )
-            .exclude(action_log__status=ActionLog.Status.REJECTED)
+.filter(action_log__status=ActionLog.Status.APPROVED)
             .count()
         )
         current_count = min(valid, mission.target_count)

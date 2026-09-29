@@ -400,7 +400,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+        ("accounts", "0009_userroleaudit"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",

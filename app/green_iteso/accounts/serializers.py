@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import User
+from .models import User, UserRoleAudit
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -13,6 +13,31 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["id", "email", "role", "date_joined"]
+        read_only_fields = fields
+
+
+class ChangeRoleRequestSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Payload to modify a user's global role."""
+
+    role = serializers.ChoiceField(
+        choices=User.Role.choices,
+        help_text="The new global role to assign (STUDENT, STAFF, or ADMIN).",
+    )
+
+
+class UserRoleAuditSerializer(serializers.ModelSerializer):
+    """Audit entry representation for role change history."""
+
+    class Meta:
+        model = UserRoleAudit
+        fields = [
+            "id",
+            "user",
+            "changed_by",
+            "previous_role",
+            "new_role",
+            "created_at",
+        ]
         read_only_fields = fields
 
 

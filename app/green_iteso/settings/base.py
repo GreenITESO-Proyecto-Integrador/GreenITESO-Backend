@@ -178,6 +178,11 @@ MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
 ALLOWED_EMAIL_DOMAIN = (
     os.environ.get("ALLOWED_EMAIL_DOMAIN", "iteso.mx").strip().lower()
 )
+STAFF_EMAILS = [
+    email.strip().lower()
+    for email in os.environ.get("STAFF_EMAILS", "").split(",")
+    if email.strip()
+]
 
 if DEPLOYED:
     # TLS terminates at the load balancer, which forwards X-Forwarded-Proto.

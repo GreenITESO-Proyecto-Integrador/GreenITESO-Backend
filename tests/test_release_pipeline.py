@@ -679,13 +679,21 @@ def test_direct_ci_workflows_use_read_only_unpersisted_checkout() -> None:
 
 
 def test_secret_bearing_release_workflows_pin_external_actions() -> None:
-    for filename in ("database-migrations.yml", "_deploy.yml"):
+    for filename in ("database-migrations.yml", "_deploy.yml", "promote.yml"):
         workflow = (ROOT / ".github" / "workflows" / filename).read_text()
         external_actions = re.findall(r"uses: ([^\s#]+)", workflow)
         for action in external_actions:
             if action.startswith("./"):
                 continue
             assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (filename, action)
+
+
+def test_promotion_does_not_persist_its_write_token() -> None:
+    workflow = PROMOTE.read_text()
+    assert "persist-credentials: false" in workflow
+    assert "git ls-remote origin" not in workflow
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${SOURCE_REF}"' in workflow
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_REF}"' in workflow
 
 
 def _run_migration_gate(

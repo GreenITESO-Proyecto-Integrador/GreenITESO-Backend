@@ -25,10 +25,11 @@ jobs:
     name: Open promotion PR to ${{ inputs.promote_to }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: dev
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Open a PR from the previous tier
         env:
@@ -42,9 +43,8 @@ jobs:
             *) echo "Unsupported promotion target: ${TARGET_REF}" >&2; exit 2 ;;
           esac
 
-          source_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
-          if [ -z "$source_sha" ]; then
-            echo "Source branch '${SOURCE_REF}' does not exist; refusing promotion." >&2
+          if ! source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${SOURCE_REF}" --jq '.commit.sha')"; then
+            echo "Source branch '${SOURCE_REF}' is missing or inaccessible; refusing promotion." >&2
             exit 1
           fi
 
@@ -59,9 +59,8 @@ jobs:
               }
           fi
 
-          target_sha="$(git ls-remote origin "refs/heads/${TARGET_REF}" | awk '{print $1}')"
-          if [ -z "$target_sha" ]; then
-            echo "Target branch '${TARGET_REF}' does not exist. Create/protect it through the agreed branch cutover before promoting." >&2
+          if ! target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_REF}" --jq '.commit.sha')"; then
+            echo "Target branch '${TARGET_REF}' is missing or inaccessible. Create/protect it through the agreed branch cutover before promoting." >&2
             exit 1
           fi
 
@@ -71,7 +70,7 @@ jobs:
             exit 0
           fi
 
-          current_source_sha="$(git ls-remote origin "refs/heads/${SOURCE_REF}" | awk '{print $1}')"
+          current_source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${SOURCE_REF}" --jq '.commit.sha')"
           if [ "$current_source_sha" != "$source_sha" ]; then
             echo "Source branch '${SOURCE_REF}' advanced while evidence was being checked. Rerun this workflow for the new dev tip." >&2
             exit 1

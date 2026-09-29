@@ -428,7 +428,14 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
     )
     def post(self, request: Request, campaign_id: Any) -> Response:
         campaign = get_object_or_404(
-            Campaign.objects.filter(approval_status=Campaign.ApprovalStatus.APPROVED),
+            Campaign.objects.filter(
+                Q(scope=Campaign.Scope.GLOBAL)
+                | Q(
+                    scope=Campaign.Scope.PRIVATE,
+                    target_clan__deleted_at__isnull=True,
+                ),
+                approval_status=Campaign.ApprovalStatus.APPROVED,
+            ),
             pk=campaign_id,
         )
         if campaign.status != Campaign.Status.PROMOTION:

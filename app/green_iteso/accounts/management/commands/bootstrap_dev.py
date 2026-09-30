@@ -220,9 +220,12 @@ def get_or_create_demo_clan(
     spec: DemoClanSpec, *, created_by: User | None
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
+    identifier = demo_id("clan", spec.key)
+    if Clan.all_objects.filter(name=spec.name).exclude(pk=identifier).exists():
+        raise CommandError("Demo clan identity collision; existing clan was preserved.")
     try:
         clan, created = Clan.all_objects.get_or_create(
-            pk=demo_id("clan", spec.key),
+            pk=identifier,
             defaults={
                 "name": spec.name,
                 "description": spec.description,

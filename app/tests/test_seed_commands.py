@@ -446,6 +446,18 @@ def test_bootstrap_rejects_unrelated_identity_collisions(collision: str) -> None
 
 
 @pytest.mark.django_db(transaction=True)
+def test_bootstrap_rejects_soft_deleted_clan_name_collision() -> None:
+    unrelated = Clan.objects.create(
+        name="Demo private clan 01", type=Clan.ClanType.PRIVATE
+    )
+    Clan.all_objects.filter(pk=unrelated.pk).update(deleted_at=timezone.now())
+    with pytest.raises(CommandError, match="identity collision"):
+        call_command("bootstrap_dev", verbosity=0)
+    assert Clan.all_objects.filter(name="Demo private clan 01").count() == 1
+    assert ActionLog.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("collision", ["user", "clan"])
 def test_bootstrap_rejects_deterministic_id_collisions(collision: str) -> None:
     if collision == "user":

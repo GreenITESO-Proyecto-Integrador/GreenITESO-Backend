@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from django.db import close_old_connections
+from django.utils import timezone
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -156,6 +157,43 @@ def test_action_credits_snapshot_clan_if_it_is_dissolved_during_submission() -> 
     assert private_clan.total_points == action.points
 
 
+@pytest.mark.django_db
+def test_action_credits_institutional_clan_if_soft_deleted_during_submission() -> None:
+    user = User.objects.create_user(
+        email="institutional@iteso.mx", password="local-only"
+    )
+    clan = Clan.objects.create(name="Institutional", type=Clan.ClanType.INSTITUTIONAL)
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="RECYCLE",
+        category=category,
+        name="Recycle",
+        description="Recycle something",
+        points=10,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    original_create = ActionLog.objects.create
+
+    def create_after_dissolve(**kwargs: object) -> ActionLog:
+        Clan.all_objects.filter(pk=clan.pk).update(deleted_at=timezone.now())
+        return original_create(**kwargs)
+
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": str(uuid.uuid4())},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+    with patch.object(ActionLog.objects, "create", side_effect=create_after_dissolve):
+        response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 201
+    clan.refresh_from_db()
+    assert clan.deleted_at is not None
+    assert clan.total_points == action.points
+
+
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
     """Two admins racing on one pending log must not grant points twice."""
@@ -207,6 +245,8 @@ def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
             statuses = list(executor.map(approve, range(2)))
 
     assert sorted(statuses) == [200, 404]
+    log.refresh_from_db()
+    assert log.reviewed_at is not None
     profile.refresh_from_db()
     clan.refresh_from_db()
     assert profile.total_points == profile.available_points == 10

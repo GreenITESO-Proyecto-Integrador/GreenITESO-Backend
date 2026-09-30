@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
-from django.core.management import BaseCommand, CommandError, call_command
-from django.db import transaction
+from django.core.management import BaseCommand, CommandError
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -19,6 +19,7 @@ from green_iteso.actions.management.commands.load_catalog import (
     DEFAULT_CATALOG,
     CatalogData,
     ensure_local_database,
+    load_catalog_data,
     load_catalog_file,
     stable_reference_id,
 )
@@ -187,67 +188,65 @@ def get_or_create_demo_user(
     """Create a synthetic account without a password or Firebase identity."""
     email = f"demo-{index:02d}@example.invalid"
     identifier = demo_id("user", str(index))
-    user = User.objects.filter(pk=identifier).first()
-    if user is not None:
-        if user.email != email:
-            raise CommandError(
-                "Demo user identity collision; existing user was preserved."
+    try:
+        with transaction.atomic():
+            user, created = User.objects.get_or_create(
+                pk=identifier,
+                defaults={
+                    "email": email,
+                    "role": role,
+                    "first_name": "Demo",
+                    "last_name": f"User {index:02d}",
+                    "firebase_uid": None,
+                },
             )
-        if shared_dev and (
-            user.firebase_uid is not None or user.microsoft_oid is not None
-        ):
-            raise CommandError(
-                "Shared-dev demo identity is linked to an identity provider; refusing synthetic use."
-            )
-        return user, False
-    if User.objects.filter(email=email).exists():
+            if created:
+                user.set_unusable_password()
+                user.save(update_fields=["password"])
+    except IntegrityError as error:
+        raise CommandError(
+            "Demo user identity collision; existing user was preserved."
+        ) from error
+    if user.email != email:
         raise CommandError("Demo user identity collision; existing user was preserved.")
-    user = User.objects.create(
-        id=identifier,
-        email=email,
-        role=role,
-        first_name="Demo",
-        last_name=f"User {index:02d}",
-        firebase_uid=None,
-    )
-    user.set_unusable_password()
-    user.save(update_fields=["password"])
-    return user, True
+    if shared_dev and (user.firebase_uid is not None or user.microsoft_oid is not None):
+        raise CommandError(
+            "Shared-dev demo identity is linked to an identity provider; refusing synthetic use."
+        )
+    return user, created
 
 
 def get_or_create_demo_clan(
     spec: DemoClanSpec, *, created_by: User | None
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
-    clan = Clan.all_objects.filter(pk=demo_id("clan", spec.key)).first()
-    if clan is not None:
-        allowed_descriptions = (
-            (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
-            if spec.description == DEMO_PRIVATE_CLAN_DESCRIPTION
-            else (spec.description,)
+    try:
+        clan, created = Clan.all_objects.get_or_create(
+            pk=demo_id("clan", spec.key),
+            defaults={
+                "name": spec.name,
+                "description": spec.description,
+                "type": spec.clan_type,
+                "privacy": spec.privacy,
+                "created_by": created_by,
+            },
         )
-        if (
-            clan.deleted_at is not None
-            or clan.type != spec.clan_type
-            or not clan.description.startswith(allowed_descriptions)
-        ):
-            raise CommandError(
-                "Demo clan identity collision; existing clan was preserved."
-            )
-        return clan, False
-    if Clan.all_objects.filter(name=spec.name).exists():
-        raise CommandError("Demo clan identity collision; existing clan was preserved.")
-    return (
-        Clan.objects.create(
-            id=demo_id("clan", spec.key),
-            name=spec.name,
-            description=spec.description,
-            type=spec.clan_type,
-            privacy=spec.privacy,
-            created_by=created_by,
-        ),
-        True,
+    except IntegrityError as error:
+        raise CommandError(
+            "Demo clan identity collision; existing clan was preserved."
+        ) from error
+    allowed_descriptions = (
+        (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
+        if spec.description == DEMO_PRIVATE_CLAN_DESCRIPTION
+        else (spec.description,)
     )
+    if (
+        clan.deleted_at is not None
+        or clan.type != spec.clan_type
+        or not clan.description.startswith(allowed_descriptions)
+    ):
+        raise CommandError("Demo clan identity collision; existing clan was preserved.")
+    return clan, created
 
 
 def create_demo_users(*, shared_dev: bool = False) -> tuple[list[User], int]:
@@ -564,10 +563,16 @@ def create_demo_action_log(
             "reviewed_by": demo_reviewer
             if status == ActionLog.Status.REJECTED
             else None,
+            # Shared Neon dev deliberately has no synthetic privileged users;
+            # this row models a system-simulated rejection, not a staff audit.
             "reviewed_at": context.campaign.as_of
-            if status == ActionLog.Status.REJECTED and demo_reviewer is not None
+            if status == ActionLog.Status.REJECTED
             else None,
-            "rejection_reason": "Synthetic rejected example"
+            "rejection_reason": (
+                "Synthetic rejected example"
+                if demo_reviewer is not None
+                else "Synthetic system-rejected example"
+            )
             if status == ActionLog.Status.REJECTED
             else "",
         },
@@ -830,7 +835,7 @@ class Command(BaseCommand):
         with transaction.atomic():
             # T12 depends on T11. Keep both writes in this transaction so a
             # later fixture failure cannot leave a partial catalog bootstrap.
-            call_command("load_catalog", verbosity=0)
+            load_catalog_data(draft_catalog)
             result = seed_demo_data(draft_catalog, as_of)
 
         message = (

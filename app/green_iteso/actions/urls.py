@@ -18,5 +18,9 @@ router.register("actions", ActionMasterViewSet, basename="action")
 
 urlpatterns = router.urls + [
     path("action-logs/", ActionLogCreateView.as_view(), name="action-log-create"),
-    path("action-logs/<uuid:log_id>/audit/", ActionLogAuditView.as_view(), name="action-log-audit"),
+    path(
+        "action-logs/<uuid:log_id>/audit/",
+        ActionLogAuditView.as_view(),
+        name="action-log-audit",
+    ),
 ]

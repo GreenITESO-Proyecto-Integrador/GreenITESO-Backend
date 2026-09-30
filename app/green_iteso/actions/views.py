@@ -135,7 +135,9 @@ class ActionLogAuditView(views.APIView):
         data = serializer.validated_data
 
         try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
+            action_log = ActionLog.objects.get(
+                id=log_id, status=ActionLog.Status.PENDING_AUDIT
+            )
         except ActionLog.DoesNotExist:
             return Response(
                 {"error": "Pending action log not found."},
@@ -165,12 +167,18 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

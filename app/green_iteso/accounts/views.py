@@ -23,23 +23,15 @@ from .exceptions import RequestValidationError
 from .models import User
 from .selectors import get_ecological_profile, get_user_by_id, list_users
 from .serializers import (
-<<<<<<< HEAD
     ChangeRoleRequestSerializer,
-    LoginRequestSerializer,
-    LoginResponseSerializer,
-    UserRoleAuditSerializer,
-    UserSerializer,
-)
-from .services import login_with_microsoft, update_user_role
-=======
     EcologicalProfileSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
     ProfileUpdateSerializer,
+    UserRoleAuditSerializer,
     UserSerializer,
 )
-from .services import login_with_microsoft, update_profile
->>>>>>> origin/dev
+from .services import login_with_microsoft, update_profile, update_user_role
 
 
 class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):

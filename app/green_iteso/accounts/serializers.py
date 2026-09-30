@@ -8,9 +8,7 @@ from urllib.parse import urlsplit
 
 from rest_framework import serializers
 
-<<<<<<< HEAD
-from .models import User, UserProfile
-from .models import UserRoleAudit
+from .models import User, UserProfile, UserRoleAudit
 from .selectors import EcologicalProfile
 
 _ALLOWED_AVATAR_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")

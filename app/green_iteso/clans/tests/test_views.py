@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.clans.services import create_clan
 
 
 @pytest.mark.django_db
@@ -31,6 +32,173 @@ def test_create_and_list_clan_for_authenticated_caller() -> None:
     list_response = client.get("/api/v1/clans/")
     names = [row["name"] for row in list_response.json()["results"]]
     assert names == ["Green Team"]
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_requires_authentication(clan: Clan) -> None:
+    response = APIClient().post(f"/api/v1/clans/{clan.pk}/transfer-leadership/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_leader_transfers_leadership_successfully(
+    leader: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(successor.pk)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "LEADER"
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.MEMBER
+
+
+@pytest.mark.django_db
+def test_member_cannot_transfer_leadership(
+    leader: User, member: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=member, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(successor.pk)},
+    )
+
+    assert response.status_code == 403
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_member_successor(
+    leader: User, clan: Clan
+) -> None:
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/transfer-leadership/",
+        {"successor_id": str(outsider.pk)},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_select_active_clan_requires_authentication() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
+    )
+
+    response = APIClient().post(f"/api/v1/clans/{clan.pk}/select-active/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_member_selects_their_active_private_clan() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
+    )
+    client = APIClient()
+    client.force_authenticate(owner)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/select-active/")
+
+    assert response.status_code == 200
+    assert response.json()["is_active_private"] is True
+
+
+@pytest.mark.django_db
+def test_select_active_clan_rejects_a_non_member() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    clan = create_clan(
+        name="Green Team", clan_type=Clan.ClanType.PRIVATE, created_by=owner
+    )
+    client = APIClient()
+    client.force_authenticate(outsider)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/select-active/")
+
+    assert response.status_code == 400
+    assert not ClanMembership.objects.filter(
+        user=outsider, clan=clan, is_active_private=True
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_dissolve_clan_requires_authentication(clan: Clan) -> None:
+    response = APIClient().delete(f"/api/v1/clans/{clan.pk}/")
+
+    # JWTAuthentication is active (T2-10), so a missing token is 401, not 403.
+    assert response.status_code == 401
+    clan.refresh_from_db()
+    assert clan.deleted_at is None
+
+
+@pytest.mark.django_db
+def test_leader_dissolves_clan_and_it_leaves_the_listing(
+    leader: User, clan: Clan
+) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/clans/").json()["results"] == []
+    # The default manager excludes soft-deleted clans; use all_objects to
+    # confirm the row was preserved rather than hard-deleted.
+    assert Clan.all_objects.filter(pk=clan.pk).exists()
+
+
+@pytest.mark.django_db
+def test_member_cannot_dissolve_clan(member: User, clan: Clan) -> None:
+    ClanMembership.objects.create(user=member, clan=clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert response.status_code == 403
+    clan.refresh_from_db()
+    assert clan.deleted_at is None
+
+
+@pytest.mark.django_db
+def test_dissolved_clan_is_not_retrievable(leader: User, clan: Clan) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+    client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    assert client.get(f"/api/v1/clans/{clan.pk}/").status_code == 404
+    assert client.delete(f"/api/v1/clans/{clan.pk}/").status_code == 404
 
 
 @pytest.mark.django_db

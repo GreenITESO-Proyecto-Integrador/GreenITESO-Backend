@@ -451,7 +451,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0009_friendship"),
+        ("accounts", "0010_friendship"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -552,17 +552,63 @@ def test_accounts_0005_migration_preserves_existing_rows_and_adds_microsoft_fiel
 
 
 @pytest.mark.django_db(transaction=True)
-def test_accounts_0009_migration_preserves_existing_rows_and_adds_friendship_table() -> (
+def test_accounts_0009_migration_preserves_existing_rows_and_adds_profile_fields() -> (
     None
 ):
     """Upgrade test CLAUDE.md requires for every PR that changes models.
 
-    0009_friendship only adds a new table, so existing User/UserProfile rows
-    from 0008 must survive untouched, and the new table must be usable
+    accounts.0009_profile_editing_fields only adds blank/default fields
+    (bio, preferences, avatar_url), but the rule doesn't distinguish
+    additive from destructive changes, so this still rehearses migrating a
+    populated 0008 database forward.
+    """
+    old_target = [
+        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+    ]
+    new_target = [("accounts", "0009_profile_editing_fields")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_profile_model = old_apps.get_model("accounts", "UserProfile")
+
+    user = old_user_model.objects.create(email="pre-t221@iteso.mx")
+    profile = old_profile_model.objects.create(user=user, career="Diseño Industrial")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_profile_model = new_apps.get_model("accounts", "UserProfile")
+
+        migrated_profile = new_profile_model.objects.get(pk=profile.pk)
+        assert migrated_profile.career == "Diseño Industrial"
+        assert migrated_profile.bio == ""
+        assert migrated_profile.preferences == {}
+        assert migrated_profile.avatar_url == ""
+
+        migrated_profile.bio = "Loves recycling."
+        migrated_profile.avatar_url = "https://storage.googleapis.com/bucket/a.png"
+        migrated_profile.save(update_fields=["bio", "avatar_url"])
+        assert new_profile_model.objects.get(pk=profile.pk).bio == "Loves recycling."
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0010_migration_preserves_existing_rows_and_adds_friendship_table() -> (
+    None
+):
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0010_friendship only adds a new table, so existing User/UserProfile rows
+    from 0009 must survive untouched, and the new table must be usable
     immediately after the upgrade.
     """
-    old_target = [("accounts", "0008_merge_microsoft_identity_and_clan_updates")]
-    new_target = [("accounts", "0009_friendship")]
+    old_target = [("accounts", "0009_profile_editing_fields")]
+    new_target = [("accounts", "0010_friendship")]
 
     executor = MigrationExecutor(connection)
     executor.migrate(old_target)

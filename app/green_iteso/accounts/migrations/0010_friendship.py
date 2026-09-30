@@ -9,7 +9,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+        ("accounts", "0009_profile_editing_fields"),
     ]
 
     operations = [

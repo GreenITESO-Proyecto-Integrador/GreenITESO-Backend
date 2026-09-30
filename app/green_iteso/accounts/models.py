@@ -190,6 +190,13 @@ class UserProfile(models.Model):
     visibility = models.CharField(
         max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC
     )
+    bio = models.CharField(max_length=500, blank=True)
+    preferences = models.JSONField(default=dict, blank=True)
+    # The object itself lives in Cloud Storage (T2-21); only its URL is
+    # persisted here, never the binary. The GCS bucket/account is not
+    # provisioned yet (see docs/avatar-upload.md), so this is populated by
+    # whatever the client uploaded the file to in the meantime.
+    avatar_url = models.URLField(max_length=500, blank=True)
 
     class Meta:
         db_table = "accounts_user_profile"
@@ -311,3 +318,16 @@ class Friendship(models.Model):
 
     def __str__(self) -> str:
         return f"{self.requester_id} -> {self.addressee_id} ({self.status})"
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        # Derive the unordered pair here rather than trusting every caller to
+        # set it (the admin's Add form can't, since low_user/high_user are
+        # read-only and therefore absent from the submitted data, which
+        # otherwise fails the NOT NULL columns at the database).
+        if self.requester_id is not None and self.addressee_id is not None:
+            self.low_user, self.high_user = (
+                (self.requester_id, self.addressee_id)
+                if self.requester_id < self.addressee_id
+                else (self.addressee_id, self.requester_id)
+            )
+        super().save(*args, **kwargs)

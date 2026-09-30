@@ -12,19 +12,24 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import (
+    TokenBlacklistView as SimpleJWTTokenBlacklistView,
+)
 from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRefreshView
 
 from green_iteso.core.permissions import IsAdmin
 
 from .exceptions import RequestValidationError
 from .models import User
-from .selectors import get_user_by_id, list_users
+from .selectors import get_ecological_profile, get_user_by_id, list_users
 from .serializers import (
+    EcologicalProfileSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
+    ProfileUpdateSerializer,
     UserSerializer,
 )
-from .services import login_with_microsoft
+from .services import login_with_microsoft, update_profile
 
 
 class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -115,12 +120,66 @@ def _flatten_validation_detail(detail: object) -> str:
 
 
 class TokenRefreshView(SimpleJWTTokenRefreshView):
-    """Exchange a refresh token for a new access token.
+    """Exchange a refresh token for a new access token (T2-11).
 
-    Full refresh-token lifecycle work (rotation, blacklist, logout) is
-    T2-11's story; this is simplejwt's stock behavior so the refresh token
-    ``LoginView`` already issues is redeemable in the meantime.
+    ``ROTATE_REFRESH_TOKENS``/``BLACKLIST_AFTER_ROTATION`` make this also
+    return a new refresh token and blacklist the one just redeemed, so each
+    refresh token is single-use.
     """
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_refresh"
+
+
+class LogoutView(SimpleJWTTokenBlacklistView):
+    """Blacklist a refresh token so it can no longer be redeemed (T2-11).
+
+    Subclasses simplejwt's stock ``TokenBlacklistView`` (same relationship
+    ``TokenRefreshView`` above has to its own simplejwt base): it takes no
+    access token, so a client whose access token already expired can still
+    log out, and its ``get_authenticate_header`` override keeps an invalid
+    refresh token's ``AuthenticationFailed`` at 401 even though the view has
+    no real authenticator to challenge with (DRF otherwise downgrades that
+    to 403).
+    """
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_logout"
+
+
+class EcologicalProfileView(APIView):
+    """Return or edit the caller's own aggregated ecological profile (T2-20, T2-21).
+
+    Self-scoped only: this always returns/edits the caller's own data
+    regardless of their own ``visibility`` setting (a user always sees and
+    manages their own profile). ``visibility`` is exposed here as a field,
+    and enforced, if another endpoint is later added to view someone else's
+    profile.
+    """
+
+    @extend_schema(responses=EcologicalProfileSerializer)
+    def get(self, request: Request) -> Response:
+        """Aggregate the caller's own data with E1 (points/badges) and E3 (campaigns) data."""
+        profile = get_ecological_profile(request.user)
+        return Response(EcologicalProfileSerializer(profile).data)
+
+    @extend_schema(
+        request=ProfileUpdateSerializer,
+        responses={
+            200: EcologicalProfileSerializer,
+            400: OpenApiResponse(description="VALIDATION_ERROR"),
+        },
+    )
+    def patch(self, request: Request) -> Response:
+        """Edit bio, preferences, visibility, and/or avatar_url (T2-21).
+
+        ``avatar_url`` is the URL of a file the client already uploaded to
+        Cloud Storage; this endpoint never receives or stores the binary
+        (see ``accounts.serializers._validate_avatar_url`` for why real
+        size/type enforcement is still pending the GCS bucket/account).
+        """
+        payload = ProfileUpdateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        update_profile(user=request.user, **payload.validated_data)
+        profile = get_ecological_profile(request.user)
+        return Response(EcologicalProfileSerializer(profile).data)

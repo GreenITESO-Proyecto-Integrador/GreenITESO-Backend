@@ -10,7 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.accounts.models import Clan
+from green_iteso.accounts.models import Clan, User
 from green_iteso.accounts.services import ensure_profile
 
 from .selectors import list_active_clans
@@ -19,9 +19,11 @@ from .serializers import (
     ClanSerializer,
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
+    TransferLeadershipSerializer,
 )
 from .services import assign_institutional_clan, create_clan, dissolve_clan
 from .services import select_active_private_clan as select_active_private_clan_service
+from .services import transfer_leadership as transfer_leadership_service
 
 
 class ClanViewSet(
@@ -49,6 +51,30 @@ class ClanViewSet(
     def perform_destroy(self, instance: Clan) -> None:
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
         dissolve_clan(clan=instance, actor=self.request.user)
+
+    @action(detail=True, methods=["post"], url_path="transfer-leadership")
+    def transfer_leadership(self, request: Request, **kwargs: object) -> Response:
+        """Transfer this clan's leadership to another of its members (T2-42).
+
+        Takes ``**kwargs`` rather than a named ``pk`` because the value is
+        never read directly here: ``self.get_object()`` already resolves it
+        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
+        queryset and permissions in the process.
+        """
+        clan = self.get_object()
+        payload = TransferLeadershipSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            successor = User.objects.get(pk=payload.validated_data["successor_id"])
+        except User.DoesNotExist as exc:
+            raise ValidationError({"successor_id": "User not found."}) from exc
+        try:
+            membership = transfer_leadership_service(
+                clan=clan, actor=request.user, successor=successor
+            )
+        except ValueError as exc:
+            raise ValidationError({"successor_id": str(exc)}) from exc
+        return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="select-active")
     def select_active(self, request: Request, **kwargs: object) -> Response:

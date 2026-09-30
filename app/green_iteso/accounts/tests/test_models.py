@@ -6,7 +6,7 @@ import pytest
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, User, UserProfile
+from green_iteso.accounts.models import Clan, Friendship, User, UserProfile
 
 
 @pytest.mark.django_db
@@ -72,3 +72,21 @@ def test_clan_name_still_unique_among_alive_clans() -> None:
 
     with pytest.raises(IntegrityError), transaction.atomic():
         Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)
+
+
+@pytest.mark.django_db
+def test_friendship_save_derives_the_pair_without_it_being_set_explicitly() -> None:
+    """Regression: the admin Add form can't submit low_user/high_user (read-only).
+
+    Without deriving the pair in save(), Friendship.objects.create(requester=,
+    addressee=) alone -- the shape the admin's ModelForm produces -- fails
+    the NOT NULL columns at the database.
+    """
+    ana = User.objects.create_user(email="ana@iteso.mx")
+    beto = User.objects.create_user(email="beto@iteso.mx")
+
+    friendship = Friendship.objects.create(requester=ana, addressee=beto)
+
+    expected_low, expected_high = sorted([ana.pk, beto.pk])
+    assert friendship.low_user == expected_low
+    assert friendship.high_user == expected_high

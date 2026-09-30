@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.models import Friendship, User
@@ -39,6 +39,26 @@ def _ordered_pair(user_a: User, user_b: User) -> tuple[uuid.UUID, uuid.UUID]:
     return (user_a.pk, user_b.pk) if user_a.pk < user_b.pk else (user_b.pk, user_a.pk)
 
 
+def _revive_or_reject(
+    friendship: Friendship, *, requester: User, addressee: User
+) -> Friendship:
+    """Apply the pending/accepted/rejected decision to an existing pair row."""
+    if friendship.status == Friendship.Status.PENDING:
+        raise FriendRequestAlreadyPendingError(
+            "A friend request between these users is already pending."
+        )
+    if friendship.status == Friendship.Status.ACCEPTED:
+        raise AlreadyFriendsError("These users are already friends.")
+
+    # REJECTED: allow a fresh request, replaying whoever initiates it now.
+    friendship.requester = requester
+    friendship.addressee = addressee
+    friendship.status = Friendship.Status.PENDING
+    friendship.responded_at = None
+    friendship.save(update_fields=["requester", "addressee", "status", "responded_at"])
+    return friendship
+
+
 @transaction.atomic
 def send_friend_request(*, requester: User, addressee: User) -> Friendship:
     """Create, or revive, a pending friend request between two users (T2-50).
@@ -60,26 +80,26 @@ def send_friend_request(*, requester: User, addressee: User) -> Friendship:
         .first()
     )
     if friendship is None:
-        return Friendship.objects.create(
-            requester=requester,
-            addressee=addressee,
-            low_user=low,
-            high_user=high,
-        )
-    if friendship.status == Friendship.Status.PENDING:
-        raise FriendRequestAlreadyPendingError(
-            "A friend request between these users is already pending."
-        )
-    if friendship.status == Friendship.Status.ACCEPTED:
-        raise AlreadyFriendsError("These users are already friends.")
-
-    # REJECTED: allow a fresh request, replaying whoever initiates it now.
-    friendship.requester = requester
-    friendship.addressee = addressee
-    friendship.status = Friendship.Status.PENDING
-    friendship.responded_at = None
-    friendship.save(update_fields=["requester", "addressee", "status", "responded_at"])
-    return friendship
+        # select_for_update() locks nothing when no row exists yet, so two
+        # concurrent first-time requests for the same pair can both reach
+        # here and race on the INSERT. Recover under a savepoint: the loser
+        # re-fetches (now locked for real, since the row exists) and applies
+        # the normal existing-row decision instead of surfacing a raw 500.
+        try:
+            with transaction.atomic():
+                return Friendship.objects.create(
+                    requester=requester,
+                    addressee=addressee,
+                    low_user=low,
+                    high_user=high,
+                )
+        except IntegrityError:
+            friendship = (
+                Friendship.objects.select_for_update()
+                .filter(low_user=low, high_user=high)
+                .get()
+            )
+    return _revive_or_reject(friendship, requester=requester, addressee=addressee)
 
 
 @transaction.atomic

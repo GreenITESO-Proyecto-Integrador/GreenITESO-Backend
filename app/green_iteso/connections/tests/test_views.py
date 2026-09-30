@@ -149,3 +149,25 @@ def test_accept_already_resolved_friend_request_fails() -> None:
     response = client.post(f"/api/v1/friendships/{friendship.pk}/reject/")
 
     assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_accept_with_a_non_uuid_pk_is_a_clean_404_not_a_500() -> None:
+    beto = _user("beto@iteso.mx")
+    client = APIClient()
+    client.force_authenticate(beto)
+
+    response = client.post("/api/v1/friendships/not-a-uuid/accept/")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_list_friendships_rejects_an_invalid_status_filter() -> None:
+    ana = _user("ana@iteso.mx")
+    client = APIClient()
+    client.force_authenticate(ana)
+
+    response = client.get("/api/v1/friendships/", {"status": "bogus"})
+
+    assert response.status_code == 400

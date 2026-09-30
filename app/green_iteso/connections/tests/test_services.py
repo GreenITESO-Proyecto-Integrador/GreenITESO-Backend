@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from green_iteso.accounts.models import Friendship, User
@@ -89,6 +91,44 @@ def test_send_friend_request_after_rejection_reuses_the_row() -> None:
     assert second.addressee == ana
     assert second.responded_at is None
     assert Friendship.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_send_friend_request_serializes_concurrent_first_requests_for_same_pair() -> (
+    None
+):
+    """Two first-time requests for the same pair must never both succeed.
+
+    ``select_for_update()`` locks nothing when the row doesn't exist yet, so
+    without the savepoint/retry in ``send_friend_request``, both concurrent
+    callers see no existing row and both attempt the INSERT; the loser hits
+    the ``friendship_pair_unique`` constraint as an uncaught IntegrityError
+    (a raw 500) instead of the normal ``FriendRequestAlreadyPendingError``.
+    """
+    ana = _user("ana@iteso.mx")
+    beto = _user("beto@iteso.mx")
+    results: list[Friendship | Exception | None] = [None, None]
+
+    def attempt(index: int) -> None:
+        try:
+            results[index] = send_friend_request(requester=ana, addressee=beto)
+        except FriendRequestAlreadyPendingError as exc:
+            results[index] = exc
+
+    threads = [
+        threading.Thread(target=attempt, args=(0,)),
+        threading.Thread(target=attempt, args=(1,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert Friendship.objects.count() == 1
+    successes = [r for r in results if isinstance(r, Friendship)]
+    failures = [r for r in results if isinstance(r, FriendRequestAlreadyPendingError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
 
 
 @pytest.mark.django_db

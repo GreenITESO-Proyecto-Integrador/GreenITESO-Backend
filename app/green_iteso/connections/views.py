@@ -31,6 +31,13 @@ class FriendshipViewSet(
     """Send, list, accept, and reject friend requests under /api/v1/friendships/."""
 
     serializer_class = FriendshipSerializer
+    # A non-UUID pk (e.g. /friendships/not-a-uuid/accept/) would otherwise
+    # reach the ORM and raise an uncaught django.core.exceptions.ValidationError
+    # (DRF doesn't translate that to a 404/400); rejecting it at the router
+    # level turns it into a clean 404 instead of a 500.
+    lookup_value_regex = (
+        "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
 
     def get_queryset(self) -> QuerySet[Friendship]:
         if (
@@ -41,7 +48,10 @@ class FriendshipViewSet(
         queryset = list_own_friendships(self.request.user)
         status_param = self.request.query_params.get("status")
         if status_param:
-            queryset = queryset.filter(status=status_param.upper())
+            status_value = status_param.upper()
+            if status_value not in Friendship.Status.values:
+                raise ValidationError({"status": f"Invalid status: {status_param}."})
+            queryset = queryset.filter(status=status_value)
         return queryset
 
     @extend_schema(

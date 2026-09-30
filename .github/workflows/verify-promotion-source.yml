@@ -62,3 +62,14 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/verify-dev-migration-evidence.py
+
+      - name: Require exact staging release evidence before main promotion
+        if: github.base_ref == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_ENVIRONMENT: production
+          RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+          SOURCE_REF: preprod
+          SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/verify-source-release.sh

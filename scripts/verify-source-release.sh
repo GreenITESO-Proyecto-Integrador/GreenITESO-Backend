@@ -90,7 +90,7 @@ record_sha="$(awk -F= '$1 == "release_sha" {print $2}' "$record_file")"
 source_digest="$(awk -F= '$1 == "image_digest" {print $2}' "$record_file")"
 if [ "$record_environment" != "$SOURCE_ENV" ] || [ "$record_sha" != "$SOURCE_RELEASE_SHA" ] ||
    [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "Source release record does not match ${SOURCE_ENV}/${RELEASE_SHA} or has no valid digest." >&2
+  echo "Source release record does not match ${SOURCE_ENV}/${SOURCE_RELEASE_SHA} or has no valid digest." >&2
   exit 1
 fi
 

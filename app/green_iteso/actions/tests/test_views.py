@@ -7,11 +7,12 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, User, UserProfile
-from green_iteso.actions.models import ActionCategory, ActionMaster
-from green_iteso.actions.views import ActionLogCreateView
+from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 
 
 @pytest.mark.django_db
@@ -98,3 +99,45 @@ def test_approved_action_credits_available_points_alongside_total_points() -> No
     user.profile.refresh_from_db()
     assert user.profile.total_points == 10
     assert user.profile.available_points == 10
+
+
+@pytest.mark.django_db
+def test_pending_audit_can_be_decided_only_once() -> None:
+    user = User.objects.create_user(email="pending@iteso.mx", password="local-only")
+    admin = User.objects.create_user(
+        email="reviewer@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    clan = Clan.objects.create(name="Audit test clan", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="AUDIT", name="Audit")
+    action = ActionMaster.objects.create(
+        code="PHOTO_AUDIT",
+        category=category,
+        name="Photo audit",
+        description="Evidence requiring review",
+        points=10,
+        validation_type=ActionMaster.ValidationType.PHOTO,
+    )
+    log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key=str(uuid.uuid4()),
+        points_awarded=10,
+        status=ActionLog.Status.PENDING_AUDIT,
+    )
+    factory = APIRequestFactory()
+    view = ActionLogAuditView.as_view()
+
+    def approve() -> Response:
+        request = factory.patch("/api/v1/action-logs/audit/", {"status": "APPROVED"})
+        force_authenticate(request, user=admin)
+        return view(request, log_id=str(log.pk))
+
+    assert approve().status_code == 200
+    assert approve().status_code == 404
+    log.refresh_from_db()
+    profile.refresh_from_db()
+    assert log.reviewed_at is not None
+    assert log.reviewed_by_id == admin.pk
+    assert profile.total_points == profile.available_points == 10

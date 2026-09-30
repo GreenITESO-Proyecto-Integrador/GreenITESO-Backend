@@ -117,7 +117,10 @@ def test_cloud_runtime_keeps_entra_configuration(tmp_path: Path) -> None:
     reusable = WORKFLOW.read_text()
     for name in ("MICROSOFT_TENANT_ID", "MICROSOFT_CLIENT_ID"):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in reusable
-        assert name in reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[0]
+        assert (
+            name
+            in reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[0]
+        )
 
 
 def test_migration_failure_does_not_deploy(tmp_path: Path) -> None:
@@ -589,6 +592,14 @@ def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
     assert "- main" in workflow
     assert "- prod" not in workflow
     assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
+    assert "Require exact staging release evidence before main promotion" in workflow
+    assert "if: github.base_ref == 'main'" in workflow
+    assert "SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert "run: scripts/verify-source-release.sh" in workflow
+    promote = (ROOT / ".github/workflows/promote.yml").read_text()
+    assert "RELEASE_ENVIRONMENT=production" in promote
+    assert "SOURCE_REF=preprod" in promote
+    assert "scripts/verify-source-release.sh" in promote
     script = textwrap.dedent(
         workflow.split("        run: |\n", 1)[1].split("\n\n      - name:", 1)[0]
     )

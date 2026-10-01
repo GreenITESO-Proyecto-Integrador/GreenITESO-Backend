@@ -19,6 +19,7 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
+from .services import notify_mission_progress
 
 
 class ActionCategoryViewSet(
@@ -113,6 +114,8 @@ class ActionLogCreateView(views.APIView):
                     private_clan.total_points += action.points
                     private_clan.save(update_fields=["total_points"])
 
+                notify_mission_progress(action_log)
+
         return Response(
             {
                 "message": "Action logged successfully.",
@@ -171,6 +174,8 @@ class ActionLogAuditView(views.APIView):
                 if action_log.credited_private_clan:
                     action_log.credited_private_clan.total_points += action_log.points_awarded
                     action_log.credited_private_clan.save(update_fields=["total_points"])
+
+                notify_mission_progress(action_log)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

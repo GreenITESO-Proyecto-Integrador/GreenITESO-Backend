@@ -81,8 +81,8 @@ def test_get_profile_clans_raises_when_the_account_has_no_profile() -> None:
 
     with pytest.raises(UserProfile.DoesNotExist):
         get_profile_clans(user)
-        
-        
+
+
 def _create_action_log(
     *, user: User, institutional_clan: Clan, status: str, idempotency_key: str
 ) -> ActionLog:

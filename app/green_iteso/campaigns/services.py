@@ -15,6 +15,7 @@ from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
 from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
+from .notifications import notify_campaign_invite, notify_mission_completed
 
 
 def is_clan_leader(user: Any, clan: Clan | None) -> bool:
@@ -136,14 +137,28 @@ def sync_campaign_statuses(now: datetime | None = None) -> int:
     return finished + started
 
 
+def _is_open_for_enrollment(campaign: Campaign) -> bool:
+    """Return whether users can join the campaign right now."""
+    return (
+        campaign.approval_status == Campaign.ApprovalStatus.APPROVED
+        and campaign.status == Campaign.Status.PROMOTION
+    )
+
+
 def create_campaign_with_missions(
     campaign_data: dict[str, Any], missions_data: list[dict[str, Any]]
 ) -> Campaign:
-    """Create a campaign and its nested missions atomically."""
+    """Create a campaign and its nested missions atomically.
+
+    Approved campaigns still in PROMOTION invite their audience; pending
+    proposals notify nobody until an admin approves them.
+    """
     with transaction.atomic():
         campaign = Campaign.objects.create(**campaign_data)
         for mission_data in missions_data:
             Mission.objects.create(campaign=campaign, **mission_data)
+        if _is_open_for_enrollment(campaign):
+            notify_campaign_invite(campaign)
     return campaign
 
 
@@ -181,6 +196,8 @@ def approve_campaign(admin: Any, campaign_id: UUID) -> Campaign:
         campaign.save(
             update_fields=["approval_status", "reviewed_by", "reviewed_at", "status"]
         )
+        if _is_open_for_enrollment(campaign):
+            notify_campaign_invite(campaign)
     return campaign
 
 
@@ -245,7 +262,9 @@ def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProg
     """Recompute and persist ``user``'s progress toward ``mission``.
 
     Counts non-rejected ActionLogMissionContribution rows, clamped to the
-    mission target, and saves only when the stored value changed.
+    mission target, and saves only when the stored value changed. Notifies
+    the user only when the mission flips to completed; a later reversion
+    neither notifies nor deletes that notification.
     """
     with transaction.atomic():
         try:
@@ -255,6 +274,7 @@ def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProg
         except IntegrityError:
             progress = UserMissionProgress.objects.get(user=user, mission=mission)
         progress = UserMissionProgress.objects.select_for_update().get(pk=progress.pk)
+        was_completed = progress.is_completed
 
         valid = (
             ActionLogMissionContribution.objects.filter(
@@ -273,6 +293,9 @@ def recalculate_mission_progress(user: Any, mission: Mission) -> UserMissionProg
             progress.current_count = current_count
             progress.is_completed = is_completed
             progress.save(update_fields=["current_count", "is_completed"])
+
+        if is_completed and not was_completed:
+            notify_mission_completed(user, mission)
     return progress
 
 

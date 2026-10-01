@@ -8,7 +8,7 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 
 class UserManager(BaseUserManager):
@@ -212,6 +212,16 @@ class UserProfile(models.Model):
             models.CheckConstraint(
                 condition=Q(visibility__in=["PUBLIC", "PRIVATE"]),
                 name="profile_visibility_valid",
+            ),
+        ]
+        indexes = [
+            # Serves the points ranking (gamification selectors): an ordered
+            # scan that stops after limit + offset rows.
+            models.Index(
+                F("total_points").desc(),
+                "user",
+                name="profile_public_ranking_idx",
+                condition=Q(visibility="PUBLIC"),
             ),
         ]
 

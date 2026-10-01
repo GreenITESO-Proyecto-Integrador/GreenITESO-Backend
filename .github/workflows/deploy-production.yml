@@ -2,7 +2,7 @@ name: Release - production
 
 on:
   pull_request:
-    branches: [main]
+    branches: [prod]
     types: [closed]
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
       environment: production
       github_environment: production
       release_sha: ${{ github.event.pull_request.merge_commit_sha }}
-      release_ref: main
+      release_ref: prod
       source_ref: preprod
       source_release_sha: ${{ github.event.pull_request.head.sha }}
       build: false

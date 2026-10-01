@@ -9,7 +9,7 @@ on:
         type: choice
         options:
           - preprod
-          - main
+          - prod
 
 concurrency:
   group: promotion-${{ inputs.promote_to }}
@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           case "$TARGET_REF" in
             preprod) SOURCE_REF=dev ;;
-            main) SOURCE_REF=preprod ;;
+            prod) SOURCE_REF=preprod ;;
             *) echo "Unsupported promotion target: ${TARGET_REF}" >&2; exit 2 ;;
           esac
 

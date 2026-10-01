@@ -3,32 +3,37 @@
 The proposed promotion path has three deployed environments:
 
 ```
-feature branch --PR--> dev --promotion PR--> preprod --promotion PR--> main [production]
+feature branch --PR--> dev --promotion PR--> preprod --promotion PR--> prod [production]
 ```
 
-Git uses `dev`, `preprod`, and `main`. GitHub Environments are `dev`, `preprod`,
-and `production`; these map to Neon branches `dev`, `staging`, and
-`production`, respectively. There is no Git `staging` branch. The legacy Git
-`prod` branch remains protected but no longer triggers a deployment. This
-change does not create or rename remote branches. `main` does not yet exist;
-the production environment already requires approval and allows `main`, so a
-separate branch cutover must create and protect `main` before production
-promotion is possible. At cutover, require PRs and the `Enforce promotion chain`
-and `test` checks on `main`; restrict the production environment to `main` and
-prevent the deployment initiator from approving their own release. As of
-2026-09-24, production environment self-review is allowed, so approval alone is
-not yet an independent release gate. The duplicate GitHub `staging` environment
-is not used.
+Git uses the existing protected branches `dev`, `preprod`, and `prod`.
+GitHub Environments are `dev`, `preprod`, and `production`; these map to Neon
+branches `dev`, `staging`, and `production`, respectively. There is no Git
+`staging` branch. Fernando confirmed retaining Git `prod` on 2026-10-01; this
+workflow does not create or rename remote branches. The duplicate GitHub
+`staging` environment is not used.
+
+As verified on 2026-10-01, `prod` protection requires one code-owner approval
+and the `Enforce promotion chain` check, with admin enforcement; it does not
+require `test` or dismiss stale approvals. Before enabling production release,
+require the `test` check and update the production Environment's branch
+allowlist from the nonexistent `main` to `prod`. This PR does not change those
+GitHub policies. The production Environment already prevents self-review and
+its only configured reviewer is `luci-efe`. A release initiated by that account
+needs another configured reviewer; a release initiated by Isaac can instead
+receive independent approval from `luci-efe`.
 
 Cloud Run deployment remains opt-in through the repository variable
-`CLOUD_DEPLOYMENT_ENABLED`; it is unset, and GCP project configuration is not
-available. Do not enable it until the GCP configuration, environment secrets,
+`CLOUD_DEPLOYMENT_ENABLED`; GitHub inspection on 2026-10-01 found it unset and
+no GCP release settings in the repository or production Environment. External
+provider state and organization-level configuration remain unverified. Do not
+enable it until the GCP configuration, environment secrets,
 and deployment acceptance checks are complete. The production workflow is
-triggered only by a successfully merged `preprod` → `main` PR and remains
+triggered only by a successfully merged `preprod` → `prod` PR and remains
 behind the production GitHub Environment approval.
 
 The `Promote` workflow only opens PRs (`dev` → `preprod`, then `preprod` →
-`main`); it never updates protected refs directly. It refuses a target branch
+`prod`); it never updates protected refs directly. It refuses a target branch
 that does not exist. The `Enforce promotion chain` check requires the matching
 source branch to belong to this repository; a fork with the same branch name
 does not qualify. GitHub places checks triggered by a PR opened with the
@@ -37,8 +42,8 @@ must select **Approve workflows to run** on that promotion PR before the
 required `test` and `Enforce promotion chain` checks can pass; a human PR review
 does not substitute for starting those checks. A GitHub App installation token
 or fine-grained PAT would remove that extra workflow-run approval, but neither
-is configured here. Keep the legacy `prod` branch and unused GitHub environment
-intact until a separately approved cutover.
+is configured here. Keep the unused GitHub `staging` Environment intact;
+release callers use `preprod` for staging and `production` for production.
 For `dev` → `preprod`, Promote first requires evidence that the **exact dev
 SHA** passed Django tests and then its dev database migration plus app-role
 smoke, either through the standalone Neon job or (after GCP activation) the
@@ -63,14 +68,16 @@ whose `merge_commit_sha` exactly matches the tested SHA. This excludes direct
 pushes without an associated merged PR. Both gate evaluations use the
 default-branch copy of the verifier rather than the version in the tested
 commit. Because `dev` is also the default branch, review controls on privileged
-workflow changes are essential. As of 2026-09-24, branch protection requires
-the `test` status and code-owner approval on both `dev` and `preprod`, dismisses
-stale approvals, and enforces rules for admins. `dev` also requires two
-approvals. The `preprod` numeric threshold was raised from zero to one on
-2026-09-25; code-owner review remains required. The existing `.github/CODEOWNERS` file names the three
-maintainers; recheck this policy if the ownership roster or release topology
-changes. A GitHub API/response failure leaves eligibility unknown and fails the
-gate job visibly; it is not treated as a clean ineligible skip. Only an eligible
+workflow changes are essential. As verified on 2026-10-01, `dev` requires the
+`test` check and two approvals, dismisses stale approvals, and enforces rules
+for admins; it does not require a code-owner review or checks against the
+current base.
+`preprod` requires `test`, `Enforce promotion chain`, and one code-owner
+approval, dismisses stale approvals, requires checks against the current base,
+and enforces rules for admins. The existing `.github/CODEOWNERS` file names
+Ozcar, Isaac, and Fernando (`luci-efe`); recheck these policies if ownership or
+release topology changes. A GitHub API/response failure leaves eligibility
+unknown and fails the gate job visibly; it is not treated as a clean ineligible skip. Only an eligible
 result starts the job with a Neon GitHub
 Environment. After waiting for the lock, the job verifies eligibility again
 and skips a stale SHA if the branch has advanced. Neon
@@ -116,7 +123,7 @@ Add these environment-scoped secrets to both GitHub Environments `dev` and
 role), `DATABASE_URL_UNPOOLED` (direct migrator role), `DJANGO_SECRET_KEY`, and
 `DJANGO_ALLOWED_HOSTS`. The preprod URLs must connect to Neon `staging`, not a
 Git branch named `staging`. Secret values must never enter the repository,
-workflow logs, or issue comments. As of 2026-09-29, all four names are
+workflow logs, or issue comments. As verified on 2026-10-01, all four names are
 configured in each non-production Environment, but runner connectivity and
 authentication remain unverified until the first protected merge.
 Both deployed URLs must use either `sslmode=verify-full` with a trusted CA that
@@ -150,8 +157,9 @@ they do not rebuild the image.
 Successful promotion PR merges pass the merge commit as the target release SHA
 and the PR head as the source-image SHA. The target branch must still point at
 the merge SHA; the previous environment must have a successful release record
-for the source SHA. Before reusing that image, the workflow fetches both commits
-and requires identical Git trees, so merge/squash/rebase metadata cannot make a
+for the source SHA. Before reusing that image, the workflow reads the local
+release tree and the source tree through the authenticated GitHub API and
+requires identical Git trees, so merge/squash/rebase metadata cannot make a
 different code tree masquerade as the tested image. Each release is serialized
 with `queue: max`; stale releases fail before migration. The reusable release
 checks its branch at job start and checks again immediately before the combined

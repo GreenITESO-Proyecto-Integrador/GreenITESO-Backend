@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 
@@ -78,6 +79,75 @@ def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
     return membership
 
 
+@transaction.atomic
+def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMembership:
+    """Transfer ``clan``'s LEADER role from ``actor`` to ``successor`` (FR-CLAN-03).
+
+    Locks the ``clan`` row before checking who currently holds LEADER,
+    matching the discipline ``dissolve_clan`` and ``assign_leader`` already
+    use: checking on an unlocked read would leave a window where a
+    concurrent transfer or dissolve commits in between, letting a caller who
+    is no longer LEADER go through anyway. Demoting the current leader and
+    delegating the promotion to ``assign_leader`` (rather than setting the
+    role directly) keeps a single place enforcing "at most one LEADER per
+    clan", including its own re-check under the same lock.
+
+    Raises:
+        PermissionDenied: If ``actor`` is not the clan's current LEADER.
+        ValueError: If ``successor`` is ``actor``, or is not a member of
+            ``clan``.
+    """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    actor_membership = ClanMembership.objects.filter(
+        clan=locked, user=actor, role=ClanMembership.MembershipRole.LEADER
+    ).first()
+    if actor_membership is None:
+        raise PermissionDenied(
+            "Only the clan's current leader can transfer leadership."
+        )
+    if successor.pk == actor.pk:
+        raise ValueError("Cannot transfer leadership to yourself.")
+    try:
+        successor_membership = ClanMembership.objects.get(clan=locked, user=successor)
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("Successor must be a member of the clan.") from exc
+
+    actor_membership.role = ClanMembership.MembershipRole.MEMBER
+    actor_membership.save(update_fields=["role"])
+    return assign_leader(clan=locked, membership=successor_membership)
+
+
+@transaction.atomic
+def select_active_private_clan(*, user: User, clan: Clan) -> ClanMembership:
+    """Set ``clan`` as ``user``'s active private clan for point attribution (BR-03).
+
+    Locks the ``user`` row first so two concurrent selections by the same
+    user always serialize: the ``membership_one_active_private_per_user`` DB
+    constraint would otherwise only catch the conflict if both requests
+    happened to race on the exact same row, not two different ones.
+    Clearing any previous active membership and setting the new one inside
+    the same transaction keeps exactly one active row per user at all times.
+
+    Raises:
+        ValueError: If ``clan`` is not PRIVATE, or ``user`` is not one of
+            its members.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Only private clans can be selected as active.")
+    User.objects.select_for_update().get(pk=user.pk)
+    try:
+        membership = ClanMembership.objects.get(user=user, clan=clan)
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not a member of this clan.") from exc
+
+    ClanMembership.objects.filter(user=user, is_active_private=True).exclude(
+        pk=membership.pk
+    ).update(is_active_private=False)
+    membership.is_active_private = True
+    membership.save(update_fields=["is_active_private"])
+    return membership
+
+
 def _get_or_create_institutional_clan(career: str) -> Clan:
     """Return the institutional clan for ``career``, creating it on first use.
 
@@ -134,3 +204,61 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
         defaults={"role": ClanMembership.MembershipRole.MEMBER},
     )
     return profile
+
+
+def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
+    """Enforce that only the leader of a private clan dissolves it (FR-CLAN-03).
+
+    Must be called with ``clan`` already locked via ``select_for_update`` in
+    the caller's transaction, and checks leadership against that locked row's
+    current membership state rather than a snapshot taken before the lock.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise PermissionDenied("Only private clans can be dissolved.")
+    is_leader = ClanMembership.objects.filter(
+        clan=clan, user=actor, role=ClanMembership.MembershipRole.LEADER
+    ).exists()
+    if not is_leader:
+        raise PermissionDenied("Only the clan leader can dissolve the clan.")
+
+
+@transaction.atomic
+def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
+    """Dissolve a private clan through a soft delete, preserving history (BR-09).
+
+    Memberships and ``total_points`` are kept so the points contributed by former
+    members stay consistent in the global scoreboards. The active private clan
+    selection is cleared instead, so future actions no longer credit the clan.
+
+    Locks the ``clan`` row before checking leadership, matching the discipline
+    ``assign_leader`` and ``ClanMembershipAdmin.save_model`` already use:
+    checking permission on an unlocked read and only then locking would leave
+    a window where a concurrent leadership transfer commits in between,
+    letting an actor who is no longer LEADER dissolve the clan anyway.
+    Locking first means whichever operation gets there first fully commits
+    before the other re-reads current state. ``all_objects`` is used for the
+    lock fetch (rather than the default ``objects`` manager, which excludes
+    soft-deleted rows) so a concurrent double-dissolve can still find the row
+    and return it idempotently instead of raising ``Clan.DoesNotExist``.
+
+    Args:
+        clan: Clan to dissolve.
+        actor: User requesting the dissolution; must be its LEADER.
+
+    Returns:
+        The dissolved clan, refreshed from the database.
+
+    Raises:
+        PermissionDenied: If the clan is institutional or the actor is not its leader.
+    """
+    locked = Clan.all_objects.select_for_update().get(pk=clan.pk)
+    _assert_can_dissolve(clan=locked, actor=actor)
+    if locked.deleted_at is not None:
+        # Already dissolved by a concurrent request: keep the original timestamp.
+        return locked
+    locked.deleted_at = timezone.now()
+    locked.save(update_fields=["deleted_at"])
+    ClanMembership.objects.filter(clan=locked, is_active_private=True).update(
+        is_active_private=False
+    )
+    return locked

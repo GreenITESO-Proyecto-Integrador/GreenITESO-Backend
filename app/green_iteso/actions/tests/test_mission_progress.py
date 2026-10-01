@@ -8,11 +8,9 @@ from typing import NamedTuple
 
 import pytest
 from django.utils import timezone
-from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import Clan, User, UserProfile
+from green_iteso.accounts.models import Clan, User
 from green_iteso.actions.models import (
-    ActionCategory,
     ActionLog,
     ActionLogMissionContribution,
     ActionMaster,
@@ -23,6 +21,14 @@ from green_iteso.campaigns.models import (
     CampaignParticipant,
     Mission,
     UserMissionProgress,
+)
+
+from .helpers import (
+    audit_action_log,
+    create_admin,
+    create_bike_action,
+    create_student,
+    post_action_log,
 )
 
 
@@ -73,24 +79,14 @@ def _progress(
 
 @pytest.fixture(name="world")
 def world_fixture() -> MissionWorld:
-    user = User.objects.create_user(email="student@iteso.mx", password="local-only")
-    clan = Clan.objects.create(
-        name="Ingeniería de Software", type=Clan.ClanType.INSTITUTIONAL
-    )
-    UserProfile.objects.create(user=user, institutional_clan=clan)
-    category = ActionCategory.objects.create(code="MOBILITY", name="Movilidad")
-    action = ActionMaster.objects.create(
-        code="BIKE",
-        category=category,
-        name="Uso de Bicicleta",
-        description="Llegar en bici al campus",
-        points=50,
-        validation_type=ActionMaster.ValidationType.NONE,
-    )
+    user = create_student()
+    action = create_bike_action()
     campaign = _create_campaign(user)
     CampaignParticipant.objects.create(campaign=campaign, user=user)
     mission = Mission.objects.create(campaign=campaign, action=action, target_count=2)
-    return MissionWorld(user, clan, action, campaign, mission)
+    return MissionWorld(
+        user, user.profile.institutional_clan, action, campaign, mission
+    )
 
 
 @pytest.mark.django_db
@@ -187,14 +183,7 @@ def test_explicit_campaign_limits_progress_to_that_campaign(
 
 @pytest.mark.django_db
 def test_post_action_log_advances_mission(world: MissionWorld) -> None:
-    client = APIClient()
-    client.force_authenticate(world.user)
-
-    response = client.post(
-        "/api/v1/action-logs/",
-        {"action_id": str(world.action.id), "idempotency_key": str(uuid.uuid4())},
-        format="json",
-    )
+    response = post_action_log(world.user, world.action)
 
     assert response.status_code == 201
     assert _progress(world).current_count == 1
@@ -206,29 +195,15 @@ def test_photo_action_advances_mission_only_after_audit_approval(
 ) -> None:
     world.action.validation_type = ActionMaster.ValidationType.PHOTO
     world.action.save(update_fields=["validation_type"])
-    client = APIClient()
-    client.force_authenticate(world.user)
 
-    create_response = client.post(
-        "/api/v1/action-logs/",
-        {
-            "action_id": str(world.action.id),
-            "idempotency_key": str(uuid.uuid4()),
-            "evidence_object_key": "evidence/bici.jpg",
-        },
-        format="json",
+    create_response = post_action_log(
+        world.user, world.action, evidence_object_key="evidence/bici.jpg"
     )
     assert create_response.status_code == 201
     assert not UserMissionProgress.objects.exists()
 
-    admin = User.objects.create_user(
-        email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
-    )
-    client.force_authenticate(admin)
-    audit_response = client.patch(
-        f"/api/v1/action-logs/{create_response.json()['log_id']}/audit/",
-        {"status": "APPROVED"},
-        format="json",
+    audit_response = audit_action_log(
+        create_admin(), create_response.json()["log_id"], "APPROVED"
     )
 
     assert audit_response.status_code == 200

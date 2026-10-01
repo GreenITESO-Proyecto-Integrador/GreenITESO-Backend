@@ -1,0 +1,67 @@
+"""Shared builders for the actions domain tests."""
+
+from __future__ import annotations
+
+import uuid
+
+from rest_framework.response import Response
+from rest_framework.test import APIClient
+
+from green_iteso.accounts.models import Clan, User, UserProfile
+from green_iteso.actions.models import ActionCategory, ActionMaster
+
+ACTION_LOGS_URL = "/api/v1/action-logs/"
+
+
+def create_student(email: str = "student@iteso.mx") -> User:
+    """Create a user with a profile in a fresh institutional clan."""
+    user = User.objects.create_user(email=email, password="local-only")
+    clan = Clan.objects.create(
+        name="Ingeniería de Software", type=Clan.ClanType.INSTITUTIONAL
+    )
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    return user
+
+
+def create_admin(email: str = "admin@iteso.mx") -> User:
+    """Create a user with the global ADMIN role."""
+    return User.objects.create_user(
+        email=email, password="local-only", role=User.Role.ADMIN
+    )
+
+
+def create_bike_action(points: int = 50) -> ActionMaster:
+    """Create a declarative bike action in its own category."""
+    category = ActionCategory.objects.create(code="MOBILITY", name="Movilidad")
+    return ActionMaster.objects.create(
+        code="BIKE",
+        category=category,
+        name="Uso de Bicicleta",
+        description="Llegar en bici al campus",
+        points=points,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+
+def post_action_log(
+    user: User, action: ActionMaster, evidence_object_key: str = ""
+) -> Response:
+    """Log ``action`` for ``user`` through the API with a fresh idempotency key."""
+    payload = {"action_id": str(action.id), "idempotency_key": str(uuid.uuid4())}
+    if evidence_object_key:
+        payload["evidence_object_key"] = evidence_object_key
+    client = APIClient()
+    client.force_authenticate(user)
+    return client.post(ACTION_LOGS_URL, payload, format="json")
+
+
+def audit_action_log(
+    admin: User, log_id: str, decision: str, reason: str = ""
+) -> Response:
+    """Send an audit decision for ``log_id`` as ``admin``."""
+    payload = {"status": decision}
+    if reason:
+        payload["rejection_reason"] = reason
+    client = APIClient()
+    client.force_authenticate(admin)
+    return client.patch(f"{ACTION_LOGS_URL}{log_id}/audit/", payload, format="json")

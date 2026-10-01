@@ -71,3 +71,27 @@ def advance_missions_for_action(
         progress.save(update_fields=["current_count", "is_completed", "updated_at"])
         advanced.append(mission)
     return advanced
+
+
+@transaction.atomic
+def rewind_missions_for_action(*, user: User, missions: list[Mission]) -> None:
+    """Take back one increment of the user's progress on each given mission.
+
+    Counterpart of ``advance_missions_for_action`` for actions whose evidence
+    is rejected after they advanced missions. Progress never drops below zero
+    and a mission falls back to incomplete once it is under its target.
+
+    Args:
+        user: User whose action was rejected.
+        missions: Missions that the rejected action had advanced, once each.
+    """
+    progress_rows = (
+        UserMissionProgress.objects.select_for_update(of=("self",))
+        .select_related("mission")
+        .filter(user=user, mission__in=missions)
+        .order_by("id")
+    )
+    for progress in progress_rows:
+        progress.current_count = max(progress.current_count - 1, 0)
+        progress.is_completed = progress.current_count >= progress.mission.target_count
+        progress.save(update_fields=["current_count", "is_completed", "updated_at"])

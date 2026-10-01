@@ -19,7 +19,12 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
-from .services import notify_mission_progress
+from .services import (
+    PointsAlreadySpentError,
+    notify_mission_progress,
+    revert_mission_progress,
+    revoke_awarded_points,
+)
 
 
 class ActionCategoryViewSet(
@@ -127,7 +132,7 @@ class ActionLogCreateView(views.APIView):
 
 
 class ActionLogAuditView(views.APIView):
-    """API view for administrators to approve or reject pending action logs."""
+    """API view for administrators to audit pending logs or revoke approved ones."""
 
     permission_classes = [IsAdmin]
 
@@ -137,18 +142,35 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
-        except ActionLog.DoesNotExist:
-            return Response(
-                {"error": "Pending action log not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
+        # Pending logs can be approved or rejected; an approved log can only be
+        # rejected, which revokes the points and mission progress it credited.
+        auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
+        if new_status == "REJECTED":
+            auditable_statuses.append(ActionLog.Status.APPROVED)
 
         with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status__in=auditable_statuses
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Auditable action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if action_log.status == ActionLog.Status.APPROVED:
+                try:
+                    revoke_awarded_points(action_log)
+                except PointsAlreadySpentError:
+                    return Response(
+                        {"error": "The user already spent the points to revoke."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                revert_mission_progress(action_log)
+
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user

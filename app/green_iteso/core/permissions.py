@@ -23,10 +23,18 @@ from green_iteso.accounts.models import Clan, ClanMembership, User
 from .roles import ClanRole, GlobalRole
 
 
+class IsStaff(BasePermission):
+    """Allow access only to callers with the global STAFF role."""
+
+    def has_permission(self, request: Request, _view: APIView) -> bool:
+        user = request.user
+        return bool(user and user.is_authenticated and user.role == GlobalRole.STAFF)
+
+
 class IsAdmin(BasePermission):
     """Allow access only to callers with the global ADMIN role."""
 
-    def has_permission(self, request: Request, view: APIView) -> bool:
+    def has_permission(self, request: Request, _view: APIView) -> bool:
         user = request.user
         return bool(user and user.is_authenticated and user.role == GlobalRole.ADMIN)
 
@@ -38,7 +46,7 @@ class IsSelfOrAdmin(BasePermission):
     don't call ``get_object()``, such as ``list``/``create``.
     """
 
-    def has_object_permission(self, request: Request, view: APIView, obj: Any) -> bool:
+    def has_object_permission(self, request: Request, _view: APIView, obj: Any) -> bool:
         user = request.user
         if not (user and user.is_authenticated):
             return False
@@ -56,7 +64,7 @@ class IsClanLeader(BasePermission):
     ``get_object()``, such as ``list``/``create``.
     """
 
-    def has_object_permission(self, request: Request, view: APIView, obj: Any) -> bool:
+    def has_object_permission(self, request: Request, _view: APIView, obj: Any) -> bool:
         user = request.user
         if not (user and user.is_authenticated):
             return False

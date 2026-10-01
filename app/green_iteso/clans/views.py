@@ -53,9 +53,14 @@ class ClanViewSet(
         return ClanSerializer
 
     def get_queryset(self) -> QuerySet[Clan]:
-        queryset = list_active_clans(
-            user=self.request.user, search=self.request.query_params.get("search", "")
+        # `search` only applies to `list`: `get_queryset()` also backs
+        # `get_object()` for retrieve and every detail action (destroy,
+        # transfer-leadership, select-active), where filtering by an
+        # unrelated query param would 404 a clan that otherwise exists.
+        search = (
+            self.request.query_params.get("search", "") if self.action == "list" else ""
         )
+        queryset = list_active_clans(user=self.request.user, search=search)
         if self.action == "retrieve":
             return queryset.prefetch_related("memberships__user")
         return queryset

@@ -92,10 +92,16 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
     role directly) keeps a single place enforcing "at most one LEADER per
     clan", including its own re-check under the same lock.
 
+    Also locks the ``successor`` row and re-checks BR-04's single-leadership
+    rule on them: without this, a user can be made leader of this clan while
+    concurrently becoming leader of another one (e.g. through
+    ``create_private_clan`` on another connection), ending up leading two
+    clans at once.
+
     Raises:
         PermissionDenied: If ``actor`` is not the clan's current LEADER.
-        ValueError: If ``successor`` is ``actor``, or is not a member of
-            ``clan``.
+        ValueError: If ``successor`` is ``actor``, is not a member of
+            ``clan``, or already leads another clan.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
     actor_membership = ClanMembership.objects.filter(
@@ -111,6 +117,10 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
         successor_membership = ClanMembership.objects.get(clan=locked, user=successor)
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("Successor must be a member of the clan.") from exc
+
+    locked_successor = User.objects.select_for_update().get(pk=successor.pk)
+    if _is_already_leading_a_clan(locked_successor):
+        raise ValueError("Successor already leads another clan.")
 
     actor_membership.role = ClanMembership.MembershipRole.MEMBER
     actor_membership.save(update_fields=["role"])

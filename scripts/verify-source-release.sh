@@ -6,6 +6,7 @@ set -euo pipefail
 
 : "${RELEASE_ENVIRONMENT:?RELEASE_ENVIRONMENT is required}"
 : "${RELEASE_SHA:?RELEASE_SHA is required}"
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA:-$RELEASE_SHA}"
 
 case "$RELEASE_ENVIRONMENT" in
@@ -26,7 +27,7 @@ if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ || ! "$SOURCE_RELEASE_SHA" =~ ^[0-9a-f]
 fi
 
 if [ -n "${SOURCE_REF:-}" ]; then
-  current_source_sha="$(git ls-remote origin "refs/heads/${SOURCE_BRANCH}" | awk '{print $1}')"
+  current_source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SOURCE_BRANCH}" --jq '.object.sha')"
   if [ "$current_source_sha" != "$SOURCE_RELEASE_SHA" ]; then
     echo "Stale source release: ${SOURCE_BRANCH} is ${current_source_sha:-missing}, requested ${SOURCE_RELEASE_SHA}." >&2
     exit 1
@@ -34,9 +35,8 @@ if [ -n "${SOURCE_REF:-}" ]; then
 fi
 
 if [ "$SOURCE_RELEASE_SHA" != "$RELEASE_SHA" ]; then
-  git fetch --no-tags origin "$SOURCE_RELEASE_SHA"
   release_tree="$(git rev-parse "${RELEASE_SHA}^{tree}")"
-  source_tree="$(git rev-parse "${SOURCE_RELEASE_SHA}^{tree}")"
+  source_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${SOURCE_RELEASE_SHA}" --jq '.tree.sha')"
   if [ "$release_tree" != "$source_tree" ]; then
     echo "Source image tree does not match the merged release commit; refusing release." >&2
     exit 1
@@ -44,7 +44,6 @@ if [ "$SOURCE_RELEASE_SHA" != "$RELEASE_SHA" ]; then
 fi
 
 artifact_name="release-digest-${SOURCE_ENV}-${SOURCE_RELEASE_SHA}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 record_dir="$(mktemp -d)"
 trap 'rm -rf "$record_dir"' EXIT
 

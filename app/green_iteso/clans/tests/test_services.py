@@ -17,6 +17,7 @@ from green_iteso.clans.services import (
     create_clan,
     dissolve_clan,
     select_active_private_clan,
+    transfer_leadership,
 )
 
 
@@ -209,6 +210,116 @@ def test_assign_leader_rejects_a_membership_from_a_different_clan() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_promotes_successor_and_demotes_previous_leader(
+    leader: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    promoted = transfer_leadership(clan=clan, actor=leader, successor=successor)
+
+    assert promoted.role == ClanMembership.MembershipRole.LEADER
+    previous_leader = ClanMembership.objects.get(user=leader, clan=clan)
+    assert previous_leader.role == ClanMembership.MembershipRole.MEMBER
+    assert (
+        ClanMembership.objects.filter(
+            clan=clan, role=ClanMembership.MembershipRole.LEADER
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_leader_actor(
+    leader: User, member: User, successor: User, clan: Clan
+) -> None:
+    ClanMembership.objects.create(
+        user=member, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    with pytest.raises(PermissionDenied):
+        transfer_leadership(clan=clan, actor=member, successor=successor)
+
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_a_non_member_successor(
+    leader: User, clan: Clan
+) -> None:
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+
+    with pytest.raises(ValueError):
+        transfer_leadership(clan=clan, actor=leader, successor=outsider)
+
+    leader_membership = ClanMembership.objects.get(user=leader, clan=clan)
+    assert leader_membership.role == ClanMembership.MembershipRole.LEADER
+
+
+@pytest.mark.django_db
+def test_transfer_leadership_rejects_transferring_to_self(
+    leader: User, clan: Clan
+) -> None:
+    with pytest.raises(ValueError):
+        transfer_leadership(clan=clan, actor=leader, successor=leader)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_transfer_leadership_serializes_against_a_concurrent_transfer(
+    leader: User, clan: Clan
+) -> None:
+    """Two callers race to transfer leadership away from the same leader.
+
+    The clan-row lock in ``transfer_leadership`` must serialize them: only
+    the first to commit finds ``actor`` still LEADER, so exactly one
+    transfer succeeds and the clan never ends up leaderless or with two
+    LEADER rows.
+    """
+    first_candidate = User.objects.create_user(
+        email="first@iteso.mx", password="local-only"
+    )
+    second_candidate = User.objects.create_user(
+        email="second@iteso.mx", password="local-only"
+    )
+    ClanMembership.objects.create(
+        user=first_candidate, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    ClanMembership.objects.create(
+        user=second_candidate, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+
+    outcomes: list[Exception | None] = [None, None]
+
+    def transfer(index: int, successor: User) -> None:
+        try:
+            transfer_leadership(clan=clan, actor=leader, successor=successor)
+        except PermissionDenied as exc:
+            outcomes[index] = exc
+
+    threads = [
+        threading.Thread(target=transfer, args=(0, first_candidate)),
+        threading.Thread(target=transfer, args=(1, second_candidate)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    leader_count = ClanMembership.objects.filter(
+        clan=clan, role=ClanMembership.MembershipRole.LEADER
+    ).count()
+    assert leader_count == 1
+    assert sum(1 for outcome in outcomes if outcome is not None) == 1
 
 
 @pytest.mark.django_db
@@ -437,7 +548,10 @@ def test_dissolve_clan_serializes_against_concurrent_leadership_transfer() -> No
 
     outcomes: dict[str, str] = {}
 
-    def transfer_leadership() -> None:
+    # Named apart from the imported ``transfer_leadership`` service: this
+    # helper swaps the roles directly through the ORM to race the row lock,
+    # and shadowing the service here would hide which one a reader is seeing.
+    def transfer_via_orm() -> None:
         with transaction.atomic():
             Clan.all_objects.select_for_update().get(pk=clan.pk)
             leader_membership.role = ClanMembership.MembershipRole.MEMBER
@@ -454,7 +568,7 @@ def test_dissolve_clan_serializes_against_concurrent_leadership_transfer() -> No
             outcomes["dissolve"] = "rejected"
 
     threads = [
-        threading.Thread(target=transfer_leadership),
+        threading.Thread(target=transfer_via_orm),
         threading.Thread(target=dissolve),
     ]
     for thread in threads:

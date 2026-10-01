@@ -348,7 +348,13 @@ def _run_promotion_provenance(
     run_ids: tuple[str, ...] = ("123",),
     fail_run_list: bool = False,
     download_run_id: str = "123",
+    private_remote: bool = False,
+    fail_source_api: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    source_tip = _git(repo, "ls-remote", "origin", f"refs/heads/{source_ref}").split()[0]
+    source_tree = _git(repo, "rev-parse", f"{source_sha}^{{tree}}")
+    if private_remote:
+        _git(repo, "remote", "set-url", "origin", "https://example.invalid/private.git")
     fake_bin = tmp_path / "promotion-bin"
     fake_bin.mkdir(exist_ok=True)
     gh = fake_bin / "gh"
@@ -364,6 +370,10 @@ def _run_promotion_provenance(
         "  exit 0\n"
         "fi\n"
         'if [ "$1" = api ]; then\n'
+        '  case "$2" in\n'
+        f'    */git/ref/heads/{source_ref}) {"exit 29" if fail_source_api else f"echo {source_tip}"}; exit ;;\n'
+        f'    */git/commits/{source_sha}) echo {source_tree}; exit ;;\n'
+        "  esac\n"
         '  case "$2" in */actions/runs/123/artifacts) ;; *) exit 0 ;; esac\n'
         '  [ "$3" = --jq ] || exit 2\n'
         '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
@@ -433,6 +443,25 @@ def test_promotion_provenance_accepts_different_merge_sha_with_identical_tree(
     repo, source_sha, release_sha = _provenance_repo(tmp_path)
     result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
     assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_uses_authenticated_api_for_private_remote(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, private_remote=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_stops_when_source_api_fails(tmp_path: Path) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, fail_source_api=True
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "promotion-output").exists()
 
 
 def test_production_finds_staging_artifact_when_pull_request_run_head_differs(

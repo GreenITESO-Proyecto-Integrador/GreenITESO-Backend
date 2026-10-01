@@ -38,6 +38,24 @@ def test_grant_smoke_rejects_a_missing_managed_model_table() -> None:
             _check_app_grants(cursor)
 
 
+def test_grant_smoke_rejects_missing_sequences() -> None:
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (True, False)
+    cursor.fetchall.side_effect = [
+        [
+            ("accounts_user", True, True, True, True, False),
+            ("django_migrations", True, False, False, False, False),
+        ],
+        [],
+    ]
+    with patch(
+        "green_iteso.accounts.management.commands.db_smoke._expected_managed_tables",
+        return_value={"accounts_user"},
+    ):
+        with pytest.raises(AppGrantMismatchError):
+            _check_app_grants(cursor)
+
+
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("ledger_writable", [False, True])
 def test_grant_smoke_requires_read_only_migration_ledger(ledger_writable: bool) -> None:

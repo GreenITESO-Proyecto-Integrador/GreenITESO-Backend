@@ -230,6 +230,8 @@ def test_delete_removes_owned_notification(client: APIClient, user: User) -> Non
 
     assert response.status_code == 204
     assert not Notification.objects.filter(pk=notification.id).exists()
+    # Soft delete: the row is kept and only flagged.
+    assert Notification.all_objects.get(pk=notification.id).deleted_at is not None
 
 
 @pytest.mark.django_db
@@ -249,3 +251,50 @@ def test_delete_cannot_remove_another_users_notification(
 
     assert response.status_code == 404
     assert Notification.objects.filter(pk=notification.id).exists()
+
+
+@pytest.mark.django_db
+def test_soft_deleted_notification_is_hidden_everywhere(
+    client: APIClient, user: User
+) -> None:
+    kept = Notification.objects.create(
+        user=user, title="Kept", message="Kept", notification_type="SYSTEM"
+    )
+    deleted = Notification.objects.create(
+        user=user, title="Gone", message="Gone", notification_type="SYSTEM"
+    )
+    client.delete(reverse("notifications:detail", kwargs={"pk": deleted.id}))
+
+    listing = client.get(reverse("notifications:list")).json()
+    assert [item["id"] for item in listing["results"]] == [str(kept.id)]
+    assert listing["unread_count"] == 1
+    assert client.get(reverse("notifications:unread-count")).json() == {
+        "unread_count": 1
+    }
+
+
+@pytest.mark.django_db
+def test_deleting_twice_returns_not_found(client: APIClient, user: User) -> None:
+    notification = Notification.objects.create(
+        user=user, title="A", message="A", notification_type="SYSTEM"
+    )
+    url = reverse("notifications:detail", kwargs={"pk": notification.id})
+
+    assert client.delete(url).status_code == 204
+    assert client.delete(url).status_code == 404
+    assert client.patch(url, {"is_read": True}, format="json").status_code == 404
+
+
+@pytest.mark.django_db
+def test_mark_all_read_leaves_soft_deleted_notifications_untouched(
+    client: APIClient, user: User
+) -> None:
+    deleted = Notification.objects.create(
+        user=user, title="Gone", message="Gone", notification_type="SYSTEM"
+    )
+    client.delete(reverse("notifications:detail", kwargs={"pk": deleted.id}))
+
+    response = client.patch(reverse("notifications:mark-all-read"))
+
+    assert response.json() == {"marked_as_read": 0}
+    assert Notification.all_objects.get(pk=deleted.id).is_read is False

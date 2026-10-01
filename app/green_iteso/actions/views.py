@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import notify
 
 from .models import ActionCategory, ActionLog, ActionMaster
 from .selectors import list_active_action_categories, list_active_actions
@@ -152,11 +153,10 @@ class ActionLogAuditView(views.APIView):
             action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
 
             if new_status == "REJECTED":
-                Notification.objects.create(
-                    user=action_log.user,
-                    title="Evidencia Rechazada",
-                    message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
-                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_REJECT,
+                    reason=rejection_reason,
                 )
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
@@ -171,6 +171,13 @@ class ActionLogAuditView(views.APIView):
                 if action_log.credited_private_clan:
                     action_log.credited_private_clan.total_points += action_log.points_awarded
                     action_log.credited_private_clan.save(update_fields=["total_points"])
+
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_APPROVED,
+                    action_name=action_log.action.name,
+                    points=action_log.points_awarded,
+                )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

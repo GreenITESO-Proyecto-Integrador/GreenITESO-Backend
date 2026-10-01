@@ -125,6 +125,7 @@ else:
     CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -235,6 +236,11 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
+
+# In-memory layer: events only reach sockets held by the same process. Fine for
+# the single local uvicorn; a deployment with several workers needs a shared
+# layer (channels-redis) before real-time delivery is reliable across them.
+CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 DATABASE_URL = required("DATABASE_URL")
 DATABASES = {

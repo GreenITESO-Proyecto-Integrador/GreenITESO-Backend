@@ -66,7 +66,9 @@ class ActionLogCreateView(views.APIView):
         with transaction.atomic():
             # Serialize this user's submissions so concurrent requests cannot
             # both pass the daily count before either inserts its log.
-            user = type(user).objects.select_for_update().get(pk=user.pk)
+            # A weaker row lock still serializes submissions but permits user
+            # FK inserts by transactions already holding a profile-row lock.
+            user = type(user).objects.select_for_update(no_key=True).get(pk=user.pk)
             existing = ActionLog.objects.filter(
                 user_id=user.id, idempotency_key=data["idempotency_key"]
             ).first()

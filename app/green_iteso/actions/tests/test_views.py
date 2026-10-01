@@ -7,18 +7,21 @@ from __future__ import annotations
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from threading import Barrier
+from threading import Barrier, Event
 from unittest.mock import patch
 
 import pytest
-from django.db import close_old_connections
+from django.db import close_old_connections, connection, transaction
+from django.db.models import F
 from django.utils import timezone
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.selectors import count_user_action_logs_for_local_day
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
+from green_iteso.notifications.models import Notification
 
 
 @pytest.mark.django_db
@@ -233,6 +236,90 @@ def test_action_daily_limit_serializes_concurrent_submissions() -> None:
         outcomes = sorted(pool.map(submit, (1, 2)))
     assert outcomes == [201, 429]
     assert ActionLog.objects.filter(user=user, action=action).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_action_submission_allows_competing_audit_notification_foreign_key() -> None:
+    """A profile-credit transaction can insert a user FK without a lock cycle."""
+    user = User.objects.create_user(email="audit-race@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Audit race", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(
+        user=user, institutional_clan=clan, total_points=10, available_points=10
+    )
+    category = ActionCategory.objects.create(code="AUDIT_RACE", name="Audit race")
+    action = ActionMaster.objects.create(
+        code="AUDIT_RACE_ACTION",
+        category=category,
+        name="Audit race action",
+        description="Concurrent submission and rejection notification",
+        points=5,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    user_locked, profile_locked = Event(), Event()
+
+    def synchronize_after_user_lock(user_id: uuid.UUID, action_id: uuid.UUID) -> int:
+        user_locked.set()
+        assert profile_locked.wait(timeout=5)
+        return count_user_action_logs_for_local_day(user_id, action_id)
+
+    def submit() -> int:
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '5s'")
+                client = APIClient()
+                client.force_authenticate(user)
+                response = client.post(
+                    "/api/v1/action-logs/",
+                    {"action_id": str(action.pk), "idempotency_key": "audit-race"},
+                    format="json",
+                )
+            return response.status_code
+        finally:
+            close_old_connections()
+
+    def competing_audit() -> None:
+        close_old_connections()
+        try:
+            assert user_locked.wait(timeout=5)
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '5s'")
+                UserProfile.objects.select_for_update().get(pk=profile.pk)
+                profile_locked.set()
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") - 2,
+                    available_points=F("available_points") - 2,
+                )
+                # Approved-log rejection holds the profile row while creating
+                # this real Notification FK; validation may wait until commit.
+                Notification.objects.create(
+                    user=user,
+                    title="Evidence rejected",
+                    message="Synthetic concurrency regression",
+                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                )
+        finally:
+            close_old_connections()
+
+    with (
+        patch(
+            "green_iteso.actions.views.count_user_action_logs_for_local_day",
+            synchronize_after_user_lock,
+        ),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        submission = pool.submit(submit)
+        audit = pool.submit(competing_audit)
+        assert submission.result(timeout=10) == 201
+        audit.result(timeout=10)
+
+    profile.refresh_from_db()
+    assert (profile.total_points, profile.available_points) == (13, 13)
+    assert ActionLog.objects.filter(user=user).count() == 1
+    assert Notification.objects.filter(user=user).count() == 1
 
 
 @pytest.mark.django_db

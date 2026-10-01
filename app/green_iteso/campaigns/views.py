@@ -37,6 +37,7 @@ from .serializers import (
 from .services import (
     approve_campaign,
     can_manage_campaign,
+    is_clan_leader,
     propose_global_campaign,
     reject_campaign,
     sync_campaign_statuses,
@@ -232,7 +233,14 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
         return response
 
     def perform_create(self, serializer: CampaignSerializer) -> None:
-        serializer.save(creator=self.request.user)
+        with transaction.atomic():
+            campaign = serializer.save(creator=self.request.user)
+            if campaign.scope == Campaign.Scope.PRIVATE and is_clan_leader(
+                self.request.user, campaign.target_clan
+            ):
+                CampaignParticipant.objects.create(
+                    campaign=campaign, user=self.request.user
+                )
 
 
 class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):

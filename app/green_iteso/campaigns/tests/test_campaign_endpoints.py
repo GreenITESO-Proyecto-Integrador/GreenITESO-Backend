@@ -215,6 +215,9 @@ class TestCampaignEndpoints:
         )
 
         assert response.status_code == 201
+        assert CampaignParticipant.objects.filter(
+            campaign_id=response.data["id"], user=user
+        ).exists()
 
     def test_private_create_rejected_for_clan_member(
         self, api_client: APIClient, user: User, clan: Clan

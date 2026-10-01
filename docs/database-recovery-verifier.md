@@ -22,7 +22,8 @@ para Django y solo registra metadatos agregados:
 - la presencia de dos marcadores sintéticos, identificados en el baseline solo
   por HMAC-SHA-256. Los UUID originales no se escriben en el archivo.
 
-El esquema y sus reglas de producto siguen siendo un borrador. Esta herramienta
+El esquema núcleo está aprobado; las políticas de servicio pendientes se
+documentan en `AGENTS.md`. Esta herramienta
 no ejecuta una restauración, no aplica migraciones, no modifica datos y no
 demuestra que PITR, Neon o Cloud Run funcionen. La evidencia debe obtenerse en
 una base desechable del ensayo de recuperación y revisarse antes de usarla en

@@ -27,6 +27,30 @@ class ClanSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "type", "total_points", "created_at"]
 
 
+class TransferLeadershipSerializer(serializers.Serializer):
+    """Input payload for transferring a clan's leadership (T2-42)."""
+
+    successor_id = serializers.UUIDField()
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+
+class ClanMembershipSerializer(serializers.ModelSerializer):
+    """Read-only view of a clan membership, e.g. to confirm a leadership change
+    or an active-clan selection."""
+
+    class Meta:
+        model = ClanMembership
+        fields = ["id", "clan", "user", "role", "is_active_private", "joined_at"]
+        read_only_fields = fields
+
+
 class InstitutionalOnboardingSerializer(serializers.Serializer):
     """Input payload for declaring a career during onboarding (T2-30)."""
 

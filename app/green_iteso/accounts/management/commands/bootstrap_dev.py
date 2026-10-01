@@ -375,14 +375,15 @@ def create_profiles_and_memberships(
 
 
 def get_catalog_actions(catalog: CatalogData) -> list[ActionMaster]:
-    """Resolve only action codes owned by the supplied catalog."""
+    """Use the fixture's stable active set, retaining all-inactive draft support."""
     action_codes = [item["code"] for item in catalog.actions]
     actions = list(ActionMaster.objects.filter(code__in=action_codes).order_by("code"))
     if len(actions) != len(action_codes) or len(actions) < 3:
         raise CommandError(
             "Catalog actions are missing; load the catalog before seeding demo data."
         )
-    return actions
+    active_codes = {item["code"] for item in catalog.actions if item["is_active"]}
+    return [action for action in actions if action.code in active_codes] or actions
 
 
 def create_campaign_and_missions(
@@ -424,7 +425,8 @@ def create_campaign_and_missions(
             mission.campaign_id != campaign.pk or mission.action_id != action.pk
         ):
             raise CommandError(
-                "Demo mission identity collision; existing mission was preserved."
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
             )
         missions.append(mission)
     for user in users:
@@ -506,7 +508,8 @@ def create_additional_campaigns(
             or mission.action_id != actions[index % len(actions)].pk
         ):
             raise CommandError(
-                "Demo mission identity collision; existing mission was preserved."
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
             )
         for user in scenario.participants:
             CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
@@ -541,6 +544,19 @@ def create_demo_action_log(
     user = context.users[index % len(context.users)]
     action = context.actions[index % len(context.actions)]
     status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
+    if status == ActionLog.Status.PENDING_AUDIT:
+        photo_action = next(
+            (
+                candidate
+                for candidate in context.actions
+                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
+            ),
+            None,
+        )
+        if photo_action is not None:
+            action = photo_action
+        else:
+            status = ActionLog.Status.APPROVED
     idempotency_key = f"demo-action-{index:02d}"
     institutional_clan = context.profiles[user.pk].institutional_clan
     credited_private_clan = context.private_clans[index % len(context.private_clans)]
@@ -596,7 +612,8 @@ def create_demo_action_log(
     )
     if not was_created and existing_identity != expected_identity:
         raise CommandError(
-            "Demo action-log identity collision; existing row was preserved."
+            "Demo action-log identity collision; existing row was preserved. "
+            "See docs/semillas-locales.md before repairing legacy demo data."
         )
     return SeededActionLog(
         index,
@@ -684,6 +701,7 @@ def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
             )
 
 
+@transaction.atomic
 def refresh_profile_totals(
     profiles: dict[uuid.UUID, UserProfile],
     approved_points: dict[uuid.UUID, int],
@@ -698,6 +716,9 @@ def refresh_profile_totals(
                 available_points=F("available_points") + available_points,
             )
         else:
+            # API credits update this row too; lock before reading the logs so
+            # an absolute local recomputation cannot overwrite their increment.
+            UserProfile.objects.select_for_update().get(pk=profile.pk)
             points = ActionLog.objects.filter(
                 user=profile.user, status=ActionLog.Status.APPROVED
             ).values_list("points_awarded", flat=True)
@@ -709,6 +730,7 @@ def refresh_profile_totals(
                 )
 
 
+@transaction.atomic
 def refresh_clan_totals(
     institutional_clans: list[Clan],
     private_clans: list[Clan],
@@ -716,14 +738,24 @@ def refresh_clan_totals(
     shared_dev: bool,
 ) -> None:
     """Refresh clan totals atomically in shared dev and from logs locally."""
-    for clan in (*institutional_clans, *private_clans):
-        if shared_dev:
-            points = approved_points.get(clan.pk, 0)
+    if shared_dev:
+        # Match the API's institutional-then-private row-lock order, including
+        # clans retained on edited profiles outside the fixture lists.
+        for clan in Clan.all_objects.filter(pk__in=approved_points).order_by(
+            "type", "pk"
+        ):
+            points = approved_points[clan.pk]
             if points:
-                Clan.objects.filter(pk=clan.pk).update(
+                Clan.all_objects.filter(pk=clan.pk).update(
                     total_points=F("total_points") + points
                 )
-            continue
+        return
+    clans = (
+        *sorted(institutional_clans, key=lambda row: row.pk),
+        *sorted(private_clans, key=lambda row: row.pk),
+    )
+    for clan in clans:
+        Clan.all_objects.select_for_update().get(pk=clan.pk)
         queryset = ActionLog.objects.filter(
             institutional_clan=clan, status=ActionLog.Status.APPROVED
         )
@@ -732,7 +764,7 @@ def refresh_clan_totals(
                 credited_private_clan=clan, status=ActionLog.Status.APPROVED
             )
         points = queryset.values_list("points_awarded", flat=True)
-        Clan.objects.filter(pk=clan.pk).update(total_points=sum(points))
+        Clan.all_objects.filter(pk=clan.pk).update(total_points=sum(points))
 
 
 def refresh_demo_totals(
@@ -744,9 +776,38 @@ def refresh_demo_totals(
     refresh_profile_totals(
         context.profiles, approved_user_points, context.metadata.shared_dev
     )
+    institutional_clans = context.metadata.institutional_clans
+    private_clans = context.private_clans
+    if not context.metadata.shared_dev:
+        # Profiles can retain an admin-selected clan outside the fixture. Use
+        # the stored snapshots on every rerun, including previously seeded logs.
+        clan_ids = set()
+        for institutional_id, private_id in ActionLog.objects.filter(
+            pk__in=[demo_id("action-log", str(index)) for index in range(24)]
+        ).values_list("institutional_clan_id", "credited_private_clan_id"):
+            clan_ids.update(
+                identifier
+                for identifier in (institutional_id, private_id)
+                if identifier
+            )
+        clans = list(Clan.all_objects.filter(pk__in=clan_ids))
+        institutional_clans = list(
+            {
+                clan.pk: clan
+                for clan in (*institutional_clans, *clans)
+                if clan.type == Clan.ClanType.INSTITUTIONAL
+            }.values()
+        )
+        private_clans = list(
+            {
+                clan.pk: clan
+                for clan in (*private_clans, *clans)
+                if clan.type == Clan.ClanType.PRIVATE
+            }.values()
+        )
     refresh_clan_totals(
-        context.metadata.institutional_clans,
-        context.private_clans,
+        institutional_clans,
+        private_clans,
         approved_clan_points,
         context.metadata.shared_dev,
     )

@@ -5,17 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
+from unittest.mock import patch
 
 import pytest
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import close_old_connections, transaction
+from django.db.models import F, QuerySet
 from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
+    create_demo_users,
     demo_id,
+    refresh_clan_totals,
+    refresh_profile_totals,
     seed_demo_data,
 )
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -84,6 +92,201 @@ def test_demo_seed_keeps_action_ids_stable_after_activation_change() -> None:
     assert ActionMaster.objects.get(code=catalog.actions[0]["code"]).is_active
     ActionMaster.objects.filter(code=catalog.actions[0]["code"]).update(is_active=False)
     assert seed_demo_data(catalog, as_of).created_logs == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("shared_dev", [False, True])
+def test_demo_seed_uses_loggable_actions_and_realistic_pending_audits(
+    shared_dev: bool,
+) -> None:
+    fixture = (
+        DEFAULT_CATALOG.with_name("catalog_dev_synthetic_v1.json")
+        if shared_dev
+        else DEFAULT_CATALOG
+    )
+    catalog = load_catalog_file(fixture)
+    load_catalog_data(catalog)
+    as_of = datetime(2030, 1, 15, 12, tzinfo=UTC)
+    seed_demo_data(catalog, as_of, shared_dev=shared_dev)
+
+    assert not Mission.objects.filter(action__is_active=False).exists()
+    assert not ActionLog.objects.filter(action__is_active=False).exists()
+    pending = ActionLog.objects.filter(status=ActionLog.Status.PENDING_AUDIT)
+    assert pending.exists()
+    assert not pending.exclude(
+        action__validation_type=ActionMaster.ValidationType.PHOTO
+    ).exists()
+    assert not pending.filter(evidence_object_key="").exists()
+    assert seed_demo_data(catalog, as_of, shared_dev=shared_dev).created_logs == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("shared_dev", [False, True])
+def test_demo_seed_credits_preserved_profile_clan_outside_catalog(
+    shared_dev: bool,
+) -> None:
+    catalog = load_catalog_file(DEFAULT_CATALOG)
+    load_catalog_data(catalog)
+    users, _ = create_demo_users(shared_dev=shared_dev)
+    clan = Clan.objects.create(
+        name="Admin-selected clan", type=Clan.ClanType.INSTITUTIONAL
+    )
+    profile = UserProfile.objects.create(user=users[0], institutional_clan=clan)
+
+    seed_demo_data(
+        catalog, datetime(2030, 1, 15, 12, tzinfo=UTC), shared_dev=shared_dev
+    )
+
+    profile.refresh_from_db()
+    clan.refresh_from_db()
+    assert profile.institutional_clan_id == clan.pk
+    points = sum(
+        ActionLog.objects.filter(
+            institutional_clan=clan, status=ActionLog.Status.APPROVED
+        ).values_list("points_awarded", flat=True)
+    )
+    assert points > 0
+    assert clan.total_points == points
+
+
+@pytest.mark.django_db(transaction=True)
+def test_demo_seed_credits_clan_snapshot_after_soft_delete() -> None:
+    clan = Clan.objects.create(name="Dissolved demo", type=Clan.ClanType.PRIVATE)
+    Clan.all_objects.filter(pk=clan.pk).update(deleted_at=timezone.now())
+
+    refresh_clan_totals([], [clan], {clan.pk: 7}, shared_dev=True)
+
+    assert Clan.all_objects.get(pk=clan.pk).total_points == 7
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("projection", ["profile", "clan"])
+def test_local_demo_recomputation_preserves_concurrent_api_credit(
+    projection: str,
+) -> None:
+    """Reproduce a credit arriving between the aggregate read and absolute write."""
+    catalog = load_catalog_file(DEFAULT_CATALOG)
+    load_catalog_data(catalog)
+    seed_demo_data(catalog, datetime(2030, 1, 15, 12, tzinfo=UTC))
+    profile = UserProfile.objects.get(user_id=demo_id("user", "1"))
+    clan = profile.institutional_clan
+    target = profile if projection == "profile" else clan
+    before = target.total_points
+    writing = Event()
+    attempted = Event()
+    credited = Event()
+
+    def credit() -> None:
+        close_old_connections()
+        try:
+            assert writing.wait(timeout=5)
+            attempted.set()
+            type(target).objects.filter(pk=target.pk).update(
+                total_points=F("total_points") + 5
+            )
+            credited.set()
+        finally:
+            close_old_connections()
+
+    def pause_before_absolute_write() -> None:
+        writing.set()
+        assert attempted.wait(timeout=5)
+        # With a row lock the credit waits for recomputation to commit; without
+        # it the credit commits here and the following absolute write loses it.
+        credited.wait(timeout=0.2)
+
+    original_save = UserProfile.save
+    original_update = QuerySet.update
+
+    def delayed_save(instance: UserProfile, *args: object, **kwargs: object) -> None:
+        if instance.pk == profile.pk:
+            pause_before_absolute_write()
+        original_save(instance, *args, **kwargs)
+
+    def delayed_update(queryset: QuerySet, **kwargs: object) -> int:
+        if queryset.model is Clan and isinstance(kwargs.get("total_points"), int):
+            pause_before_absolute_write()
+        return original_update(queryset, **kwargs)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(credit)
+        if projection == "profile":
+            with patch.object(UserProfile, "save", delayed_save):
+                refresh_profile_totals({profile.user_id: profile}, {}, shared_dev=False)
+        else:
+            with patch.object(QuerySet, "update", delayed_update):
+                refresh_clan_totals([clan], [], {}, shared_dev=False)
+        future.result(timeout=5)
+
+    target.refresh_from_db()
+    assert target.total_points == before + 5
+
+
+@pytest.mark.django_db(transaction=True)
+def test_demo_seed_preserves_mismatched_legacy_action_snapshot() -> None:
+    """An old fixture needs an explicit repair instead of rewriting its history."""
+    catalog = load_catalog_file(DEFAULT_CATALOG)
+    load_catalog_data(catalog)
+    as_of = datetime(2030, 1, 15, 12, tzinfo=UTC)
+    seed_demo_data(catalog, as_of)
+    log = ActionLog.objects.get(pk=demo_id("action-log", "1"))
+    old_action = ActionMaster.objects.get(code="draft-refill-bottle")
+    ActionLog.objects.filter(pk=log.pk).update(action=old_action)
+
+    with pytest.raises(CommandError, match="identity collision"), transaction.atomic():
+        seed_demo_data(catalog, as_of)
+
+    log.refresh_from_db()
+    assert log.action_id == old_action.pk
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("shared_dev", [False, True])
+def test_demo_clan_credit_uses_same_lock_order_as_api(shared_dev: bool) -> None:
+    """Different users can share clans: always lock institution before private."""
+    institutional = Clan.objects.create(
+        id=uuid.UUID(int=2), name="Lock institution", type=Clan.ClanType.INSTITUTIONAL
+    )
+    private = Clan.objects.create(
+        id=uuid.UUID(int=1), name="Lock private", type=Clan.ClanType.PRIVATE
+    )
+    api_locked_institution = Event()
+    seed_started = Event()
+    seed_locked_private = Event()
+    original_update = QuerySet.update
+
+    def api_credit() -> None:
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                Clan.all_objects.select_for_update().get(pk=institutional.pk)
+                api_locked_institution.set()
+                assert seed_started.wait(timeout=5)
+                seed_locked_private.wait(timeout=0.2)
+                Clan.all_objects.select_for_update().get(pk=private.pk)
+        finally:
+            close_old_connections()
+
+    def notice_private_lock(queryset: QuerySet, **kwargs: object) -> int:
+        result = original_update(queryset, **kwargs)
+        if queryset.model is Clan and list(queryset.values_list("pk", flat=True)) == [
+            private.pk
+        ]:
+            seed_locked_private.set()
+        return result
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(api_credit)
+        assert api_locked_institution.wait(timeout=5)
+        seed_started.set()
+        with patch.object(QuerySet, "update", notice_private_lock):
+            refresh_clan_totals(
+                [institutional],
+                [private],
+                {institutional.pk: 7, private.pk: 7},
+                shared_dev,
+            )
+        future.result(timeout=5)
 
 
 @pytest.mark.django_db(transaction=True)

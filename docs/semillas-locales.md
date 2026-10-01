@@ -10,6 +10,8 @@ Desde la raíz del checkout, copia `.env.example` a `.env` y conserva
 `DJANGO_ENV=dev` y `DJANGO_DEPLOYED=false`. Después inicia PostgreSQL 18 y
 aplica las migraciones:
 
+Si `docker compose` no está disponible, usa `docker-compose` en estos comandos.
+
 ```sh
 docker compose up -d db
 set -a; . ./.env; set +a
@@ -74,6 +76,40 @@ futura usada hoy puede dejar un estado visible incompatible con las ventanas
 cuando se integre la sincronización de campañas de PR #111. La semilla es
 idempotente y una segunda ejecución no mueve las fechas de campañas existentes;
 para escenarios temporales nuevos usa una base local descartable recién creada.
+
+### Compatibilidad con demos anteriores
+
+La selección de acciones usa `is_active` de la fixture, no el estado editable
+de la base. Así conserva las identidades al resembrar tras una edición de
+Admin. Las acciones inactivas de la fixture no reciben misiones ni logs nuevos;
+un catálogo enteramente inactivo sigue disponible sólo como escenario DRAFT.
+Los ejemplos `PENDING_AUDIT` usan una acción `PHOTO` con una clave de evidencia
+sintética; si el catálogo no ofrece ninguna, esos ejemplos quedan `APPROVED`.
+
+Las versiones anteriores podían crear una misión privada de `demo-retired`
+y logs pendientes sobre acciones `NONE`. Esta corrección cambia su selección
+determinista. Si ya sembraste esa versión, un rerun puede detenerse con
+`Demo mission identity collision` o `Demo action-log identity collision`:
+la transacción se revierte y los snapshots existentes se conservan. No cambies
+IDs, desactives las comprobaciones ni edites el historial para forzar el rerun.
+
+Para probar la versión nueva en local sin borrar tu demo, usa otro proyecto
+Compose y un puerto local libre (por ejemplo, `55447`), tras cargar el entorno
+local de la sección anterior:
+
+```sh
+COMPOSE_PROJECT_NAME=greeniteso-seed-v2 POSTGRES_PORT=55447 docker compose up -d --wait db
+export DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:55447/$POSTGRES_DB"
+python app/manage.py migrate
+python app/manage.py bootstrap_dev
+```
+
+En Neon dev, la carga registrada el 2026-09-28 necesita una revisión de esas
+filas antes de resembrar: identificar los UUID demo, misiones y contribuciones
+afectadas, comparar los snapshots y saldos actuales, y acordar una reparación
+específica con el operador. Este cambio no elimina ni reescribe datos cloud y
+no incluye un comando de reparación; la corrección de la semilla no acredita
+que el dataset existente ya esté corregido.
 
 ## Datos sintéticos en Neon dev (opt-in, T11/T12)
 

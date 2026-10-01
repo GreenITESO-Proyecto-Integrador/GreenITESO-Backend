@@ -23,6 +23,13 @@ from green_iteso.accounts.models import Clan, ClanMembership, User
 from .roles import ClanRole, GlobalRole
 
 
+class IsAuthenticated(BasePermission):
+    """Allow access only to authenticated callers."""
+
+    def has_permission(self, request: Request, _view: APIView) -> bool:
+        user = request.user
+        return bool(user and user.is_authenticated)
+
 class IsStaff(BasePermission):
     """Allow access only to callers with the global STAFF role."""
 

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
+from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionMaster
+from green_iteso.campaigns.models import Campaign, CampaignParticipant, Mission
 
 ACTION_LOGS_URL = "/api/v1/action-logs/"
 
@@ -40,6 +43,25 @@ def create_bike_action(points: int = 50) -> ActionMaster:
         description="Llegar en bici al campus",
         points=points,
         validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+
+def create_mission_for(
+    user: User, action: ActionMaster, target_count: int = 2
+) -> Mission:
+    """Create a running campaign joined by ``user`` with one mission for ``action``."""
+    now = timezone.now()
+    campaign = Campaign.objects.create(
+        title="Semana de la bici",
+        scope=Campaign.Scope.GLOBAL,
+        status=Campaign.Status.IN_PROGRESS,
+        creator=user,
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=7),
+    )
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+    return Mission.objects.create(
+        campaign=campaign, action=action, target_count=target_count
     )
 
 

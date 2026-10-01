@@ -169,7 +169,6 @@ class ActionLogAuditView(views.APIView):
                         {"error": "The user already spent the points to revoke."},
                         status=status.HTTP_409_CONFLICT,
                     )
-                revert_mission_progress(action_log)
 
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
@@ -183,6 +182,8 @@ class ActionLogAuditView(views.APIView):
                     message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
                     notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
+                # Must run after the REJECTED status is saved (campaigns rule).
+                revert_mission_progress(action_log)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 profile.total_points += action_log.points_awarded
@@ -190,12 +191,18 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
 
                 notify_mission_progress(action_log)
 

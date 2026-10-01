@@ -6,72 +6,51 @@ from django.db import transaction
 from django.db.models import F
 
 from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.campaigns.models import UserMissionProgress
 from green_iteso.campaigns.services import (
-    advance_missions_for_action,
-    rewind_missions_for_action,
+    apply_action_log_to_missions,
+    revert_action_log_from_missions,
 )
 
-from .models import ActionLog, ActionLogMissionContribution
+from .models import ActionLog
 
 
 class PointsAlreadySpentError(Exception):
     """The user no longer has enough available points to revoke an award."""
 
 
-@transaction.atomic
-def notify_mission_progress(
-    action_log: ActionLog,
-) -> list[ActionLogMissionContribution]:
+def notify_mission_progress(action_log: ActionLog) -> list[UserMissionProgress]:
     """Tell the missions system that an approved action may advance missions.
 
-    Delegates the progress update to the campaigns domain and records one
-    ``ActionLogMissionContribution`` per mission it advanced, so each increment
-    stays traceable to the log that caused it. Logs that are not approved do
-    not advance missions.
+    The campaigns domain only skips REJECTED logs, so pending logs are
+    filtered here: missions advance at the same point points are credited.
 
     Args:
         action_log: The action log whose approval should be propagated.
 
     Returns:
-        The contribution rows created for this log.
+        The mission progress rows the campaigns domain recalculated.
     """
     if action_log.status != ActionLog.Status.APPROVED:
         return []
-
-    missions = advance_missions_for_action(
-        user=action_log.user,
-        action=action_log.action,
-        occurred_at=action_log.created_at,
-        campaign=action_log.campaign,
-    )
-    return ActionLogMissionContribution.objects.bulk_create(
-        ActionLogMissionContribution(action_log=action_log, mission=mission)
-        for mission in missions
-    )
+    return apply_action_log_to_missions(action_log)
 
 
-@transaction.atomic
-def revert_mission_progress(action_log: ActionLog) -> int:
-    """Undo the mission increments a log caused when its evidence is rejected.
+def revert_mission_progress(action_log: ActionLog) -> list[UserMissionProgress]:
+    """Recalculate the missions a rejected log had contributed to.
 
-    Each ``ActionLogMissionContribution`` records exactly one increment, so the
-    campaigns domain rewinds one step per contributed mission. The contribution
-    rows are then removed because they no longer count toward any mission.
+    The campaigns domain requires the REJECTED status to be saved first; its
+    contribution rows are kept as history and simply stop counting.
 
     Args:
-        action_log: The log being rejected.
+        action_log: The log whose rejection was already saved.
 
     Returns:
-        How many mission increments were reverted.
+        The mission progress rows the campaigns domain recalculated.
     """
-    contributions = action_log.mission_contributions.select_related("mission")
-    missions = [contribution.mission for contribution in contributions]
-    if not missions:
-        return 0
-
-    rewind_missions_for_action(user=action_log.user, missions=missions)
-    contributions.delete()
-    return len(missions)
+    if action_log.status != ActionLog.Status.REJECTED:
+        return []
+    return revert_action_log_from_missions(action_log)
 
 
 @transaction.atomic

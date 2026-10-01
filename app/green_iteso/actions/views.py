@@ -9,6 +9,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from green_iteso.core.permissions import IsAdmin
+from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -113,6 +114,8 @@ class ActionLogCreateView(views.APIView):
                     private_clan.total_points += action.points
                     private_clan.save(update_fields=["total_points"])
 
+                check_and_award_badges(user)
+
         return Response(
             {
                 "message": "Action logged successfully.",
@@ -135,7 +138,9 @@ class ActionLogAuditView(views.APIView):
         data = serializer.validated_data
 
         try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
+            action_log = ActionLog.objects.get(
+                id=log_id, status=ActionLog.Status.PENDING_AUDIT
+            )
         except ActionLog.DoesNotExist:
             return Response(
                 {"error": "Pending action log not found."},
@@ -165,12 +170,20 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
+
+                check_and_award_badges(action_log.user)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

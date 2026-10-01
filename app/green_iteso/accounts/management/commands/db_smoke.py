@@ -168,6 +168,8 @@ def _check_app_grants(cursor: Any) -> tuple[int, int]:
         "WHERE n.nspname = 'public' AND c.relkind = 'S'"
     )
     sequence_grants = cursor.fetchall()
+    if not sequence_grants:
+        raise AppGrantMismatchError
     required_tables = _expected_managed_tables() | {"django_migrations"}
     if (
         schema_grants != (True, False)

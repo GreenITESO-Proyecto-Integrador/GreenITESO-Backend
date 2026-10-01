@@ -117,7 +117,10 @@ def test_cloud_runtime_keeps_entra_configuration(tmp_path: Path) -> None:
     reusable = WORKFLOW.read_text()
     for name in ("MICROSOFT_TENANT_ID", "MICROSOFT_CLIENT_ID"):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in reusable
-        assert name in reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[0]
+        assert (
+            name
+            in reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[0]
+        )
 
 
 def test_migration_failure_does_not_deploy(tmp_path: Path) -> None:
@@ -345,7 +348,13 @@ def _run_promotion_provenance(
     run_ids: tuple[str, ...] = ("123",),
     fail_run_list: bool = False,
     download_run_id: str = "123",
+    private_remote: bool = False,
+    fail_source_api: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    source_tip = _git(repo, "ls-remote", "origin", f"refs/heads/{source_ref}").split()[0]
+    source_tree = _git(repo, "rev-parse", f"{source_sha}^{{tree}}")
+    if private_remote:
+        _git(repo, "remote", "set-url", "origin", "https://example.invalid/private.git")
     fake_bin = tmp_path / "promotion-bin"
     fake_bin.mkdir(exist_ok=True)
     gh = fake_bin / "gh"
@@ -361,6 +370,10 @@ def _run_promotion_provenance(
         "  exit 0\n"
         "fi\n"
         'if [ "$1" = api ]; then\n'
+        '  case "$2" in\n'
+        f'    */git/ref/heads/{source_ref}) {"exit 29" if fail_source_api else f"echo {source_tip}"}; exit ;;\n'
+        f'    */git/commits/{source_sha}) echo {source_tree}; exit ;;\n'
+        "  esac\n"
         '  case "$2" in */actions/runs/123/artifacts) ;; *) exit 0 ;; esac\n'
         '  [ "$3" = --jq ] || exit 2\n'
         '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
@@ -430,6 +443,25 @@ def test_promotion_provenance_accepts_different_merge_sha_with_identical_tree(
     repo, source_sha, release_sha = _provenance_repo(tmp_path)
     result = _run_promotion_provenance(tmp_path, repo, source_sha, release_sha)
     assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_uses_authenticated_api_for_private_remote(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, private_remote=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_promotion_provenance_stops_when_source_api_fails(tmp_path: Path) -> None:
+    repo, source_sha, release_sha = _provenance_repo(tmp_path)
+    result = _run_promotion_provenance(
+        tmp_path, repo, source_sha, release_sha, fail_source_api=True
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "promotion-output").exists()
 
 
 def test_production_finds_staging_artifact_when_pull_request_run_head_differs(
@@ -589,6 +621,14 @@ def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
     assert "- main" in workflow
     assert "- prod" not in workflow
     assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
+    assert "Require exact staging release evidence before main promotion" in workflow
+    assert "if: github.base_ref == 'main'" in workflow
+    assert "SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert "run: scripts/verify-source-release.sh" in workflow
+    promote = (ROOT / ".github/workflows/promote.yml").read_text()
+    assert "RELEASE_ENVIRONMENT=production" in promote
+    assert "SOURCE_REF=preprod" in promote
+    assert "scripts/verify-source-release.sh" in promote
     script = textwrap.dedent(
         workflow.split("        run: |\n", 1)[1].split("\n\n      - name:", 1)[0]
     )

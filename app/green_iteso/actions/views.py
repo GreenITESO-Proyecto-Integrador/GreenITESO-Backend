@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import QuerySet
+from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -134,22 +135,31 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
-        except ActionLog.DoesNotExist:
-            return Response(
-                {"error": "Pending action log not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
 
         with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status=ActionLog.Status.PENDING_AUDIT
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Pending action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
-            action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
+            action_log.reviewed_at = timezone.now()
+            action_log.save(
+                update_fields=[
+                    "status",
+                    "rejection_reason",
+                    "reviewed_by",
+                    "reviewed_at",
+                ]
+            )
 
             if new_status == "REJECTED":
                 Notification.objects.create(
@@ -165,12 +175,18 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

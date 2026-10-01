@@ -400,7 +400,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+        ("accounts", "0009_profile_editing_fields"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -495,6 +495,131 @@ def test_accounts_0005_migration_preserves_existing_rows_and_adds_microsoft_fiel
             microsoft_oid="11111111-1111-1111-1111-111111111111",
         )
         assert new_user_model.objects.filter(pk=second_user.pk).exists()
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0009_migration_preserves_existing_rows_and_adds_profile_fields() -> (
+    None
+):
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    accounts.0009_profile_editing_fields only adds blank/default fields
+    (bio, preferences, avatar_url), but the rule doesn't distinguish
+    additive from destructive changes, so this still rehearses migrating a
+    populated 0008 database forward.
+    """
+    old_target = [
+        ("accounts", "0008_merge_microsoft_identity_and_clan_updates"),
+    ]
+    new_target = [("accounts", "0009_profile_editing_fields")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_profile_model = old_apps.get_model("accounts", "UserProfile")
+
+    user = old_user_model.objects.create(email="pre-t221@iteso.mx")
+    profile = old_profile_model.objects.create(user=user, career="Diseño Industrial")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_profile_model = new_apps.get_model("accounts", "UserProfile")
+
+        migrated_profile = new_profile_model.objects.get(pk=profile.pk)
+        assert migrated_profile.career == "Diseño Industrial"
+        assert migrated_profile.bio == ""
+        assert migrated_profile.preferences == {}
+        assert migrated_profile.avatar_url == ""
+
+        migrated_profile.bio = "Loves recycling."
+        migrated_profile.avatar_url = "https://storage.googleapis.com/bucket/a.png"
+        migrated_profile.save(update_fields=["bio", "avatar_url"])
+        assert new_profile_model.objects.get(pk=profile.pk).bio == "Loves recycling."
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_campaigns_0006_migration_backfills_approved_and_enforces_constraints() -> None:
+    """Upgrade test CLAUDE.md requires for campaigns.0006_campaign_approval_workflow.
+
+    Existing campaigns predate the approval workflow, so they must come out of
+    the migration APPROVED (the field default) with empty review data, and the
+    new approval constraints must be enforced on the migrated table.
+    """
+    accounts_target = ("accounts", "0008_merge_microsoft_identity_and_clan_updates")
+    old_target = [accounts_target, ("campaigns", "0005_mission_campaign_action_unique")]
+    new_target = [accounts_target, ("campaigns", "0006_campaign_approval_workflow")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user = old_apps.get_model("accounts", "User").objects.create(
+        email="pre-approval@iteso.mx"
+    )
+    old_clan = old_apps.get_model("accounts", "Clan").objects.create(
+        name="Pre-approval clan", type="PRIVATE"
+    )
+    now = timezone.now()
+    old_campaign_model = old_apps.get_model("campaigns", "Campaign")
+    global_campaign = old_campaign_model.objects.create(
+        title="Old global",
+        scope="GLOBAL",
+        creator=old_user,
+        start_date=now,
+        end_date=now + timedelta(days=7),
+    )
+    private_campaign = old_campaign_model.objects.create(
+        title="Old private",
+        scope="PRIVATE",
+        creator=old_user,
+        target_clan=old_clan,
+        start_date=now,
+        end_date=now + timedelta(days=7),
+    )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_campaign_model = new_apps.get_model("campaigns", "Campaign")
+
+        for pk in (global_campaign.pk, private_campaign.pk):
+            migrated = new_campaign_model.objects.get(pk=pk)
+            assert migrated.approval_status == "APPROVED"
+            assert migrated.reviewed_by_id is None
+            assert migrated.reviewed_at is None
+            assert migrated.rejection_reason == ""
+
+        def create_campaign(**overrides: object) -> None:
+            values = {
+                "title": "New campaign",
+                "scope": "GLOBAL",
+                "creator_id": old_user.pk,
+                "start_date": now,
+                "end_date": now + timedelta(days=7),
+            }
+            values.update(overrides)
+            with transaction.atomic():
+                new_campaign_model.objects.create(**values)
+
+        with pytest.raises(IntegrityError):
+            create_campaign(approval_status="UNKNOWN")
+        with pytest.raises(IntegrityError):
+            create_campaign(
+                scope="PRIVATE", target_clan_id=old_clan.pk, approval_status="PENDING"
+            )
+        with pytest.raises(IntegrityError):
+            create_campaign(approval_status="REJECTED", rejection_reason="")
+        create_campaign(approval_status="REJECTED", rejection_reason="Not aligned")
+        create_campaign(approval_status="PENDING")
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

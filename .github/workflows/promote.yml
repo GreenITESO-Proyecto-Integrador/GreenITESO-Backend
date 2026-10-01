@@ -57,6 +57,17 @@ jobs:
                 echo "Dev migration evidence is not ready for ${source_sha}. Rerun this workflow after the successful dev release publishes its evidence artifact." >&2
                 exit 1
               }
+          else
+            RELEASE_ENVIRONMENT=production \
+            RELEASE_SHA="$source_sha" \
+            SOURCE_REF=preprod \
+            SOURCE_RELEASE_SHA="$source_sha" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GH_TOKEN="$GH_TOKEN" \
+              scripts/verify-source-release.sh || {
+                echo "Staging release evidence is not ready for ${source_sha}. Rerun after a successful staging release." >&2
+                exit 1
+              }
           fi
 
           if ! target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${TARGET_REF}" --jq '.commit.sha')"; then

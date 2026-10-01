@@ -147,6 +147,7 @@ INSTALLED_APPS = [
     "green_iteso.campaigns",
     "green_iteso.feed",
     "green_iteso.notifications",
+    "green_iteso.gamification.apps.GamificationConfig",
 ]
 
 REST_FRAMEWORK = {

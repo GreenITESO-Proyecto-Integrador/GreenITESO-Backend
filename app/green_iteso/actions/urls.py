@@ -10,11 +10,13 @@ from .views import (
     ActionLogAuditView,
     ActionLogCreateView,
     ActionMasterViewSet,
+    RewardViewSet
 )
 
 router = SimpleRouter()
 router.register("action-categories", ActionCategoryViewSet, basename="action-category")
 router.register("actions", ActionMasterViewSet, basename="action")
+router.register("rewards", RewardViewSet, basename="reward")
 
 urlpatterns = router.urls + [
     path("action-logs/", ActionLogCreateView.as_view(), name="action-log-create"),

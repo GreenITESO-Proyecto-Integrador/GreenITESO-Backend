@@ -5,19 +5,30 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.notifications.models import Notification
 
-from .models import ActionCategory, ActionLog, ActionMaster
-from .selectors import list_active_action_categories, list_active_actions
+from .models import ActionCategory, ActionLog, ActionMaster, Reward
+from .selectors import list_active_action_categories, list_active_actions, list_active_rewards, list_user_redemptions
+
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
+    RedeemRewardRequestSerializer,
+    RewardRedemptionSerializer,
+    RewardSerializer,
+)
+from .services import (
+    InsufficientPointsError,
+    RewardInactiveError,
+    RewardOutOfStockError,
+    redeem_reward,
 )
 
 
@@ -176,3 +187,93 @@ class ActionLogAuditView(views.APIView):
             {"message": f"Action log {new_status.lower()} successfully."},
             status=status.HTTP_200_OK,
         )
+
+def _format_error(exc: Exception) -> str:
+    if hasattr(exc, "messages") and exc.messages:
+        return str(exc.messages[0])
+    if hasattr(exc, "message") and exc.message:
+        return str(exc.message)
+    return str(exc)
+
+
+class RewardViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """List, retrieve, and redeem rewards under /api/v1/rewards/."""
+
+    serializer_class = RewardSerializer
+
+    def get_queryset(self) -> QuerySet[Reward]:
+        return list_active_rewards()
+
+    @action(detail=True, methods=["post"], url_path="redeem")
+    def redeem(self, request: Request, pk: str | None = None) -> Response:
+        """Redeem a specific reward by its ID in the URL path."""
+        reward = self.get_object()
+        try:
+            redemption = redeem_reward(user=request.user, reward_id=reward.id)
+        except (
+            InsufficientPointsError,
+            RewardOutOfStockError,
+            RewardInactiveError,
+        ) as exc:
+            return Response(
+                {"error": _format_error(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = request.user.profile
+        profile.refresh_from_db()
+
+        return Response(
+            {
+                "message": "Recompensa canjeada exitosamente.",
+                "redemption": RewardRedemptionSerializer(redemption).data,
+                "available_points": profile.available_points,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="redeem")
+    def redeem_by_body(self, request: Request) -> Response:
+        """Redeem a reward providing reward_id in the request payload."""
+        serializer = RedeemRewardRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reward_id = serializer.validated_data["reward_id"]
+
+        try:
+            redemption = redeem_reward(user=request.user, reward_id=reward_id)
+        except (
+            InsufficientPointsError,
+            RewardOutOfStockError,
+            RewardInactiveError,
+        ) as exc:
+            return Response(
+                {"error": _format_error(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = request.user.profile
+        profile.refresh_from_db()
+
+        return Response(
+            {
+                "message": "Recompensa canjeada exitosamente.",
+                "redemption": RewardRedemptionSerializer(redemption).data,
+                "available_points": profile.available_points,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="my-redemptions")
+    def my_redemptions(self, request: Request) -> Response:
+        """List all reward redemptions made by the authenticated user."""
+        redemptions = list_user_redemptions(request.user)
+        page = self.paginate_queryset(redemptions)
+        if page is not None:
+            serializer = RewardRedemptionSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = RewardRedemptionSerializer(redemptions, many=True)
+        return Response(serializer.data)

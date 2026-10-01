@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from .models import ActionCategory, ActionMaster
+from .models import ActionCategory, ActionMaster, Reward, RewardRedemption
 
 
 class ActionCategorySerializer(serializers.ModelSerializer):
@@ -72,6 +72,47 @@ class ActionLogAuditSerializer(serializers.Serializer):
                 {"rejection_reason": "Se requiere un motivo al rechazar la evidencia."}
             )
         return attrs
+
+class RewardSerializer(serializers.ModelSerializer):
+    """Representation of an exchangeable reward item."""
+
+    class Meta:
+        model = Reward
+        fields = [
+            "id",
+            "name",
+            "description",
+            "points_cost",
+            "stock",
+            "is_active",
+            "image_url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class RewardRedemptionSerializer(serializers.ModelSerializer):
+    """Representation of a completed reward redemption."""
+
+    reward = RewardSerializer(read_only=True)
+
+    class Meta:
+        model = RewardRedemption
+        fields = [
+            "id",
+            "reward",
+            "points_spent",
+            "status",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class RedeemRewardRequestSerializer(serializers.Serializer):
+    """Validation serializer when redeeming a reward via payload."""
+
+    reward_id = serializers.UUIDField(required=True)
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         raise NotImplementedError

@@ -5,9 +5,9 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, BasePermission
 
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification

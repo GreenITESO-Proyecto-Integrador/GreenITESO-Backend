@@ -5,7 +5,7 @@ on:
     types: [opened, synchronize, reopened, edited]
     branches:
       - preprod
-      - main
+      - prod
 
 permissions:
   actions: read
@@ -40,7 +40,7 @@ jobs:
             preprod)
               expected="dev"
               ;;
-            main)
+            prod)
               expected="preprod"
               ;;
             *)
@@ -63,8 +63,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/verify-dev-migration-evidence.py
 
-      - name: Require exact staging release evidence before main promotion
-        if: github.base_ref == 'main'
+      - name: Require exact staging release evidence before prod promotion
+        if: github.base_ref == 'prod'
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}

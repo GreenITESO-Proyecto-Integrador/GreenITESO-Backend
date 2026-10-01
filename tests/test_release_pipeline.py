@@ -587,7 +587,7 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
         '--service-account="$RUNTIME_SERVICE_ACCOUNT"'
         in (ROOT / "scripts" / "release.sh").read_text()
     )
-    assert "preprod" in promote and "main" in promote
+    assert "preprod" in promote and "prod" in promote
     assert "gh pr create" in promote
     assert "pull-requests: write" in promote
     assert "git/refs/heads/" not in promote
@@ -595,18 +595,19 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
     assert "git push" not in promote
 
 
-def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
+def test_production_release_is_tied_to_prod_without_branch_bypass() -> None:
     production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
     promote = PROMOTE.read_text()
-    assert "branches: [main]" in production
-    assert "release_ref: main" in production
+    assert "branches: [prod]" in production
+    assert "release_ref: prod" in production
     assert "source_ref: preprod" in production
     assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in production
     assert (
         "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in production
     )
     assert "github_environment: production" in production
-    assert "main" in promote
+    assert "      environment: production\n" in production
+    assert "prod" in promote
     assert "preprod" in promote
     assert "pull-requests: write" in promote
     assert "gh pr create" in promote
@@ -614,33 +615,38 @@ def test_production_release_is_tied_to_main_without_branch_bypass() -> None:
     assert "contents: write" not in promote
 
 
-def test_promotion_source_guard_matches_dev_preprod_main_chain() -> None:
+def test_promotion_source_guard_matches_dev_preprod_prod_chain() -> None:
     workflow = (ROOT / ".github/workflows/verify-promotion-source.yml").read_text()
     assert "types: [opened, synchronize, reopened, edited]" in workflow
     assert "- preprod" in workflow
-    assert "- main" in workflow
-    assert "- prod" not in workflow
+    assert "- prod" in workflow
+    assert "- main" not in workflow
     assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
-    assert "Require exact staging release evidence before main promotion" in workflow
-    assert "if: github.base_ref == 'main'" in workflow
+    assert "Require exact staging release evidence before prod promotion" in workflow
+    assert "if: github.base_ref == 'prod'" in workflow
     assert "SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
     assert "run: scripts/verify-source-release.sh" in workflow
     promote = (ROOT / ".github/workflows/promote.yml").read_text()
     assert "RELEASE_ENVIRONMENT=production" in promote
     assert "SOURCE_REF=preprod" in promote
     assert "scripts/verify-source-release.sh" in promote
+
+
+def test_promotion_source_guard_enforces_protected_prod_shell_chain() -> None:
+    """Run the actual guard: preprod may promote into prod, main is unsupported."""
+    workflow = (ROOT / ".github/workflows/verify-promotion-source.yml").read_text()
     script = textwrap.dedent(
         workflow.split("        run: |\n", 1)[1].split("\n\n      - name:", 1)[0]
     )
     repository = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
     cases = (
         ("preprod", "dev", repository, 0),
-        ("main", "preprod", repository, 0),
+        ("prod", "preprod", repository, 0),
         ("preprod", "feature", repository, 1),
-        ("main", "dev", repository, 1),
-        ("main", "preprod", "other/GreenITESO-Backend", 1),
+        ("prod", "dev", repository, 1),
+        ("prod", "preprod", "other/GreenITESO-Backend", 1),
         ("preprod", "dev", "other/GreenITESO-Backend", 1),
-        ("prod", "preprod", repository, 1),
+        ("main", "preprod", repository, 1),
     )
     for base_ref, head_ref, head_repo, expected_code in cases:
         result = subprocess.run(
@@ -868,6 +874,7 @@ def test_migration_gate_rejects_nonmerged_and_unsupported_events(
             {"conclusion": "failure"},
             {"merged": False},
             {"base_branch": "main"},
+            {"base_branch": "prod"},
         )
     ):
         result, output = _run_migration_gate(
@@ -883,6 +890,7 @@ def test_migration_gate_rejects_unsupported_branch_forks_and_cloud_mode(
 ) -> None:
     cases = (
         {"base_branch": "main"},
+        {"base_branch": "prod"},
         {"head_repository": "attacker/fork"},
         {"cloud_deployment_enabled": "true"},
     )
@@ -956,9 +964,9 @@ def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -
         in migration
     )
     production = (ROOT / ".github" / "workflows" / "deploy-production.yml").read_text()
-    assert "branches: [main]" in production
+    assert "branches: [prod]" in production
     assert "github_environment: production" in production
-    assert "release_ref: main" in production
+    assert "release_ref: prod" in production
     assert "source_ref: preprod" in production
 
 

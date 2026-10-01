@@ -13,12 +13,13 @@ branches `dev`, `staging`, and `production`, respectively. There is no Git
 workflow does not create or rename remote branches. The duplicate GitHub
 `staging` environment is not used.
 
-As verified on 2026-10-01, `prod` protection requires one code-owner approval
-and the `Enforce promotion chain` check, with admin enforcement; it does not
-require `test` or dismiss stale approvals. Before enabling production release,
-require the `test` check and update the production Environment's branch
-allowlist from the nonexistent `main` to `prod`. This PR does not change those
-GitHub policies. The production Environment already prevents self-review and
+After Fernando confirmed `prod` on 2026-10-01, the production Environment's
+branch allowlist was aligned from `main` to `prod`, and `test` was added to
+`prod`'s required checks alongside `Enforce promotion chain`. API readback
+confirmed the existing one code-owner approval, admin enforcement and other
+review options were preserved; stale approvals are not dismissed on `prod`.
+These configuration updates do not enable Cloud Run or promote code.
+The production Environment prevents self-review and
 its only configured reviewer is `luci-efe`. A release initiated by that account
 needs another configured reviewer; a release initiated by Isaac can instead
 receive independent approval from `luci-efe`.

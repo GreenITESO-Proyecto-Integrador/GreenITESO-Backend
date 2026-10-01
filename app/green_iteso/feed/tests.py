@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from green_iteso.feed.models import Post, PostType
+from green_iteso.gamification.models import Badge, UserBadge
 
 User = get_user_model()
 
@@ -23,6 +24,20 @@ class PostModelTests(APITestCase):
             email="testuser@iteso.mx",
             password="StrongPassword123!",
             first_name="Test",
+        )
+        self.other_user = User.objects.create_user(
+            email="otheruser@iteso.mx",
+            password="StrongPassword123!",
+            first_name="Other",
+        )
+        self.badge = Badge.objects.create(
+            name="Reciclador Pro",
+            description="Reciclaste 50 items",
+            icon_name="recycle",
+        )
+        self.user_badge = UserBadge.objects.create(
+            user=self.user,
+            badge=self.badge,
         )
 
     def test_post_creation_and_str_with_author(self) -> None:
@@ -74,10 +89,20 @@ class PostModelTests(APITestCase):
         with self.assertRaises(ValidationError):
             post.clean()
 
+    def test_clean_rejects_badge_belonging_to_another_user(self) -> None:
+        """Verify model rejects attaching a badge owned by someone else."""
+        post = Post(
+            author=self.other_user,
+            badge_user=self.user_badge,
+            post_type=PostType.COMMUNITY_MILESTONE,
+            content="Intento de usar medalla ajena",
+        )
+        with self.assertRaises(ValidationError):
+            post.clean()
 
-class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors
+
+class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-instance-attributes
     """Integration tests for feed REST API endpoints."""
-
     def setUp(self) -> None:
         self.author = User.objects.create_user(
             email="author@iteso.mx",
@@ -93,6 +118,19 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors
             author=self.author,
             post_type=PostType.SHARED_EVIDENCE,
             content="Evidencia inicial de prueba.",
+        )
+        self.badge = Badge.objects.create(
+            name="Plantador de Arboles",
+            description="Participo en reforestacion",
+            icon_name="tree",
+        )
+        self.author_badge = UserBadge.objects.create(
+            user=self.author,
+            badge=self.badge,
+        )
+        self.other_badge = UserBadge.objects.create(
+            user=self.other_user,
+            badge=self.badge,
         )
         self.base_url = "/api/v1/feed/"
         self.detail_url = f"/api/v1/feed/{self.post.pk}/"
@@ -127,14 +165,40 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["post_type"], PostType.COMMUNITY_MILESTONE)
 
-    def test_create_post_unauthenticated_forbidden(self) -> None:
-        """Ensure unauthenticated users receive 403 Forbidden."""
+    def test_create_post_with_badge_success(self) -> None:
+        """Ensure user can create a post attaching their own badge."""
+        self.client.force_authenticate(user=self.author)
+        payload = {
+            "post_type": PostType.COMMUNITY_MILESTONE,
+            "content": "Publicacion con mi nueva medalla.",
+            "badge_user": str(self.author_badge.id),
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNotNone(response.data["badge_info"])
+        self.assertEqual(response.data["badge_info"]["name"], "Plantador de Arboles")
+        self.assertEqual(response.data["badge_info"]["icon_name"], "tree")
+
+    def test_create_post_with_unowned_badge_rejected(self) -> None:
+        """Ensure attaching someone else's badge returns 400 Bad Request."""
+        self.client.force_authenticate(user=self.author)
+        payload = {
+            "post_type": PostType.COMMUNITY_MILESTONE,
+            "content": "Intentando presumir medalla que no es mia.",
+            "badge_user": str(self.other_badge.id),
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("badge_user", response.data)
+
+    def test_create_post_unauthenticated_unauthorized(self) -> None:
+        """Ensure unauthenticated users receive 401 Unauthorized."""
         payload = {
             "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
             "content": "Intento anonimo.",
         }
         response = self.client.post(self.base_url, data=payload)
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_create_post_validation_error(self) -> None:
         """Ensure serializer rejects payloads with empty content."""

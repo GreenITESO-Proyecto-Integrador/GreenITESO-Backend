@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
-from django.core.management import BaseCommand, CommandError, call_command
-from django.db import transaction
+from django.core.management import BaseCommand, CommandError
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -19,6 +19,7 @@ from green_iteso.actions.management.commands.load_catalog import (
     DEFAULT_CATALOG,
     CatalogData,
     ensure_local_database,
+    load_catalog_data,
     load_catalog_file,
     stable_reference_id,
 )
@@ -187,67 +188,68 @@ def get_or_create_demo_user(
     """Create a synthetic account without a password or Firebase identity."""
     email = f"demo-{index:02d}@example.invalid"
     identifier = demo_id("user", str(index))
-    user = User.objects.filter(pk=identifier).first()
-    if user is not None:
-        if user.email != email:
-            raise CommandError(
-                "Demo user identity collision; existing user was preserved."
+    try:
+        with transaction.atomic():
+            user, created = User.objects.get_or_create(
+                pk=identifier,
+                defaults={
+                    "email": email,
+                    "role": role,
+                    "first_name": "Demo",
+                    "last_name": f"User {index:02d}",
+                    "firebase_uid": None,
+                },
             )
-        if shared_dev and (
-            user.firebase_uid is not None or user.microsoft_oid is not None
-        ):
-            raise CommandError(
-                "Shared-dev demo identity is linked to an identity provider; refusing synthetic use."
-            )
-        return user, False
-    if User.objects.filter(email=email).exists():
+            if created:
+                user.set_unusable_password()
+                user.save(update_fields=["password"])
+    except IntegrityError as error:
+        raise CommandError(
+            "Demo user identity collision; existing user was preserved."
+        ) from error
+    if user.email != email:
         raise CommandError("Demo user identity collision; existing user was preserved.")
-    user = User.objects.create(
-        id=identifier,
-        email=email,
-        role=role,
-        first_name="Demo",
-        last_name=f"User {index:02d}",
-        firebase_uid=None,
-    )
-    user.set_unusable_password()
-    user.save(update_fields=["password"])
-    return user, True
+    if shared_dev and (user.firebase_uid is not None or user.microsoft_oid is not None):
+        raise CommandError(
+            "Shared-dev demo identity is linked to an identity provider; refusing synthetic use."
+        )
+    return user, created
 
 
 def get_or_create_demo_clan(
     spec: DemoClanSpec, *, created_by: User | None
 ) -> tuple[Clan, bool]:
     """Use deterministic IDs while retaining edits made through local admin."""
-    clan = Clan.all_objects.filter(pk=demo_id("clan", spec.key)).first()
-    if clan is not None:
-        allowed_descriptions = (
-            (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
-            if spec.description == DEMO_PRIVATE_CLAN_DESCRIPTION
-            else (spec.description,)
-        )
-        if (
-            clan.deleted_at is not None
-            or clan.type != spec.clan_type
-            or not clan.description.startswith(allowed_descriptions)
-        ):
-            raise CommandError(
-                "Demo clan identity collision; existing clan was preserved."
-            )
-        return clan, False
-    if Clan.all_objects.filter(name=spec.name).exists():
+    identifier = demo_id("clan", spec.key)
+    if Clan.all_objects.filter(name=spec.name).exclude(pk=identifier).exists():
         raise CommandError("Demo clan identity collision; existing clan was preserved.")
-    return (
-        Clan.objects.create(
-            id=demo_id("clan", spec.key),
-            name=spec.name,
-            description=spec.description,
-            type=spec.clan_type,
-            privacy=spec.privacy,
-            created_by=created_by,
-        ),
-        True,
+    try:
+        clan, created = Clan.all_objects.get_or_create(
+            pk=identifier,
+            defaults={
+                "name": spec.name,
+                "description": spec.description,
+                "type": spec.clan_type,
+                "privacy": spec.privacy,
+                "created_by": created_by,
+            },
+        )
+    except IntegrityError as error:
+        raise CommandError(
+            "Demo clan identity collision; existing clan was preserved."
+        ) from error
+    allowed_descriptions = (
+        (DEMO_PRIVATE_CLAN_DESCRIPTION, LEGACY_DEMO_PRIVATE_CLAN_DESCRIPTION)
+        if spec.description == DEMO_PRIVATE_CLAN_DESCRIPTION
+        else (spec.description,)
     )
+    if (
+        clan.deleted_at is not None
+        or clan.type != spec.clan_type
+        or not clan.description.startswith(allowed_descriptions)
+    ):
+        raise CommandError("Demo clan identity collision; existing clan was preserved.")
+    return clan, created
 
 
 def create_demo_users(*, shared_dev: bool = False) -> tuple[list[User], int]:
@@ -373,14 +375,15 @@ def create_profiles_and_memberships(
 
 
 def get_catalog_actions(catalog: CatalogData) -> list[ActionMaster]:
-    """Resolve only action codes owned by the supplied catalog."""
+    """Use the fixture's stable active set, retaining all-inactive draft support."""
     action_codes = [item["code"] for item in catalog.actions]
     actions = list(ActionMaster.objects.filter(code__in=action_codes).order_by("code"))
     if len(actions) != len(action_codes) or len(actions) < 3:
         raise CommandError(
             "Catalog actions are missing; load the catalog before seeding demo data."
         )
-    return actions
+    active_codes = {item["code"] for item in catalog.actions if item["is_active"]}
+    return [action for action in actions if action.code in active_codes] or actions
 
 
 def create_campaign_and_missions(
@@ -422,7 +425,8 @@ def create_campaign_and_missions(
             mission.campaign_id != campaign.pk or mission.action_id != action.pk
         ):
             raise CommandError(
-                "Demo mission identity collision; existing mission was preserved."
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
             )
         missions.append(mission)
     for user in users:
@@ -504,7 +508,8 @@ def create_additional_campaigns(
             or mission.action_id != actions[index % len(actions)].pk
         ):
             raise CommandError(
-                "Demo mission identity collision; existing mission was preserved."
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
             )
         for user in scenario.participants:
             CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
@@ -539,6 +544,19 @@ def create_demo_action_log(
     user = context.users[index % len(context.users)]
     action = context.actions[index % len(context.actions)]
     status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
+    if status == ActionLog.Status.PENDING_AUDIT:
+        photo_action = next(
+            (
+                candidate
+                for candidate in context.actions
+                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
+            ),
+            None,
+        )
+        if photo_action is not None:
+            action = photo_action
+        else:
+            status = ActionLog.Status.APPROVED
     idempotency_key = f"demo-action-{index:02d}"
     institutional_clan = context.profiles[user.pk].institutional_clan
     credited_private_clan = context.private_clans[index % len(context.private_clans)]
@@ -564,10 +582,16 @@ def create_demo_action_log(
             "reviewed_by": demo_reviewer
             if status == ActionLog.Status.REJECTED
             else None,
+            # Shared Neon dev deliberately has no synthetic privileged users;
+            # this row models a system-simulated rejection, not a staff audit.
             "reviewed_at": context.campaign.as_of
-            if status == ActionLog.Status.REJECTED and demo_reviewer is not None
+            if status == ActionLog.Status.REJECTED
             else None,
-            "rejection_reason": "Synthetic rejected example"
+            "rejection_reason": (
+                "Synthetic rejected example"
+                if demo_reviewer is not None
+                else "Synthetic system-rejected example"
+            )
             if status == ActionLog.Status.REJECTED
             else "",
         },
@@ -588,7 +612,8 @@ def create_demo_action_log(
     )
     if not was_created and existing_identity != expected_identity:
         raise CommandError(
-            "Demo action-log identity collision; existing row was preserved."
+            "Demo action-log identity collision; existing row was preserved. "
+            "See docs/semillas-locales.md before repairing legacy demo data."
         )
     return SeededActionLog(
         index,
@@ -676,6 +701,7 @@ def create_mission_progress(users: list[User], missions: list[Mission]) -> None:
             )
 
 
+@transaction.atomic
 def refresh_profile_totals(
     profiles: dict[uuid.UUID, UserProfile],
     approved_points: dict[uuid.UUID, int],
@@ -690,6 +716,9 @@ def refresh_profile_totals(
                 available_points=F("available_points") + available_points,
             )
         else:
+            # API credits update this row too; lock before reading the logs so
+            # an absolute local recomputation cannot overwrite their increment.
+            UserProfile.objects.select_for_update().get(pk=profile.pk)
             points = ActionLog.objects.filter(
                 user=profile.user, status=ActionLog.Status.APPROVED
             ).values_list("points_awarded", flat=True)
@@ -701,6 +730,7 @@ def refresh_profile_totals(
                 )
 
 
+@transaction.atomic
 def refresh_clan_totals(
     institutional_clans: list[Clan],
     private_clans: list[Clan],
@@ -708,14 +738,24 @@ def refresh_clan_totals(
     shared_dev: bool,
 ) -> None:
     """Refresh clan totals atomically in shared dev and from logs locally."""
-    for clan in (*institutional_clans, *private_clans):
-        if shared_dev:
-            points = approved_points.get(clan.pk, 0)
+    if shared_dev:
+        # Match the API's institutional-then-private row-lock order, including
+        # clans retained on edited profiles outside the fixture lists.
+        for clan in Clan.all_objects.filter(pk__in=approved_points).order_by(
+            "type", "pk"
+        ):
+            points = approved_points[clan.pk]
             if points:
-                Clan.objects.filter(pk=clan.pk).update(
+                Clan.all_objects.filter(pk=clan.pk).update(
                     total_points=F("total_points") + points
                 )
-            continue
+        return
+    clans = (
+        *sorted(institutional_clans, key=lambda row: row.pk),
+        *sorted(private_clans, key=lambda row: row.pk),
+    )
+    for clan in clans:
+        Clan.all_objects.select_for_update().get(pk=clan.pk)
         queryset = ActionLog.objects.filter(
             institutional_clan=clan, status=ActionLog.Status.APPROVED
         )
@@ -724,7 +764,7 @@ def refresh_clan_totals(
                 credited_private_clan=clan, status=ActionLog.Status.APPROVED
             )
         points = queryset.values_list("points_awarded", flat=True)
-        Clan.objects.filter(pk=clan.pk).update(total_points=sum(points))
+        Clan.all_objects.filter(pk=clan.pk).update(total_points=sum(points))
 
 
 def refresh_demo_totals(
@@ -736,9 +776,38 @@ def refresh_demo_totals(
     refresh_profile_totals(
         context.profiles, approved_user_points, context.metadata.shared_dev
     )
+    institutional_clans = context.metadata.institutional_clans
+    private_clans = context.private_clans
+    if not context.metadata.shared_dev:
+        # Profiles can retain an admin-selected clan outside the fixture. Use
+        # the stored snapshots on every rerun, including previously seeded logs.
+        clan_ids = set()
+        for institutional_id, private_id in ActionLog.objects.filter(
+            pk__in=[demo_id("action-log", str(index)) for index in range(24)]
+        ).values_list("institutional_clan_id", "credited_private_clan_id"):
+            clan_ids.update(
+                identifier
+                for identifier in (institutional_id, private_id)
+                if identifier
+            )
+        clans = list(Clan.all_objects.filter(pk__in=clan_ids))
+        institutional_clans = list(
+            {
+                clan.pk: clan
+                for clan in (*institutional_clans, *clans)
+                if clan.type == Clan.ClanType.INSTITUTIONAL
+            }.values()
+        )
+        private_clans = list(
+            {
+                clan.pk: clan
+                for clan in (*private_clans, *clans)
+                if clan.type == Clan.ClanType.PRIVATE
+            }.values()
+        )
     refresh_clan_totals(
-        context.metadata.institutional_clans,
-        context.private_clans,
+        institutional_clans,
+        private_clans,
         approved_clan_points,
         context.metadata.shared_dev,
     )
@@ -830,7 +899,7 @@ class Command(BaseCommand):
         with transaction.atomic():
             # T12 depends on T11. Keep both writes in this transaction so a
             # later fixture failure cannot leave a partial catalog bootstrap.
-            call_command("load_catalog", verbosity=0)
+            load_catalog_data(draft_catalog)
             result = seed_demo_data(draft_catalog, as_of)
 
         message = (

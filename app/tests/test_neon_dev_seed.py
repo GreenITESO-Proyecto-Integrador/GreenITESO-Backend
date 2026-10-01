@@ -259,6 +259,14 @@ def test_shared_dev_demo_seed_is_idempotent_and_uses_student_accounts() -> None:
     assert not ActionLog.objects.filter(
         status=ActionLog.Status.REJECTED, reviewed_by__isnull=False
     ).exists()
+    assert not ActionLog.objects.filter(
+        status=ActionLog.Status.REJECTED, reviewed_at__isnull=True
+    ).exists()
+    assert (
+        not ActionLog.objects.filter(status=ActionLog.Status.REJECTED)
+        .exclude(rejection_reason="Synthetic system-rejected example")
+        .exists()
+    )
     expected_careers = {
         stable_reference_id("institutional-clan", clan["key"]): clan["career"]
         for clan in payload["institutional_clans"]

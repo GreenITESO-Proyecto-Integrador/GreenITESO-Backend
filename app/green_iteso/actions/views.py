@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import F, QuerySet
+from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -141,7 +142,7 @@ class ActionLogCreateView(views.APIView):
                 )
 
                 if institutional_clan:
-                    type(institutional_clan).objects.filter(
+                    type(institutional_clan).all_objects.filter(
                         pk=institutional_clan.pk
                     ).update(total_points=F("total_points") + action.points)
 
@@ -190,7 +191,15 @@ class ActionLogAuditView(views.APIView):
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
-            action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
+            action_log.reviewed_at = timezone.now()
+            action_log.save(
+                update_fields=[
+                    "status",
+                    "rejection_reason",
+                    "reviewed_by",
+                    "reviewed_at",
+                ]
+            )
 
             if new_status == "REJECTED":
                 Notification.objects.create(

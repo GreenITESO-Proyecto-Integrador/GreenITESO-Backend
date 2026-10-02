@@ -6,12 +6,51 @@ from django.db import transaction
 from django.db.models import F
 
 from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.campaigns.models import UserMissionProgress
+from green_iteso.campaigns.services import (
+    apply_action_log_to_missions,
+    revert_action_log_from_missions,
+)
 
 from .models import ActionLog
 
 
 class PointsAlreadySpentError(Exception):
     """The user no longer has enough available points to revoke an award."""
+
+
+def notify_mission_progress(action_log: ActionLog) -> list[UserMissionProgress]:
+    """Tell the missions system that an approved action may advance missions.
+
+    The campaigns domain only skips REJECTED logs, so pending logs are
+    filtered here: missions advance at the same point points are credited.
+
+    Args:
+        action_log: The action log whose approval should be propagated.
+
+    Returns:
+        The mission progress rows the campaigns domain recalculated.
+    """
+    if action_log.status != ActionLog.Status.APPROVED:
+        return []
+    return apply_action_log_to_missions(action_log)
+
+
+def revert_mission_progress(action_log: ActionLog) -> list[UserMissionProgress]:
+    """Recalculate the missions a rejected log had contributed to.
+
+    The campaigns domain requires the REJECTED status to be saved first; its
+    contribution rows are kept as history and simply stop counting.
+
+    Args:
+        action_log: The log whose rejection was already saved.
+
+    Returns:
+        The mission progress rows the campaigns domain recalculated.
+    """
+    if action_log.status != ActionLog.Status.REJECTED:
+        return []
+    return revert_action_log_from_missions(action_log)
 
 
 @transaction.atomic

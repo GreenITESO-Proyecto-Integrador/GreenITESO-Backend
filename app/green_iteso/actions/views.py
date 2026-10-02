@@ -125,7 +125,6 @@ class ActionLogCreateView(views.APIView):
 
             profile, institutional_clan, private_clan = get_profile_clans(user)
 
-
             action_log = ActionLog.objects.create(
                 user=user,
                 action=action,

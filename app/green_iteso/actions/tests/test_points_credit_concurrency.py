@@ -4,7 +4,6 @@ from __future__ import annotations
 
 # A full API/DB concurrency scenario intentionally keeps its setup in one test.
 # pylint: disable=too-many-locals,too-many-statements
-
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier

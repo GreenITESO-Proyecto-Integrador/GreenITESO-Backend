@@ -22,7 +22,12 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
-from .services import PointsAlreadySpentError, revoke_awarded_points
+from .services import (
+    PointsAlreadySpentError,
+    notify_mission_progress,
+    revert_mission_progress,
+    revoke_awarded_points,
+)
 
 
 def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
@@ -147,6 +152,8 @@ class ActionLogCreateView(views.APIView):
                     private_clan.total_points += action.points
                     private_clan.save(update_fields=["total_points"])
 
+                notify_mission_progress(action_log)
+
         return Response(
             {
                 "message": "Action logged successfully.",
@@ -171,7 +178,7 @@ class ActionLogAuditView(views.APIView):
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
         # Pending logs can be approved or rejected; an approved log can only be
-        # rejected, which revokes the points it already credited.
+        # rejected, which revokes the points and mission progress it credited.
         auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
         if new_status == "REJECTED":
             auditable_statuses.append(ActionLog.Status.APPROVED)
@@ -208,6 +215,8 @@ class ActionLogAuditView(views.APIView):
                     message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
                     notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
+                # Must run after the REJECTED status is saved (campaigns rule).
+                revert_mission_progress(action_log)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 profile.total_points += action_log.points_awarded
@@ -227,6 +236,8 @@ class ActionLogAuditView(views.APIView):
                     action_log.credited_private_clan.save(
                         update_fields=["total_points"]
                     )
+
+                notify_mission_progress(action_log)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

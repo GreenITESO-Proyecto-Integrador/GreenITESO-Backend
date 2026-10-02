@@ -23,7 +23,7 @@ El esquema lo declaran los modelos y las migraciones de Django. Antes de la prim
 
 No edites ni renombres migraciones aplicadas, no uses `--fake` para ocultar drift y no ejecutes `makemigrations` ni `migrate` desde el arranque de Gunicorn. El job de release aplica una vez las migraciones con la conexión directa antes de cambiar el tráfico.
 
-Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P10/P11 siguen pendientes; el código que explore sus propuestas permanece en borrador y no se aplica a ambientes compartidos.
+Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P11 siguen pendientes en sus políticas de servicio. Fernando ratificó P10 el 2026-09-25: día calendario `America/Mexico_City` y todos los registros enviados (incluidos `REJECTED`) consumen el límite diario; el límite semanal se difiere. No confundir esta decisión con código fusionado o desplegado.
 
 ## Servicios externos
 

@@ -87,6 +87,9 @@ def revoke_awarded_points(action_log: ActionLog) -> None:
     ]
     # all_objects: a dissolved clan keeps its historical total, so it is
     # debited too.
-    Clan.all_objects.filter(pk__in=clan_ids).update(
-        total_points=F("total_points") - points
-    )
+    # Match credit/seed lock order: institutional clan before private clan.
+    # A bulk UPDATE may visit these rows in the opposite database-plan order.
+    for clan_id in clan_ids:
+        Clan.all_objects.filter(pk=clan_id).update(
+            total_points=F("total_points") - points
+        )

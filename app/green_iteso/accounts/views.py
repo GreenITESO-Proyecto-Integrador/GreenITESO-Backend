@@ -23,13 +23,15 @@ from .exceptions import RequestValidationError
 from .models import User
 from .selectors import get_ecological_profile, get_user_by_id, list_users
 from .serializers import (
+    ChangeRoleRequestSerializer,
     EcologicalProfileSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
     ProfileUpdateSerializer,
+    UserRoleAuditSerializer,
     UserSerializer,
 )
-from .services import login_with_microsoft, update_profile
+from .services import login_with_microsoft, update_profile, update_user_role
 
 
 class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -41,7 +43,7 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return list_users()
 
     def get_permissions(self) -> list[BasePermission]:
-        if self.action == "list":
+        if self.action in {"list", "role", "role_history"}:
             return [IsAdmin()]
         return super().get_permissions()
 
@@ -51,6 +53,54 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = get_user_by_id(request.user.pk)
         serializer = self.get_serializer(user)
         return Response(serializer.data)
+
+    @extend_schema(
+        request=ChangeRoleRequestSerializer,
+        responses={
+            200: UserSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: invalid role or last admin check failed"
+            ),
+            401: OpenApiResponse(description="UNAUTHENTICATED"),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["patch"], url_path="role")
+    def role(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """Update a user's global role (ADMIN only)."""
+        target_user = self.get_object()
+        serializer = ChangeRoleRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        updated = update_user_role(
+            admin_user=request.user,
+            user=target_user,
+            new_role=serializer.validated_data["role"],
+        )
+        return Response(UserSerializer(updated).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        responses={
+            200: UserRoleAuditSerializer(many=True),
+            401: OpenApiResponse(description="UNAUTHENTICATED"),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="role-history")
+    def role_history(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """List audit history for a user's role changes (ADMIN only)."""
+        target_user = self.get_object()
+        audits = target_user.role_audit_logs.all()
+        page = self.paginate_queryset(audits)
+        if page is not None:
+            serializer = UserRoleAuditSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        return Response(UserRoleAuditSerializer(audits, many=True).data)
 
 
 class LoginView(APIView):

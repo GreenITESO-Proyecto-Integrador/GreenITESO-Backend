@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import F
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
-from green_iteso.feed.services import create_shared_evidence_post
-from green_iteso.gamification.services import check_and_award_badges
+from green_iteso.accounts.models import UserProfile, Clan
 from green_iteso.notifications.models import Notification
-from green_iteso.notifications.services import notify
 
 from .models import ActionCategory, ActionLog, ActionMaster
 from .selectors import list_active_action_categories, list_active_actions
@@ -24,29 +22,6 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
-from .services import (
-    PointsAlreadySpentError,
-    notify_mission_progress,
-    revert_mission_progress,
-    revoke_awarded_points,
-)
-
-
-def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
-    """Return the feed body describing a publicly shared action."""
-    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
-
-
-def _resolve_evidence_image_url(evidence_object_key: str) -> str:
-    """Return the evidence reference only when it is already an absolute URL.
-
-    Evidence is stored as a private object key and the signed-URL resolver is
-    part of the pending storage work (P1), so a bare key is never published to
-    the feed; the post is created without an image until that lands.
-    """
-    if evidence_object_key.startswith(("http://", "https://")):
-        return evidence_object_key
-    return ""
 
 
 class ActionCategoryViewSet(
@@ -107,7 +82,13 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
-            profile, institutional_clan, private_clan = get_profile_clans(user)
+            profile = user.profile
+            institutional_clan = profile.institutional_clan
+
+            active_membership = user.clan_memberships.filter(
+                is_active_private=True
+            ).first()
+            private_clan = active_membership.clan if active_membership else None
 
             action_log = ActionLog.objects.create(
                 user=user,
@@ -121,41 +102,23 @@ class ActionLogCreateView(views.APIView):
                 plastic_kg_factor_snapshot=action.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
-                is_shared_publicly=data["is_shared_publicly"],
             )
 
-            if action_log.is_shared_publicly:
-                create_shared_evidence_post(
-                    author=user,
-                    content=_build_shared_evidence_content(
-                        action, action_log.points_awarded
-                    ),
-                    image_url=_resolve_evidence_image_url(
-                        action_log.evidence_object_key
-                    ),
+            if log_status == ActionLog.Status.APPROVED:
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action.points,
+                    available_points=F("available_points") + action.points,
                 )
 
-            if log_status == ActionLog.Status.APPROVED:
-                # pylint: disable=fixme
-                # TODO: Transactionalize point changes to avoid race conditions
-                # available_points is the spendable balance introduced by T2-02
-                # (see UserProfile.available_points); it accrues alongside
-                # total_points and only total_points is drawn down separately
-                # by the (future) redemption flow.
-                profile.total_points += action.points
-                profile.available_points += action.points
-                profile.save(update_fields=["total_points", "available_points"])
+            if institutional_clan:
+                Clan.objects.filter(pk=institutional_clan.pk).update(
+                    total_points=F("total_points") + action.points
+                )
 
-                if institutional_clan:
-                    institutional_clan.total_points += action.points
-                    institutional_clan.save(update_fields=["total_points"])
-
-                if private_clan:
-                    private_clan.total_points += action.points
-                    private_clan.save(update_fields=["total_points"])
-
-                check_and_award_badges(user)
-                notify_mission_progress(action_log)
+            if private_clan:
+                Clan.objects.filter(pk=private_clan.pk).update(
+                    total_points=F("total_points") + action.points
+                )
 
         return Response(
             {
@@ -168,7 +131,7 @@ class ActionLogCreateView(views.APIView):
 
 
 class ActionLogAuditView(views.APIView):
-    """API view for administrators to audit pending logs or revoke approved ones."""
+    """API view for administrators to approve or reject pending action logs."""
 
     permission_classes = [IsAdmin]
 
@@ -178,76 +141,48 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        try:
+            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
+        except ActionLog.DoesNotExist:
+            return Response(
+                {"error": "Pending action log not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
-        # Pending logs can be approved or rejected; an approved log can only be
-        # rejected, which revokes the points and mission progress it credited.
-        auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
-        if new_status == "REJECTED":
-            auditable_statuses.append(ActionLog.Status.APPROVED)
 
         with transaction.atomic():
-            try:
-                action_log = ActionLog.objects.select_for_update().get(
-                    id=log_id, status__in=auditable_statuses
-                )
-            except ActionLog.DoesNotExist:
-                return Response(
-                    {"error": "Auditable action log not found."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            if action_log.status == ActionLog.Status.APPROVED:
-                try:
-                    revoke_awarded_points(action_log)
-                except PointsAlreadySpentError:
-                    return Response(
-                        {"error": "The user already spent the points to revoke."},
-                        status=status.HTTP_409_CONFLICT,
-                    )
-
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
             action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
 
             if new_status == "REJECTED":
-                notify(
-                    action_log.user,
-                    Notification.NotificationType.AUDIT_REJECT,
-                    reason=rejection_reason,
+                Notification.objects.create(
+                    user=action_log.user,
+                    title="Evidencia Rechazada",
+                    message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
+                    notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
-                # Must run after the REJECTED status is saved (campaigns rule).
-                revert_mission_progress(action_log)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
-                profile.total_points += action_log.points_awarded
-                profile.available_points += action_log.points_awarded
-                profile.save(update_fields=["total_points", "available_points"])
+
+                if log_status == ActionLog.Status.APPROVED:
+                    UserProfile.objects.filter(pk=profile.pk).update(
+                        total_points=F("total_points") + action_log.points_awarded,
+                        available_points=F("available_points") + action_log.points_awarded,
+                    )
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += (
-                        action_log.points_awarded
+                    Clan.objects.filter(pk=action_log.institutional_clan.pk).update(
+                        total_points=F("total_points") + action_log.points_awarded
                     )
-                    action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += (
-                        action_log.points_awarded
+                    Clan.objects.filter(pk=action_log.credited_private_clan.pk).update(
+                        total_points=F("total_points") + action_log.points_awarded
                     )
-                    action_log.credited_private_clan.save(
-                        update_fields=["total_points"]
-                    )
-
-                check_and_award_badges(action_log.user)
-                notify_mission_progress(action_log)
-
-                notify(
-                    action_log.user,
-                    Notification.NotificationType.AUDIT_APPROVED,
-                    action_name=action_log.action.name,
-                    points=action_log.points_awarded,
-                )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

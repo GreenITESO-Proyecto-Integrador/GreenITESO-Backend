@@ -11,6 +11,7 @@ from rest_framework.response import Response
 
 from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
+from green_iteso.feed.services import create_shared_evidence_post
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -22,6 +23,23 @@ from .serializers import (
     ActionMasterSerializer,
 )
 from .services import PointsAlreadySpentError, revoke_awarded_points
+
+
+def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+    """Return the feed body describing a publicly shared action."""
+    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+
+
+def _resolve_evidence_image_url(evidence_object_key: str) -> str:
+    """Return the evidence reference only when it is already an absolute URL.
+
+    Evidence is stored as a private object key and the signed-URL resolver is
+    part of the pending storage work (P1), so a bare key is never published to
+    the feed; the post is created without an image until that lands.
+    """
+    if evidence_object_key.startswith(("http://", "https://")):
+        return evidence_object_key
+    return ""
 
 
 class ActionCategoryViewSet(
@@ -96,7 +114,19 @@ class ActionLogCreateView(views.APIView):
                 plastic_kg_factor_snapshot=action.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
+                is_shared_publicly=data["is_shared_publicly"],
             )
+
+            if action_log.is_shared_publicly:
+                create_shared_evidence_post(
+                    author=user,
+                    content=_build_shared_evidence_content(
+                        action, action_log.points_awarded
+                    ),
+                    image_url=_resolve_evidence_image_url(
+                        action_log.evidence_object_key
+                    ),
+                )
 
             if log_status == ActionLog.Status.APPROVED:
                 # pylint: disable=fixme

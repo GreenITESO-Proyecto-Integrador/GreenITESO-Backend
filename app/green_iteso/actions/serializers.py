@@ -50,6 +50,7 @@ class ActionLogSerializer(serializers.Serializer):
     evidence_object_key = serializers.CharField(
         max_length=500, required=False, allow_blank=True
     )
+    is_shared_publicly = serializers.BooleanField(required=False, default=False)
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""

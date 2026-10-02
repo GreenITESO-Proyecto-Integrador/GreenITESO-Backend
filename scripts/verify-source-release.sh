@@ -47,12 +47,19 @@ artifact_name="release-digest-${SOURCE_ENV}-${SOURCE_RELEASE_SHA}"
 record_dir="$(mktemp -d)"
 trap 'rm -rf "$record_dir"' EXIT
 
-# Keep failures from gh run list visible. A process substitution would hide its
-# exit status and make API failures look like a successful empty search.
-if ! source_run_ids="$(gh run list --workflow "$SOURCE_WORKFLOW" --status completed \
-  --limit 1000 --json databaseId,conclusion \
-  --jq 'map(select(.conclusion == "success")) | .[].databaseId')"; then
-  echo "Unable to list successful ${SOURCE_WORKFLOW} runs; refusing ${RELEASE_ENVIRONMENT} release." >&2
+source_workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${SOURCE_WORKFLOW}" --jq '.id')"
+if [[ ! "$source_workflow_id" =~ ^[0-9]+$ ]]; then
+  echo "GitHub did not identify the expected source workflow; refusing release." >&2
+  exit 1
+fi
+
+# Search the exact artifact name across all pages, rather than limiting the
+# number of recent runs. Capture the complete command so a later-page API
+# failure cannot accept partial results from an earlier page.
+if ! source_run_ids="$(gh api \
+  "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+  --paginate --jq ".artifacts[]? | select(.name == \"${artifact_name}\" and .expired == false) | .workflow_run.id")"; then
+  echo "Unable to list release artifacts; refusing ${RELEASE_ENVIRONMENT} release." >&2
   exit 1
 fi
 
@@ -62,11 +69,10 @@ fi
 source_run_id=""
 while IFS= read -r candidate_run_id; do
   [[ "$candidate_run_id" =~ ^[0-9]+$ ]] || continue
-  artifact_id="$(gh api \
-    "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts" \
-    --jq ".artifacts[]? | select(.name == \"${artifact_name}\" and .expired == false) | .id" \
-    | head -n 1)"
-  if [ -n "$artifact_id" ]; then
+  verified_run_id="$(gh api \
+    "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}" \
+    --jq "select(.workflow_id == ${source_workflow_id} and .status == \"completed\" and .conclusion == \"success\") | .id")"
+  if [ "$verified_run_id" == "$candidate_run_id" ]; then
     source_run_id="$candidate_run_id"
     break
   fi

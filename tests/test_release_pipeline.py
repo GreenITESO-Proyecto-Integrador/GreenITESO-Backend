@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import subprocess
 import textwrap
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release.sh"
@@ -230,7 +231,7 @@ def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
-    gh.write_text("#!/bin/sh\nexit 0\n")
+    gh.write_text('#!/bin/sh\ncase "$2" in */actions/workflows/*) echo 42 ;; esac\n')
     gh.chmod(0o755)
     output = tmp_path / "github-output"
     env = {
@@ -254,35 +255,113 @@ def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
     assert not output.exists()
 
 
-def _fake_provenance_gh(tmp_path: Path, record: str) -> Path:
+def _fake_provenance_gh(
+    tmp_path: Path,
+    record: str,
+    *,
+    source_ref: str = "dev",
+    source_tip: str = "a" * 40,
+    source_sha: str = "a" * 40,
+    source_tree: str = "b" * 40,
+    source_workflow: str = "deploy-dev.yml",
+    run_ids: tuple[str, ...] = ("123",),
+    fail_artifact_list: bool = False,
+    fail_source_api: bool = False,
+    download_run_id: str = "123",
+    expired: bool = False,
+    run_workflow_id: int = 42,
+    run_status: str = "completed",
+    run_conclusion: str = "success",
+) -> Path:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     gh = fake_bin / "gh"
-    quoted_record = shlex.quote(record)
+    # Emulate gh's filtered/paginated output; the legacy run-list command sees
+    # only its requested limit, so an artifact on run 1001 reproduces the bug.
+    config = {
+        "record": record,
+        "source_ref": source_ref,
+        "source_tip": source_tip,
+        "source_sha": source_sha,
+        "source_tree": source_tree,
+        "source_workflow": source_workflow,
+        "run_ids": run_ids,
+        "fail_artifact_list": fail_artifact_list,
+        "fail_source_api": fail_source_api,
+        "download_run_id": download_run_id,
+        "expired": expired,
+        "run_workflow_id": run_workflow_id,
+        "run_status": run_status,
+        "run_conclusion": run_conclusion,
+    }
     gh.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1 $2" = "run list" ]; then\n'
-        '  case " $* " in *" --commit "*) exit 2 ;; esac\n'
-        "  echo 123; exit 0\n"
-        "fi\n"
-        'if [ "$1" = api ]; then\n'
-        '  [ "$3" = --jq ] || exit 2\n'
-        '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
-        "  exit 0\n"
-        "fi\n"
-        'if [ "$1 $2" = "run download" ]; then\n'
-        '  mkdir -p "$7"\n'
-        f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 2\n"
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\nfrom pathlib import Path\n"
+        f"config = json.loads({json.dumps(json.dumps(config))})\n"
+        + textwrap.dedent(
+            r"""
+            args = sys.argv[1:]
+            with (Path(__file__).parent.parent / "gh-calls.jsonl").open("a") as calls:
+                calls.write(json.dumps(args) + "\n")
+            if args[:2] == ["run", "list"]:
+                if config["fail_artifact_list"]:
+                    sys.exit(29)
+                assert args[args.index("--workflow") + 1] == config["source_workflow"]
+                assert "--commit" not in args
+                limit = int(args[args.index("--limit") + 1])
+                print("\n".join(config["run_ids"][:limit]))
+            elif args[0] == "api":
+                endpoint = args[1]
+                query = args[args.index("--jq") + 1]
+                if endpoint.endswith("/git/ref/heads/" + config["source_ref"]):
+                    if config["fail_source_api"]:
+                        sys.exit(29)
+                    print(config["source_tip"])
+                elif endpoint.endswith("/git/commits/" + config["source_sha"]):
+                    print(config["source_tree"])
+                elif endpoint.endswith("/actions/workflows/" + config["source_workflow"]):
+                    assert query == ".id"
+                    print(42)
+                elif "/actions/artifacts?" in endpoint:
+                    assert "name=" + os.environ["EXPECTED_ARTIFACT_NAME"] in endpoint
+                    assert "per_page=100" in endpoint and "--paginate" in args
+                    assert '.expired == false' in query and '.name ==' in query
+                    assert '.workflow_run.id' in query
+                    if not config["expired"] and config["download_run_id"] in config["run_ids"]:
+                        print(config["download_run_id"])
+                    # A later page fails after an earlier page emitted a candidate.
+                    if config["fail_artifact_list"]:
+                        sys.exit(29)
+                elif endpoint.endswith("/artifacts"):
+                    if endpoint.endswith("/runs/" + config["download_run_id"] + "/artifacts") and not config["expired"]:
+                        print(456)
+                elif "/actions/runs/" in endpoint:
+                    assert '.workflow_id == 42' in query
+                    assert '.status == "completed"' in query
+                    assert '.conclusion == "success"' in query
+                    run_id = endpoint.rsplit("/", 1)[1]
+                    if run_id == config["download_run_id"] and config["run_workflow_id"] == 42 and config["run_status"] == "completed" and config["run_conclusion"] == "success":
+                        print(run_id)
+                else:
+                    sys.exit(2)
+            elif args[:2] == ["run", "download"]:
+                assert args[2] == config["download_run_id"]
+                dest = Path(args[args.index("--dir") + 1])
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "release-record.txt").write_text(config["record"])
+            else:
+                sys.exit(2)
+            """
+        )
     )
     gh.chmod(0o755)
     return fake_bin
 
 
-def _run_provenance(tmp_path: Path, record: str) -> subprocess.CompletedProcess[str]:
-    fake_bin = _fake_provenance_gh(tmp_path, record)
+def _run_provenance(
+    tmp_path: Path, record: str, **fake_options
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = _fake_provenance_gh(tmp_path, record, **fake_options)
     output = tmp_path / "github-output"
     env = {
         **os.environ,
@@ -344,50 +423,32 @@ def _run_promotion_provenance(
     source_ref: str = "dev",
     source_environment: str = "dev",
     source_workflow: str = "deploy-dev.yml",
-    run_head_sha: str | None = None,
     run_ids: tuple[str, ...] = ("123",),
     fail_run_list: bool = False,
     download_run_id: str = "123",
     private_remote: bool = False,
     fail_source_api: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    source_tip = _git(repo, "ls-remote", "origin", f"refs/heads/{source_ref}").split()[0]
+    source_tip = _git(repo, "ls-remote", "origin", f"refs/heads/{source_ref}").split()[
+        0
+    ]
     source_tree = _git(repo, "rev-parse", f"{source_sha}^{{tree}}")
     if private_remote:
         _git(repo, "remote", "set-url", "origin", "https://example.invalid/private.git")
-    fake_bin = tmp_path / "promotion-bin"
-    fake_bin.mkdir(exist_ok=True)
-    gh = fake_bin / "gh"
     record = f"environment={source_environment}\nrelease_sha={source_sha}\nimage_digest=sha256:{'a' * 64}\n"
-    quoted_record = shlex.quote(record)
-    gh.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1 $2" = "run list" ]; then\n'
-        f"  {'exit 29' if fail_run_list else ':'}\n"
-        '  case " $* " in *" --commit "*) exit 2 ;; esac\n'
-        f'  [ "$4" = "{source_workflow}" ] || exit 2\n'
-        f"  printf '%s\\n' {shlex.quote(chr(10).join(run_ids))} # run head SHA is {run_head_sha or source_sha}\n"
-        "  exit 0\n"
-        "fi\n"
-        'if [ "$1" = api ]; then\n'
-        '  case "$2" in\n'
-        f'    */git/ref/heads/{source_ref}) {"exit 29" if fail_source_api else f"echo {source_tip}"}; exit ;;\n'
-        f'    */git/commits/{source_sha}) echo {source_tree}; exit ;;\n'
-        "  esac\n"
-        '  case "$2" in */actions/runs/123/artifacts) ;; *) exit 0 ;; esac\n'
-        '  [ "$3" = --jq ] || exit 2\n'
-        '  case "$4" in *"$EXPECTED_ARTIFACT_NAME"*) echo 456 ;; *) exit 2 ;; esac\n'
-        "  exit 0\n"
-        "fi\n"
-        'if [ "$1 $2" = "run download" ]; then\n'
-        f'  [ "$3" = "{download_run_id}" ] || exit 2\n'
-        '  mkdir -p "$7"\n'
-        f"  printf '%s' {quoted_record} > \"$7/release-record.txt\"\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 2\n"
+    fake_bin = _fake_provenance_gh(
+        tmp_path,
+        record,
+        source_ref=source_ref,
+        source_tip=source_tip,
+        source_sha=source_sha,
+        source_tree=source_tree,
+        source_workflow=source_workflow,
+        run_ids=run_ids,
+        fail_artifact_list=fail_run_list,
+        fail_source_api=fail_source_api,
+        download_run_id=download_run_id,
     )
-    gh.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -467,7 +528,7 @@ def test_promotion_provenance_stops_when_source_api_fails(tmp_path: Path) -> Non
 def test_production_finds_staging_artifact_when_pull_request_run_head_differs(
     tmp_path: Path,
 ) -> None:
-    repo, dev_sha, preprod_sha = _provenance_repo(tmp_path)
+    repo, _, preprod_sha = _provenance_repo(tmp_path)
     tree = _git(repo, "rev-parse", f"{preprod_sha}^{{tree}}")
     production_sha = _git(
         repo,
@@ -487,7 +548,6 @@ def test_production_finds_staging_artifact_when_pull_request_run_head_differs(
         source_ref="preprod",
         source_environment="staging",
         source_workflow="deploy-staging.yml",
-        run_head_sha=dev_sha,
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "promotion-output").read_text() == (
@@ -516,7 +576,7 @@ def test_promotion_provenance_reports_run_list_failure(tmp_path: Path) -> None:
         tmp_path, repo, source_sha, release_sha, fail_run_list=True
     )
     assert result.returncode != 0
-    assert "Unable to list successful deploy-dev.yml runs" in result.stderr
+    assert "Unable to list release artifacts" in result.stderr
 
 
 def test_promotion_provenance_rejects_target_only_tree_change(tmp_path: Path) -> None:
@@ -1045,3 +1105,67 @@ def test_invalid_job_name_stops_before_migration(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "MIGRATION_JOB_NAME" in result.stderr
     assert not log.exists()
+
+
+@pytest.mark.parametrize(
+    "name", ("DJANGO_ALLOWED_HOSTS", "MICROSOFT_TENANT_ID", "MICROSOFT_CLIENT_ID")
+)
+@pytest.mark.parametrize("separator", ("@", "\n", "\r"))
+def test_invalid_runtime_value_stops_before_any_cloud_command(
+    tmp_path: Path, name: str, separator: str
+) -> None:
+    env = _base_env(tmp_path)
+    bad_value = f"private-value{separator}DJANGO_DEPLOYED=false"
+    env[name] = bad_value
+    log = _fake_commands(tmp_path)
+    result = subprocess.run(
+        [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 2
+    assert name in result.stderr
+    assert "private-value" not in result.stderr
+    assert not log.exists()
+
+
+def test_source_artifact_remains_usable_after_more_than_1000_runs(
+    tmp_path: Path,
+) -> None:
+    record = (
+        f"environment=dev\nrelease_sha={'a' * 40}\nimage_digest=sha256:{'a' * 64}\n"
+    )
+    result = _run_provenance(
+        tmp_path, record, run_ids=tuple(str(i) for i in range(2000, 3000)) + ("123",)
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "gh-calls.jsonl").read_text().splitlines()
+    ]
+    assert not any(call[:2] == ["run", "list"] for call in calls)
+    assert any("--paginate" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    "fake_options",
+    (
+        {"fail_artifact_list": True},
+        {"expired": True},
+        {"run_workflow_id": 99},
+        {"run_status": "in_progress"},
+        {"run_conclusion": "failure"},
+    ),
+)
+def test_untrusted_or_unavailable_source_artifact_cannot_promote(
+    tmp_path: Path, fake_options: dict
+) -> None:
+    record = (
+        f"environment=dev\nrelease_sha={'a' * 40}\nimage_digest=sha256:{'a' * 64}\n"
+    )
+    result = _run_provenance(tmp_path, record, **fake_options)
+    assert result.returncode != 0
+    assert not (tmp_path / "github-output").exists()
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "gh-calls.jsonl").read_text().splitlines()
+    ]
+    assert not any(call[:2] == ["run", "download"] for call in calls)

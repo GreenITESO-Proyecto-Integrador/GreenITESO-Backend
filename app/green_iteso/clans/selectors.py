@@ -4,21 +4,24 @@ from __future__ import annotations
 
 from django.db.models import Q, QuerySet
 
-from green_iteso.accounts.models import Clan, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
 
 
 def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
-    """Return non-deleted clans visible to ``user`` for discovery (T2-34).
+    """List alive clans visible to ``user``: every PUBLIC one, plus any
+    PRIVATE_INVITE clan where the user has an ACCEPTED membership.
 
-    A ``PRIVATE_INVITE`` clan is only visible to its own members; public
-    clans (institutional clans included, since they default to
-    ``Privacy.PUBLIC``) are visible to everyone. This is the single
-    visibility gate: the detail view builds on this same queryset, so a
-    non-member can't reach a private clan's roster either (``get_object()``
-    404s once the row is filtered out here).
+    A PENDING or REJECTED row must not grant visibility: an applicant
+    shouldn't see a private clan's roster just by having a pending request.
     """
     queryset = (
-        Clan.objects.filter(Q(privacy=Clan.Privacy.PUBLIC) | Q(memberships__user=user))
+        Clan.objects.filter(
+            Q(privacy=Clan.Privacy.PUBLIC)
+            | Q(
+                memberships__user=user,
+                memberships__status=ClanMembership.Status.ACCEPTED,
+            )
+        )
         .distinct()
         .order_by("-total_points", "name")
     )

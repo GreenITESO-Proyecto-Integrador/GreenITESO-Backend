@@ -190,8 +190,9 @@ class ActionLogAuditView(views.APIView):
                     notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
             elif new_status == "APPROVED":
+                profile = action_log.user.profile
                 points = action_log.points_awarded
-                UserProfile.objects.filter(user_id=action_log.user_id).update(
+                UserProfile.objects.filter(pk=profile.pk).update(
                     total_points=F("total_points") + points,
                     available_points=F("available_points") + points,
                 )

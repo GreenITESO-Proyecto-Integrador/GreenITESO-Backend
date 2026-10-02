@@ -21,6 +21,7 @@ from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
+from green_iteso.notifications.models import Notification
 
 
 @pytest.mark.django_db
@@ -262,7 +263,7 @@ def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
                     assert second_query.wait(timeout=5)
                     peer_deadline = monotonic() + 5
                     while monotonic() < peer_deadline:
-                        with connection.monitor() as monitor:
+                        with connection.cursor() as monitor:
                             monitor.execute("SELECT pg_stat_clear_snapshot()")
                             monitor.execute(
                                 "SELECT wait_event_type FROM pg_stat_activity "
@@ -316,3 +317,75 @@ def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
         clan.total_points,
         second_blocked.is_set(),
     ) == ([200, 404], 10, 10, 10, True)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("has_profile", (True, False))
+def test_audit_credits_frozen_deleted_clans_or_rolls_back_missing_profile(
+    has_profile: bool,
+) -> None:
+    """Missing profiles still abort; dissolved snapshots retain awarded credits."""
+    user = User.objects.create_user(email="frozen-credit@iteso.mx")
+    admin = User.objects.create_user(
+        email="frozen-admin@iteso.mx", role=User.Role.ADMIN
+    )
+    original = Clan.objects.create(
+        name="Frozen institutional", type=Clan.ClanType.INSTITUTIONAL
+    )
+    private = Clan.objects.create(name="Frozen private", type=Clan.ClanType.PRIVATE)
+    current = Clan.objects.create(
+        name="Current institutional", type=Clan.ClanType.INSTITUTIONAL
+    )
+    if has_profile:
+        UserProfile.objects.create(user=user, institutional_clan=current)
+    category = ActionCategory.objects.create(code="FROZEN", name="Frozen")
+    action = ActionMaster.objects.create(
+        code="FROZEN",
+        category=category,
+        name="Frozen",
+        points=99,
+        validation_type=ActionMaster.ValidationType.PHOTO,
+    )
+    log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=original,
+        credited_private_clan=private,
+        idempotency_key=str(uuid.uuid4()),
+        points_awarded=10,
+        status=ActionLog.Status.PENDING_AUDIT,
+    )
+    Clan.all_objects.filter(pk__in=[original.pk, private.pk]).update(
+        deleted_at=timezone.now()
+    )
+    request = APIRequestFactory().patch(
+        "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
+    )
+    force_authenticate(request, user=admin)
+    view = ActionLogAuditView.as_view()
+    if has_profile:
+        assert view(request, log_id=str(log.pk)).status_code == 200
+    else:
+        with pytest.raises(UserProfile.DoesNotExist):
+            view(request, log_id=str(log.pk))
+    log.refresh_from_db()
+    original.refresh_from_db()
+    private.refresh_from_db()
+    current.refresh_from_db()
+    assert log.institutional_clan_id == original.pk
+    assert log.credited_private_clan_id == private.pk
+    assert log.points_awarded == 10
+    assert current.total_points == 0
+    assert Notification.objects.filter(user=user).count() == 0
+    if has_profile:
+        profile = UserProfile.objects.get(user=user)
+        assert (profile.total_points, profile.available_points) == (10, 10)
+        assert log.status == ActionLog.Status.APPROVED
+        assert log.reviewed_by_id == admin.pk
+        assert log.reviewed_at is not None
+        assert original.total_points == private.total_points == 10
+    else:
+        assert log.status == ActionLog.Status.PENDING_AUDIT
+        assert log.reviewed_by_id is None
+        assert log.reviewed_at is None
+        assert original.total_points == private.total_points == 0

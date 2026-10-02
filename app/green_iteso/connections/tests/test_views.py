@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from rest_framework.test import APIClient
 
@@ -75,6 +77,23 @@ def test_list_friendships_returns_sent_and_received() -> None:
 
     assert response.status_code == 200
     assert len(response.json()["results"]) == 2
+
+
+@pytest.mark.django_db
+def test_list_friendships_query_count_does_not_grow_with_rows(
+    django_assert_num_queries: Any,
+) -> None:
+    ana = _user("ana@iteso.mx")
+    client = APIClient()
+    client.force_authenticate(ana)
+    for index in range(25):
+        send_friend_request(requester=ana, addressee=_user(f"friend{index}@iteso.mx"))
+
+    # One COUNT for pagination plus one page with both users joined.
+    with django_assert_num_queries(2):
+        response = client.get("/api/v1/friendships/")
+
+    assert len(response.json()["results"]) == 25
 
 
 @pytest.mark.django_db

@@ -264,3 +264,19 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
 
         res = self.client.get(f"/api/v1/feed/{post_old.pk}/")
         self.assertIn("hace", res.data["relative_time"])
+
+    def test_feed_list_query_count_does_not_grow_with_badges(self) -> None:
+        """Ensure listing posts does not trigger N+1 queries when posts have badges."""
+        for i in range(5):
+            Post.objects.create(
+                author=self.author,
+                content=f"Post con insignia {i}",
+                post_type=PostType.SHARED_EVIDENCE,
+                badge_user=self.author_badge,
+            )
+
+        self.client.force_authenticate(user=self.author)
+
+        with self.assertNumQueries(2):
+            response = self.client.get(self.base_url)
+            self.assertEqual(response.status_code, 200)

@@ -1,5 +1,7 @@
 """Unit and integration tests for virtual exchangeable items and profile redemptions."""
 
+# pylint: disable=redefined-outer-name
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -201,6 +203,7 @@ def test_redeem_exchangeable_inactive(auth_client: APIClient, test_user: User) -
 def test_my_inventory_endpoint(
     auth_client: APIClient, test_user: User, frame_gold: ExchangeableItem
 ) -> None:
+    del test_user  # fixture ensures profile exists; not accessed directly here
     # User redeems frame_gold
     auth_client.post(f"/api/v1/exchangeables/{frame_gold.id}/redeem/")
 

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from django.db import migrations
 
+if TYPE_CHECKING:
+    from django.apps.registry import Apps
+    from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
-def create_cosmetic(apps, schema_editor):
+
+def create_cosmetic(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> None:
     """Create a single 'OTHER' type cosmetic if it does not already exist.
 
     - key: ``other_special`` (unique identifier, used by the frontend).
@@ -11,7 +17,8 @@ def create_cosmetic(apps, schema_editor):
     - image_url: the URL provided by the user.
     - points_cost: 10 (the positive minimum required by the ``exchangeable_points_cost_positive`` constraint).
     """
-    ExchangeableItem = apps.get_model('actions', 'ExchangeableItem')
+    del schema_editor
+    ExchangeableItem: Any = apps.get_model('actions', 'ExchangeableItem')
     # Evitamos duplicados verificando la existencia del ``key``.
     if not ExchangeableItem.objects.filter(key='1').exists():
         ExchangeableItem.objects.create(
@@ -25,11 +32,13 @@ def create_cosmetic(apps, schema_editor):
         )
 
 
-def eliminate_cosmetic(apps, schema_editor):
-    """Deletes the cosmetic created.
+def eliminate_cosmetic(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> None:
+    """Delete the cosmetic created.
+
     Executed when reverting the migration.
     """
-    ExchangeableItem = apps.get_model('actions', 'ExchangeableItem')
+    del schema_editor
+    ExchangeableItem: Any = apps.get_model('actions', 'ExchangeableItem')
     ExchangeableItem.objects.filter(key='other_special').delete()
 
 

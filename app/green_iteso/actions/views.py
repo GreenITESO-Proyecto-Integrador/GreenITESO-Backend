@@ -54,9 +54,9 @@ def _format_error(exc: Exception) -> str:
     return str(exc)
 
 
-def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+def _build_shared_evidence_content(action_def: ActionMaster, points_awarded: int) -> str:
     """Return the feed body describing a publicly shared action."""
-    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+    return f"Nueva acción registrada: {action_def.name} (+{points_awarded} puntos)."
 
 
 def _resolve_evidence_image_url(evidence_object_key: str) -> str:
@@ -274,7 +274,7 @@ class ExchangeableItemViewSet(
         return list_active_exchangeables()
 
     @action(detail=True, methods=["post"], url_path="redeem")
-    def redeem(self, request: Request, pk: str | None = None) -> Response:
+    def redeem(self, request: Request, pk: str | None = None) -> Response:  # pylint: disable=unused-argument
         """Redeem a specific virtual item by its ID in the URL path."""
         item = self.get_object()
         try:

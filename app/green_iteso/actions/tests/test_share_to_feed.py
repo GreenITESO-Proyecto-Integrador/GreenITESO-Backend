@@ -121,7 +121,7 @@ def test_feed_failure_rolls_back_the_action_log(
         raise RuntimeError("feed unavailable")
 
     monkeypatch.setattr(
-        "green_iteso.actions.views.create_shared_evidence_post", _unavailable
+        "green_iteso.feed.services.create_shared_evidence_post", _unavailable
     )
 
     with pytest.raises(RuntimeError):

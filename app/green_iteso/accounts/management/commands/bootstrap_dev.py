@@ -489,7 +489,9 @@ def create_additional_campaigns(
             campaign.creator_id != users[0].pk
             or campaign.scope != scenario.scope
             or campaign.target_clan_id != getattr(scenario.target_clan, "pk", None)
-            or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+            or not campaign.description.startswith(
+                (DEMO_CAMPAIGN_DESCRIPTION, LEGACY_DEMO_CAMPAIGN_DESCRIPTION)
+            )
         ):
             raise CommandError(
                 "Demo campaign identity collision; existing campaign was preserved."

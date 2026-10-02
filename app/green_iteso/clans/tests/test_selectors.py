@@ -83,3 +83,24 @@ def test_list_active_clans_shows_private_invite_clan_to_its_member() -> None:
     names = list(list_active_clans(user=leader).values_list("name", flat=True))
 
     assert "Secret Clan" in names
+
+
+@pytest.mark.django_db
+def test_list_active_clans_hides_private_invite_clan_for_a_pending_applicant() -> None:
+    leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    clan = Clan.objects.create(
+        name="Secret Clan",
+        type=Clan.ClanType.PRIVATE,
+        privacy=Clan.Privacy.PRIVATE_INVITE,
+    )
+    ClanMembership.objects.create(user=leader, clan=clan)
+    ClanMembership.objects.create(
+        user=applicant, clan=clan, status=ClanMembership.Status.PENDING
+    )
+
+    names = list(list_active_clans(user=applicant).values_list("name", flat=True))
+
+    assert "Secret Clan" not in names

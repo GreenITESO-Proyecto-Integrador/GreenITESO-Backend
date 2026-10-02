@@ -5,14 +5,17 @@ and ActionLogCreateView's points-crediting side effects.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import patch
 
 import pytest
+from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
-from green_iteso.accounts.models import Clan, User, UserProfile
+from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
+from green_iteso.clans.services import dissolve_clan
 
 
 @pytest.mark.django_db
@@ -141,3 +144,91 @@ def test_pending_audit_can_be_decided_only_once() -> None:
     assert log.reviewed_at is not None
     assert log.reviewed_by_id == admin.pk
     assert profile.total_points == profile.available_points == 10
+
+
+@pytest.mark.django_db
+def test_action_credits_snapshot_clan_if_it_is_dissolved_during_submission() -> None:
+    """An ActionLog snapshot must agree with the dissolved clan's retained points."""
+    user = User.objects.create_user(email="leader@iteso.mx", password="local-only")
+    private_clan = Clan.objects.create(
+        name="Test private clan", type=Clan.ClanType.PRIVATE, created_by=user
+    )
+    institutional_clan = Clan.objects.create(
+        name="Test institutional clan", type=Clan.ClanType.INSTITUTIONAL
+    )
+    UserProfile.objects.create(user=user, institutional_clan=institutional_clan)
+    ClanMembership.objects.create(
+        user=user,
+        clan=private_clan,
+        role=ClanMembership.MembershipRole.LEADER,
+        is_active_private=True,
+    )
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="RECYCLE",
+        category=category,
+        name="Recycle",
+        description="Recycle something",
+        points=10,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+    original_create = ActionLog.objects.create
+
+    def create_after_dissolve(**kwargs: object) -> ActionLog:
+        dissolve_clan(clan=private_clan, actor=user)
+        return original_create(**kwargs)
+
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": str(uuid.uuid4())},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+
+    with patch.object(ActionLog.objects, "create", side_effect=create_after_dissolve):
+        response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 201
+    action_log = ActionLog.objects.get(pk=response.data["log_id"])
+    assert action_log.credited_private_clan_id == private_clan.pk
+    private_clan.refresh_from_db()
+    assert private_clan.deleted_at is not None
+    assert private_clan.total_points == action.points
+
+
+@pytest.mark.django_db
+def test_action_credits_institutional_clan_if_soft_deleted_during_submission() -> None:
+    user = User.objects.create_user(
+        email="institutional@iteso.mx", password="local-only"
+    )
+    clan = Clan.objects.create(name="Institutional", type=Clan.ClanType.INSTITUTIONAL)
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="RECYCLE",
+        category=category,
+        name="Recycle",
+        description="Recycle something",
+        points=10,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    original_create = ActionLog.objects.create
+
+    def create_after_dissolve(**kwargs: object) -> ActionLog:
+        Clan.all_objects.filter(pk=clan.pk).update(deleted_at=timezone.now())
+        return original_create(**kwargs)
+
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": str(uuid.uuid4())},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+    with patch.object(ActionLog.objects, "create", side_effect=create_after_dissolve):
+        response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 201
+    clan.refresh_from_db()
+    assert clan.deleted_at is not None
+    assert clan.total_points == action.points

@@ -102,11 +102,16 @@ UUID primary keys follow the approved ERD. Django Admin is exposed only when loc
 | `Campaign.target_clan` | FK Clan, PROTECT, nullable | Required for `PRIVATE`, forbidden for `GLOBAL` by DB check. |
 | `Campaign.start_date`, `.end_date` | aware timestamps | DB check enforces `end_date > start_date`. |
 | `Campaign.podium_snapshot` | nullable JSON | Approved results snapshot column; no close/snapshot service is included. |
+| `Campaign.approval_status` | `PENDING` / `APPROVED` / `REJECTED`, default `APPROVED` | Admin review state of a campaign proposal. Campaigns created directly (admins, clan leaders) stay `APPROVED`; global proposals from non-admins start `PENDING`. DB checks mirror the choices and force `scope=PRIVATE` campaigns to be `APPROVED` (`campaign_private_always_approved`). Lifecycle `status` only tracks dates once approved. |
+| `Campaign.reviewed_by` | FK User, PROTECT, nullable | Admin who approved or rejected the proposal. |
+| `Campaign.reviewed_at` | timestamp, nullable | Review decision timestamp. |
+| `Campaign.rejection_reason` | text, blank | Required when `approval_status=REJECTED`; DB check `campaign_rejection_has_reason` rejects an empty reason. |
 | `Campaign.created_at` | timestamp | Server creation time. |
 | `Mission.id` | UUID PK | Server generated. |
 | `Mission.campaign` | FK Campaign, PROTECT | Protected from deletion while audit/contributions reference it. |
 | `Mission.action` (physical `action_master_id`) | FK ActionMaster, PROTECT | Approved ERD foreign-key name; Django keeps `action` as the Python relation and stores `action_master_id`. |
 | `Mission.target_count` | positive integer | Required target; DB check is greater than zero. |
+| `Mission (campaign, action)` | unique pair | `mission_campaign_action_unique`: an action can appear in only one mission per campaign. The API also rejects duplicates with a 400 before hitting the constraint. |
 | `CampaignParticipant` | campaign/user FKs PROTECT, unique pair | Minimal enrollment graph for later progress services. |
 | `UserMissionProgress` | user/mission FKs PROTECT, unique pair | Raw nonnegative count and completion projection. Cross-row consistency with mission target belongs to the service. |
 

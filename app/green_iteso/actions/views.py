@@ -5,11 +5,12 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from green_iteso.accounts.selectors import get_profile_clans
-from green_iteso.core.permissions import IsAdmin
+from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -35,17 +36,24 @@ class ActionCategoryViewSet(
         return list_active_action_categories()
 
 
-class ActionMasterViewSet(
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """List and retrieve action definitions under /api/v1/actions/."""
+class ActionMasterViewSet(viewsets.ModelViewSet):
+    """Full CRUD for action definitions. under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
 
     def get_queryset(self) -> QuerySet[ActionMaster]:
         return list_active_actions()
+
+    def get_permissions(self) -> list[BasePermission]:
+        """
+        Assign distinct permissions based on the invoked action.
+        """
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsAdmin]
+        else:
+            permission_classes = [IsAuthenticated]
+
+        return [permission() for permission in permission_classes]
 
 
 class ActionLogCreateView(views.APIView):

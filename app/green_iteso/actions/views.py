@@ -9,8 +9,8 @@ from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.feed.services import create_shared_evidence_post
 from green_iteso.gamification.services import check_and_award_badges
@@ -141,7 +141,7 @@ class ActionLogCreateView(views.APIView):
                     total_points=F("total_points") + action.points,
                     available_points=F("available_points") + action.points,
                 )
-                
+
                 if institutional_clan:
                     Clan.objects.filter(pk=institutional_clan.pk).update(
                         total_points=F("total_points") + action.points

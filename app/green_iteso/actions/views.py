@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification
 
@@ -104,23 +105,24 @@ class ActionLogCreateView(views.APIView):
             )
 
             if log_status == ActionLog.Status.APPROVED:
-                # pylint: disable=fixme
-                # TODO: Transactionalize point changes to avoid race conditions
-                # available_points is the spendable balance introduced by T2-02
-                # (see UserProfile.available_points); it accrues alongside
-                # total_points and only total_points is drawn down separately
-                # by the (future) redemption flow.
-                profile.total_points += action.points
-                profile.available_points += action.points
-                profile.save(update_fields=["total_points", "available_points"])
+                # Use database-side increments so concurrent approved actions
+                # cannot overwrite each other's balance.
+                type(profile).objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action.points,
+                    available_points=F("available_points") + action.points,
+                )
 
                 if institutional_clan:
-                    institutional_clan.total_points += action.points
-                    institutional_clan.save(update_fields=["total_points"])
+                    type(institutional_clan).all_objects.filter(
+                        pk=institutional_clan.pk
+                    ).update(total_points=F("total_points") + action.points)
 
                 if private_clan:
-                    private_clan.total_points += action.points
-                    private_clan.save(update_fields=["total_points"])
+                    # Credit the ActionLog snapshot even if the clan was
+                    # dissolved after the active membership was read.
+                    type(private_clan).all_objects.filter(pk=private_clan.pk).update(
+                        total_points=F("total_points") + action.points
+                    )
 
         return Response(
             {
@@ -178,23 +180,18 @@ class ActionLogAuditView(views.APIView):
                 )
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
-                profile.total_points += action_log.points_awarded
-                profile.available_points += action_log.points_awarded
-                profile.save(update_fields=["total_points", "available_points"])
-
-                if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += (
-                        action_log.points_awarded
-                    )
-                    action_log.institutional_clan.save(update_fields=["total_points"])
-
-                if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += (
-                        action_log.points_awarded
-                    )
-                    action_log.credited_private_clan.save(
-                        update_fields=["total_points"]
-                    )
+                points = action_log.points_awarded
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + points,
+                    available_points=F("available_points") + points,
+                )
+                Clan.all_objects.filter(pk=action_log.institutional_clan_id).update(
+                    total_points=F("total_points") + points
+                )
+                if action_log.credited_private_clan_id:
+                    Clan.all_objects.filter(
+                        pk=action_log.credited_private_clan_id
+                    ).update(total_points=F("total_points") + points)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

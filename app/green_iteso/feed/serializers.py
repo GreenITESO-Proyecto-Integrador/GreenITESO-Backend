@@ -10,6 +10,7 @@ from django.utils.timesince import timesince
 from rest_framework import serializers
 
 from green_iteso.feed.models import Post, PostType
+from green_iteso.gamification.models import UserBadge
 
 User = get_user_model()
 
@@ -28,6 +29,11 @@ class PostSerializer(serializers.ModelSerializer):
 
     author = PostAuthorSerializer(read_only=True)
     author_id = serializers.PrimaryKeyRelatedField(source="author", read_only=True)
+    badge_user = serializers.PrimaryKeyRelatedField(
+        queryset=UserBadge.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     badge_info = serializers.SerializerMethodField()
     relative_time = serializers.SerializerMethodField()
 
@@ -40,6 +46,7 @@ class PostSerializer(serializers.ModelSerializer):
             "post_type",
             "content",
             "image_url",
+            "badge_user",
             "badge_info",
             "relative_time",
             "created_at",
@@ -65,10 +72,33 @@ class PostSerializer(serializers.ModelSerializer):
             raw_time = timesince(obj.created_at, now).split(",")[0]
         return f"hace {raw_time}"
 
-    def get_badge_info(self, _obj: Post) -> dict[str, Any] | None:
+    def get_badge_info(self, obj: Post) -> dict[str, Any] | None:
         """Return badge metadata if associated; null otherwise."""
-        # Note (Equipo 1): Hook into badge relation once implemented
-        return None
+        if not obj.badge_user_id or not obj.badge_user:
+            return None
+
+        user_badge = obj.badge_user
+        badge = user_badge.badge
+        return {
+            "id": str(badge.id),
+            "user_badge_id": str(user_badge.id),
+            "name": badge.name,
+            "description": badge.description,
+            "icon_name": badge.icon_name,
+            "earned_at": user_badge.earned_at.isoformat(),
+        }
+
+    def validate_badge_user(self, value: UserBadge | None) -> UserBadge | None:
+        """Ensure the attached badge belongs to the requesting user."""
+        if value is None:
+            return None
+
+        request = self.context.get("request")
+        if request and request.user.is_authenticated and value.user_id != request.user.pk:
+            raise serializers.ValidationError(
+                "You can only attach a badge that you have earned."
+            )
+        return value
 
     def validate_content(self, value: str) -> str:
         """Ensure content is not empty or composed solely of whitespace."""

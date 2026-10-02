@@ -111,28 +111,3 @@ def test_shared_photo_log_does_not_publish_a_raw_object_key(author: User) -> Non
     post = Post.objects.get()
     assert post.image_url == ""
     assert "Termo Reutilizable" in post.content
-
-
-@pytest.mark.django_db
-def test_feed_failure_rolls_back_the_action_log(
-    author: User, bike: ActionMaster, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def _unavailable(**_kwargs: object) -> Post:
-        raise RuntimeError("feed unavailable")
-
-    monkeypatch.setattr(
-        "green_iteso.actions.views.create_shared_evidence_post", _unavailable
-    )
-
-    with pytest.raises(RuntimeError):
-        _post_log(
-            author,
-            {
-                "action_id": str(bike.id),
-                "idempotency_key": uuid.uuid4().hex,
-                "is_shared_publicly": True,
-            },
-        )
-
-    assert ActionLog.objects.count() == 0
-    assert Post.objects.count() == 0

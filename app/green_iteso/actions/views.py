@@ -14,6 +14,7 @@ from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.feed.services import create_shared_evidence_post
 from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import notify
 
 from .models import ActionCategory, ActionLog, ActionMaster
 from .selectors import list_active_action_categories, list_active_actions
@@ -211,11 +212,10 @@ class ActionLogAuditView(views.APIView):
             action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
 
             if new_status == "REJECTED":
-                Notification.objects.create(
-                    user=action_log.user,
-                    title="Evidencia Rechazada",
-                    message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
-                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_REJECT,
+                    reason=rejection_reason,
                 )
                 # Must run after the REJECTED status is saved (campaigns rule).
                 revert_mission_progress(action_log)
@@ -241,6 +241,13 @@ class ActionLogAuditView(views.APIView):
 
                 check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
+
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_APPROVED,
+                    action_name=action_log.action.name,
+                    points=action_log.points_awarded,
+                )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

@@ -125,6 +125,7 @@ else:
     CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -240,6 +241,12 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
+
+# In-memory layer: events only reach sockets held by the same process. The
+# runtime is therefore pinned to one worker (WEB_CONCURRENCY=1) and the system
+# check notifications.E001 rejects more; several workers or instances need a
+# shared layer (channels-redis) first. See docs/deployment.md.
+CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 DATABASE_URL = required("DATABASE_URL")
 DATABASES = {

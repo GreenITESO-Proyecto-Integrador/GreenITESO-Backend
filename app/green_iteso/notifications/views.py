@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import QuerySet
+from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -51,7 +52,7 @@ class NotificationUnreadCountView(APIView):
 
 
 class NotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Owner-only read/patch/delete of a single notification."""
+    """Owner-only patch and soft delete of a single notification."""
 
     serializer_class = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -59,6 +60,11 @@ class NotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self) -> QuerySet[Notification]:
         return Notification.objects.filter(user=self.request.user)
+
+    def perform_destroy(self, instance: Notification) -> None:
+        """Hide the notification instead of removing the row."""
+        instance.deleted_at = timezone.now()
+        instance.save(update_fields=["deleted_at"])
 
 
 class NotificationMarkAllReadView(APIView):

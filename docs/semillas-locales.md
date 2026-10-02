@@ -77,6 +77,15 @@ cuando se integre la sincronización de campañas de PR #111. La semilla es
 idempotente y una segunda ejecución no mueve las fechas de campañas existentes;
 para escenarios temporales nuevos usa una base local descartable recién creada.
 
+En local, cada rerun recalcula los puntos ganados desde los logs `APPROVED`
+bajo bloqueo del perfil y aplica esa diferencia al saldo disponible. Conserva
+así los puntos ya gastados, incluso si cambiaste el estado de un log. Si el
+saldo previo es inválido o la corrección dejaría un saldo negativo, todo el
+bootstrap se revierte con `CommandError`; no devuelve puntos gastados ni borra
+historial. Usa la base local aislada descrita abajo para obtener un escenario
+limpio. En Neon dev se conservan los incrementos de las filas nuevas; esta
+reconciliación local no se aplica a bases compartidas.
+
 ### Compatibilidad con demos anteriores
 
 La selección de acciones usa `is_active` de la fixture, no el estado editable

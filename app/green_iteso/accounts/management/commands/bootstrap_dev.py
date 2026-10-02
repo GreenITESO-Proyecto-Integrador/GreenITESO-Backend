@@ -718,16 +718,27 @@ def refresh_profile_totals(
         else:
             # API credits update this row too; lock before reading the logs so
             # an absolute local recomputation cannot overwrite their increment.
-            UserProfile.objects.select_for_update().get(pk=profile.pk)
+            locked_profile = UserProfile.objects.select_for_update().get(pk=profile.pk)
             points = ActionLog.objects.filter(
-                user=profile.user, status=ActionLog.Status.APPROVED
+                user_id=locked_profile.user_id, status=ActionLog.Status.APPROVED
             ).values_list("points_awarded", flat=True)
-            profile.total_points = sum(points)
-            profile.save(update_fields=["total_points"])
-            if available_points:
-                UserProfile.objects.filter(pk=profile.pk).update(
-                    available_points=F("available_points") + available_points
+            total_points = sum(points)
+            # Preserve the spent balance when local log status edits change
+            # earned points; never restore redeemed points during a rerun.
+            available_points = (
+                locked_profile.available_points + total_points - locked_profile.total_points
+            )
+            if (
+                not 0 <= locked_profile.available_points <= locked_profile.total_points
+                or available_points < 0
+            ):
+                raise CommandError(
+                    "Local demo balance cannot be reconciled without restoring spent points. "
+                    "See docs/semillas-locales.md for an isolated local reset."
                 )
+            locked_profile.total_points = total_points
+            locked_profile.available_points = available_points
+            locked_profile.save(update_fields=["total_points", "available_points"])
 
 
 @transaction.atomic

@@ -6,7 +6,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
-from green_iteso.clans.services import create_clan
+from green_iteso.clans.services import create_clan, create_private_clan
 
 
 @pytest.mark.django_db
@@ -251,3 +251,78 @@ def test_institutional_clan_assignment_get_returns_current_state() -> None:
 
     assert response.status_code == 200
     assert response.json()["career"] == "Ingeniería en Sistemas"
+
+
+@pytest.mark.django_db
+def test_list_clans_filters_by_search_query_param() -> None:
+    first_leader = User.objects.create_user(
+        email="lead1@iteso.mx", password="local-only"
+    )
+    second_leader = User.objects.create_user(
+        email="lead2@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+
+    client.force_authenticate(first_leader)
+    client.post("/api/v1/clans/", {"name": "Green Team"})
+
+    client.force_authenticate(second_leader)
+    client.post("/api/v1/clans/", {"name": "Blue Squad"})
+
+    response = client.get("/api/v1/clans/?search=green")
+
+    names = [row["name"] for row in response.json()["results"]]
+    assert names == ["Green Team"]
+
+
+@pytest.mark.django_db
+def test_retrieve_clan_returns_member_roster() -> None:
+    leader = User.objects.create_user(
+        email="leader@iteso.mx", password="local-only", nickname="Leo"
+    )
+    clan = create_private_clan(name="Roster Test", created_by=leader)
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.get(f"/api/v1/clans/{clan.id}/")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["member_count"] == 1
+    assert body["members"][0]["nickname"] == "Leo"
+    assert body["members"][0]["role"] == "LEADER"
+
+
+@pytest.mark.django_db
+def test_retrieve_private_invite_clan_404s_for_non_member() -> None:
+    leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    client = APIClient()
+    client.force_authenticate(outsider)
+
+    response = client.get(f"/api/v1/clans/{clan.id}/")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_list_clans_excludes_private_invite_clan_for_non_member() -> None:
+    leader = User.objects.create_user(email="leader@iteso.mx", password="local-only")
+    outsider = User.objects.create_user(
+        email="outsider@iteso.mx", password="local-only"
+    )
+    create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    client = APIClient()
+    client.force_authenticate(outsider)
+
+    response = client.get("/api/v1/clans/")
+
+    names = [row["name"] for row in response.json()["results"]]
+    assert "Secret Clan" not in names

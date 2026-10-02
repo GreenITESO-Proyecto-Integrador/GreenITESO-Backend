@@ -74,7 +74,7 @@ class ActionMasterViewSet(viewsets.ModelViewSet):
         """
         Assign distinct permissions based on the invoked action.
         """
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+        if self.action in ["create", "update", "partial_update", "destroy"]:
             permission_classes = [IsAdmin]
         else:
             permission_classes = [IsAuthenticated]

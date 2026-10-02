@@ -146,7 +146,16 @@ def test_concurrent_events_keep_every_profile_and_clan_credit(operation: str) ->
         if operation == "approve":
             assert log.reviewed_by_id == admin.pk
             assert log.reviewed_at is not None
-    assert Notification.objects.filter(user=user).count() == 0
+    notification_types = list(
+        Notification.objects.filter(user=user).values_list(
+            "notification_type", flat=True
+        )
+    )
+    assert notification_types == (
+        [Notification.NotificationType.AUDIT_APPROVED] * 2
+        if operation == "approve"
+        else []
+    )
     profile.refresh_from_db()
     institutional.refresh_from_db()
     private.refresh_from_db()
@@ -212,7 +221,14 @@ def test_audit_credits_frozen_deleted_clans_or_rolls_back_missing_profile(
     assert log.credited_private_clan_id == private.pk
     assert log.points_awarded == 10
     assert current.total_points == 0
-    assert Notification.objects.filter(user=user).count() == 0
+    notification_types = list(
+        Notification.objects.filter(user=user).values_list(
+            "notification_type", flat=True
+        )
+    )
+    assert notification_types == (
+        [Notification.NotificationType.AUDIT_APPROVED] if has_profile else []
+    )
     if has_profile:
         profile = UserProfile.objects.get(user=user)
         assert (profile.total_points, profile.available_points) == (10, 10)

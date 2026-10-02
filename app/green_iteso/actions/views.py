@@ -16,7 +16,11 @@ from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
-from .selectors import list_active_action_categories, list_active_actions
+from .selectors import (
+    count_user_action_logs_for_local_day,
+    list_active_action_categories,
+    list_active_actions,
+)
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
@@ -69,21 +73,56 @@ class ActionLogCreateView(views.APIView):
         data = serializer.validated_data
         user = request.user
 
-        try:
-            action = ActionMaster.objects.get(id=data["action_id"], is_active=True)
-        except ActionMaster.DoesNotExist:
-            return Response(
-                {"error": "Action not found or inactive."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        log_status = (
-            ActionLog.Status.PENDING_AUDIT
-            if action.validation_type == ActionMaster.ValidationType.PHOTO
-            else ActionLog.Status.APPROVED
-        )
-
         with transaction.atomic():
+            # Serialize this user's submissions so concurrent requests cannot
+            # both pass the daily count before either inserts its log.
+            # A weaker row lock still serializes submissions but permits user
+            # FK inserts by transactions already holding a profile-row lock.
+            user = type(user).objects.select_for_update(no_key=True).get(pk=user.pk)
+            existing = ActionLog.objects.filter(
+                user_id=user.id, idempotency_key=data["idempotency_key"]
+            ).first()
+            if existing:
+                if existing.action_id != data[
+                    "action_id"
+                ] or existing.evidence_object_key != data.get(
+                    "evidence_object_key", ""
+                ):
+                    return Response(
+                        {"error": "Idempotency key was used for a different action."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                return Response(
+                    {
+                        "message": "Action already logged.",
+                        "status": existing.status,
+                        "log_id": existing.id,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            try:
+                action = ActionMaster.objects.get(id=data["action_id"], is_active=True)
+            except ActionMaster.DoesNotExist:
+                return Response(
+                    {"error": "Action not found or inactive."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            log_status = (
+                ActionLog.Status.PENDING_AUDIT
+                if action.validation_type == ActionMaster.ValidationType.PHOTO
+                else ActionLog.Status.APPROVED
+            )
+            if (
+                count_user_action_logs_for_local_day(user.id, action.id)
+                >= action.daily_limit
+            ):
+                return Response(
+                    {"error": "Daily limit reached for this action."},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
             profile, institutional_clan, private_clan = get_profile_clans(user)
 
             action_log = ActionLog.objects.create(

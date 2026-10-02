@@ -7,18 +7,21 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from datetime import UTC, datetime
+from threading import Barrier, Event
 from time import monotonic, sleep
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from django.db import close_old_connections, connection, transaction
+from django.db.models import F
 from django.utils import timezone
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.selectors import count_user_action_logs_for_local_day
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
 from green_iteso.notifications.models import Notification
@@ -108,6 +111,271 @@ def test_approved_action_credits_available_points_alongside_total_points() -> No
     user.profile.refresh_from_db()
     assert user.profile.total_points == 10
     assert user.profile.available_points == 10
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "prior_status",
+    [
+        ActionLog.Status.APPROVED,
+        ActionLog.Status.PENDING_AUDIT,
+        ActionLog.Status.REJECTED,
+    ],
+)
+def test_action_daily_limit_rejects_another_submission_on_same_local_day(
+    prior_status: str,
+) -> None:
+    user = User.objects.create_user(email="daily@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Ingeniería", type=Clan.ClanType.INSTITUTIONAL)
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="DAILY", name="Daily")
+    action = ActionMaster.objects.create(
+        code="DAILY_ACTION",
+        category=category,
+        name="Daily action",
+        description="One per local day",
+        points=10,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key="first",
+        points_awarded=action.points,
+        status=prior_status,
+    )
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": "second"},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+
+    response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 429
+    assert ActionLog.objects.filter(user=user, action=action).count() == 1
+
+
+@pytest.mark.django_db
+def test_action_daily_limit_resets_at_mexico_city_midnight() -> None:
+    user = User.objects.create_user(email="midnight@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Campus", type=Clan.ClanType.INSTITUTIONAL)
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="MIDNIGHT", name="Midnight")
+    action = ActionMaster.objects.create(
+        code="MIDNIGHT_ACTION",
+        category=category,
+        name="Midnight action",
+        description="Resets at local midnight",
+        points=10,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    previous_day_log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key="previous-day",
+        points_awarded=action.points,
+    )
+    ActionLog.objects.filter(pk=previous_day_log.pk).update(
+        created_at=datetime(2026, 9, 25, 5, 59, tzinfo=UTC)
+    )
+    request = APIRequestFactory().post(
+        "/api/v1/actions/logs/",
+        {"action_id": str(action.id), "idempotency_key": "new-day"},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+
+    with patch(
+        "django.utils.timezone.now",
+        return_value=datetime(2026, 9, 25, 6, 0, tzinfo=UTC),
+    ):
+        response = ActionLogCreateView.as_view()(request)
+
+    assert response.status_code == 201
+    assert ActionLog.objects.filter(user=user, action=action).count() == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_action_daily_limit_serializes_concurrent_submissions() -> None:
+    user = User.objects.create_user(email="parallel@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Parallel", type=Clan.ClanType.INSTITUTIONAL)
+    UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="PARALLEL", name="Parallel")
+    action = ActionMaster.objects.create(
+        code="PARALLEL_ACTION",
+        category=category,
+        name="Parallel action",
+        description="One submission per day",
+        points=10,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    barrier = Barrier(2)
+
+    def submit(index: int) -> int:
+        close_old_connections()
+        try:
+            request = APIRequestFactory().post(
+                "/api/v1/actions/logs/",
+                {
+                    "action_id": str(action.id),
+                    "idempotency_key": f"parallel-{index}",
+                },
+                format="json",
+            )
+            force_authenticate(request, user=user)
+            barrier.wait(timeout=5)
+            return ActionLogCreateView.as_view()(request).status_code
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = sorted(pool.map(submit, (1, 2)))
+    assert outcomes == [201, 429]
+    assert ActionLog.objects.filter(user=user, action=action).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_action_submission_allows_competing_audit_notification_foreign_key() -> None:
+    """A profile-credit transaction can insert a user FK without a lock cycle."""
+    user = User.objects.create_user(email="audit-race@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Audit race", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(
+        user=user, institutional_clan=clan, total_points=10, available_points=10
+    )
+    category = ActionCategory.objects.create(code="AUDIT_RACE", name="Audit race")
+    action = ActionMaster.objects.create(
+        code="AUDIT_RACE_ACTION",
+        category=category,
+        name="Audit race action",
+        description="Concurrent submission and rejection notification",
+        points=5,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    user_locked, profile_locked = Event(), Event()
+
+    def synchronize_after_user_lock(user_id: uuid.UUID, action_id: uuid.UUID) -> int:
+        user_locked.set()
+        assert profile_locked.wait(timeout=5)
+        return count_user_action_logs_for_local_day(user_id, action_id)
+
+    def submit() -> int:
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '5s'")
+                client = APIClient()
+                client.force_authenticate(user)
+                response = client.post(
+                    "/api/v1/action-logs/",
+                    {"action_id": str(action.pk), "idempotency_key": "audit-race"},
+                    format="json",
+                )
+            return response.status_code
+        finally:
+            close_old_connections()
+
+    def competing_audit() -> None:
+        close_old_connections()
+        try:
+            assert user_locked.wait(timeout=5)
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '5s'")
+                UserProfile.objects.select_for_update().get(pk=profile.pk)
+                profile_locked.set()
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") - 2,
+                    available_points=F("available_points") - 2,
+                )
+                # Approved-log rejection holds the profile row while creating
+                # this real Notification FK; validation may wait until commit.
+                Notification.objects.create(
+                    user=user,
+                    title="Evidence rejected",
+                    message="Synthetic concurrency regression",
+                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                )
+        finally:
+            close_old_connections()
+
+    with (
+        patch(
+            "green_iteso.actions.views.count_user_action_logs_for_local_day",
+            synchronize_after_user_lock,
+        ),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        submission = pool.submit(submit)
+        audit = pool.submit(competing_audit)
+        assert submission.result(timeout=10) == 201
+        audit.result(timeout=10)
+
+    profile.refresh_from_db()
+    assert (profile.total_points, profile.available_points) == (13, 13)
+    assert ActionLog.objects.filter(user=user).count() == 1
+    assert Notification.objects.filter(user=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_action_daily_limit_replay_returns_existing_log_without_second_credit() -> None:
+    user = User.objects.create_user(email="replay@iteso.mx", password="local-only")
+    clan = Clan.objects.create(name="Replay", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="REPLAY", name="Replay")
+    action = ActionMaster.objects.create(
+        code="REPLAY_ACTION",
+        category=category,
+        name="Replay action",
+        description="One submission per day",
+        points=10,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+    def submit(action_id: uuid.UUID, *, evidence: str = "") -> object:
+        request = APIRequestFactory().post(
+            "/api/v1/actions/logs/",
+            {
+                "action_id": str(action_id),
+                "idempotency_key": "same-key",
+                "evidence_object_key": evidence,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=user)
+        return ActionLogCreateView.as_view()(request)
+
+    first = submit(action.id)
+    replay = submit(action.id)
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert replay.data["log_id"] == first.data["log_id"]
+    assert ActionLog.objects.filter(user=user, action=action).count() == 1
+    profile.refresh_from_db()
+    assert profile.total_points == 10
+
+    changed_evidence = submit(action.id, evidence="different")
+    assert changed_evidence.status_code == 409
+    other_action = ActionMaster.objects.create(
+        code="OTHER_REPLAY_ACTION",
+        category=category,
+        name="Other action",
+        description="A different action",
+        points=10,
+        daily_limit=1,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    changed_action = submit(other_action.id)
+    assert changed_action.status_code == 409
 
 
 @pytest.mark.django_db

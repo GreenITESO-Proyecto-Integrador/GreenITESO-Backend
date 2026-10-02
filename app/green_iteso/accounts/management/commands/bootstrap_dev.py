@@ -355,6 +355,7 @@ def create_profiles_and_memberships(
             },
         )
         profiles[user.pk] = profile
+        clan = profile.institutional_clan or clan
         ClanMembership.objects.get_or_create(
             user=user,
             clan=clan,

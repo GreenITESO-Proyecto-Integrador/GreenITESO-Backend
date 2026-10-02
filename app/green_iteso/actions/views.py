@@ -11,8 +11,8 @@ from rest_framework.response import Response
 
 from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
-from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.feed.services import create_shared_evidence_post
+from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster

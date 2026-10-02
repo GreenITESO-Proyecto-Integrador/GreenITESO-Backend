@@ -246,6 +246,7 @@ def test_graph_timeout_is_best_effort_and_login_still_succeeds() -> None:
     assert identity.email == "student@iteso.mx"
     assert identity.department is None
     assert identity.group_ids is None
+    assert identity.directory_profile_available is False
 
 
 def test_graph_5xx_is_best_effort_and_login_still_succeeds() -> None:

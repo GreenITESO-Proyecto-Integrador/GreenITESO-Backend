@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0012_merge_role_audit_and_public_ranking"),
+        ("accounts", "0013_merge_friendship_and_role_audit_ranking"),
     ]
 
     operations = [

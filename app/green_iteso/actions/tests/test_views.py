@@ -5,12 +5,15 @@ and ActionLogCreateView's points-crediting side effects.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Event
+from time import monotonic, sleep
+from typing import Any
 from unittest.mock import patch
 
 import pytest
-from django.db import close_old_connections
+from django.db import close_old_connections, connection, transaction
 from django.utils import timezone
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
@@ -197,6 +200,7 @@ def test_action_credits_institutional_clan_if_soft_deleted_during_submission() -
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
     """Two admins racing on one pending log must not grant points twice."""
+    # pylint: disable=too-many-locals,too-many-statements
     admin = User.objects.create_superuser(email="admin@iteso.mx", password="local-only")
     student = User.objects.create_user(email="student@iteso.mx", password="local-only")
     clan = Clan.objects.create(name="Institutional", type=Clan.ClanType.INSTITUTIONAL)
@@ -218,36 +222,97 @@ def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
         points_awarded=10,
         status=ActionLog.Status.PENDING_AUDIT,
     )
-    barrier = Barrier(2)
-    original_get = ActionLog.objects.get
+    first_selected = Event()
+    second_query = Event()
+    second_finished = Event()
+    second_blocked = Event()
+    competitor_pid: list[int] = []
+    observed_queries: list[bool] = []
 
-    def get_pending(*args: object, **kwargs: object) -> ActionLog:
-        result = original_get(*args, **kwargs)
-        if kwargs.get("status") == ActionLog.Status.PENDING_AUDIT:
-            barrier.wait(timeout=10)
-        return result
-
-    def approve(_: int) -> int:
+    def approve(first: bool) -> int:
         close_old_connections()
         try:
-            request = APIRequestFactory().patch(
-                f"/api/v1/action-logs/{log.pk}/audit/",
-                {"status": "APPROVED"},
-                format="json",
-            )
-            force_authenticate(request, user=admin)
-            return ActionLogAuditView.as_view()(request, log_id=log.pk).status_code
+            if not first:
+                assert first_selected.wait(timeout=5)
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '8s'")
+                actor = User.objects.get(pk=admin.pk)
+
+                def synchronize(
+                    execute: Callable[..., Any],
+                    sql: str,
+                    params: Any,
+                    many: bool,
+                    context: Any,
+                ) -> Any:
+                    if 'FROM "actions_action_log"' not in sql or log.pk not in (
+                        params or ()
+                    ):
+                        return execute(sql, params, many, context)
+                    observed_queries.append(first)
+                    if not first:
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT pg_backend_pid()")
+                            competitor_pid.append(cursor.fetchone()[0])
+                        second_query.set()
+                        return execute(sql, params, many, context)
+                    result = execute(sql, params, many, context)
+                    first_selected.set()
+                    assert second_query.wait(timeout=5)
+                    peer_deadline = monotonic() + 5
+                    while monotonic() < peer_deadline:
+                        with connection.monitor() as monitor:
+                            monitor.execute("SELECT pg_stat_clear_snapshot()")
+                            monitor.execute(
+                                "SELECT wait_event_type FROM pg_stat_activity "
+                                "WHERE pid = %s AND datname = current_database()",
+                                [competitor_pid[0]],
+                            )
+                            if monitor.fetchone() == ("Lock",):
+                                second_blocked.set()
+                                break
+                        # Negative control: an unlocked lookup lets the peer
+                        # commit first, so the buffered pending decision can
+                        # credit twice instead of merely timing out here.
+                        if second_finished.is_set():
+                            break
+                        sleep(0.01)
+                    else:
+                        raise AssertionError(
+                            "Competing audit neither blocked nor finished"
+                        )
+                    return result
+
+                with connection.execute_wrapper(synchronize):
+                    request = APIRequestFactory().patch(
+                        f"/api/v1/action-logs/{log.pk}/audit/",
+                        {"status": "APPROVED"},
+                        format="json",
+                    )
+                    force_authenticate(request, user=actor)
+                    return ActionLogAuditView.as_view()(
+                        request, log_id=log.pk
+                    ).status_code
         finally:
+            if not first:
+                second_finished.set()
             close_old_connections()
 
-    with patch.object(ActionLog.objects, "get", side_effect=get_pending):
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            statuses = list(executor.map(approve, range(2)))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(approve, True)
+        second = executor.submit(approve, False)
+        statuses = [first.result(timeout=15), second.result(timeout=15)]
 
-    assert sorted(statuses) == [200, 404]
+    assert observed_queries == [True, False]
     log.refresh_from_db()
     assert log.reviewed_at is not None
     profile.refresh_from_db()
     clan.refresh_from_db()
-    assert profile.total_points == profile.available_points == 10
-    assert clan.total_points == 10
+    assert (
+        sorted(statuses),
+        profile.total_points,
+        profile.available_points,
+        clan.total_points,
+        second_blocked.is_set(),
+    ) == ([200, 404], 10, 10, 10, True)

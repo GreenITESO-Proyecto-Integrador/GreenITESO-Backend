@@ -132,15 +132,33 @@ def test_demo_seed_credits_preserved_profile_clan_outside_catalog(
     clan = Clan.objects.create(
         name="Admin-selected clan", type=Clan.ClanType.INSTITUTIONAL
     )
-    profile = UserProfile.objects.create(user=users[0], institutional_clan=clan)
-
-    seed_demo_data(
-        catalog, datetime(2030, 1, 15, 12, tzinfo=UTC), shared_dev=shared_dev
+    profile = UserProfile.objects.create(
+        user=users[0], institutional_clan=clan, career="Admin-edited career"
     )
+    historical_clan = Clan.objects.create(
+        name="Historical institutional membership", type=Clan.ClanType.INSTITUTIONAL
+    )
+    historical_membership = ClanMembership.objects.create(
+        user=users[0], clan=historical_clan
+    )
+    joined_at = historical_membership.joined_at
+
+    for _ in range(2):
+        seed_demo_data(
+            catalog, datetime(2030, 1, 15, 12, tzinfo=UTC), shared_dev=shared_dev
+        )
+        assert set(
+            ClanMembership.objects.filter(
+                user=users[0], clan__type=Clan.ClanType.INSTITUTIONAL
+            ).values_list("clan_id", flat=True)
+        ) == {clan.pk, historical_clan.pk}
+        historical_membership.refresh_from_db()
+        assert historical_membership.joined_at == joined_at
 
     profile.refresh_from_db()
     clan.refresh_from_db()
     assert profile.institutional_clan_id == clan.pk
+    assert profile.career == "Admin-edited career"
     points = sum(
         ActionLog.objects.filter(
             institutional_clan=clan, status=ActionLog.Status.APPROVED

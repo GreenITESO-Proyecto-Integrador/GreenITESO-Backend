@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
@@ -20,6 +20,7 @@ from django.db.models import F, QuerySet
 from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
+    LEGACY_DEMO_CAMPAIGN_DESCRIPTION,
     create_demo_users,
     demo_id,
     refresh_clan_totals,
@@ -220,6 +221,91 @@ def test_local_demo_recomputation_preserves_concurrent_api_credit(
 
     target.refresh_from_db()
     assert target.total_points == before + 5
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("key", ["upcoming", "finished", "private"])
+def test_additional_demo_campaign_accepts_legacy_marker_preserving_edits(
+    key: str,
+) -> None:
+    call_command("bootstrap_dev", as_of="2030-01-15T12:00:00+00:00", verbosity=0)
+    campaign = Campaign.objects.get(pk=demo_id("campaign", key))
+    campaign.description = LEGACY_DEMO_CAMPAIGN_DESCRIPTION + " Retained admin note."
+    campaign.start_date += timedelta(days=2)
+    campaign.end_date += timedelta(days=3)
+    campaign.status = Campaign.Status.PROMOTION
+    campaign.save(update_fields=["description", "start_date", "end_date", "status"])
+    before = (
+        campaign.description,
+        campaign.start_date,
+        campaign.end_date,
+        campaign.status,
+    )
+    counts = (
+        Campaign.objects.count(),
+        Mission.objects.count(),
+        CampaignParticipant.objects.count(),
+    )
+
+    for _ in range(2):
+        call_command("bootstrap_dev", as_of="2040-01-15T12:00:00+00:00", verbosity=0)
+        campaign.refresh_from_db()
+        assert (
+            campaign.description,
+            campaign.start_date,
+            campaign.end_date,
+            campaign.status,
+        ) == before
+        assert (
+            Campaign.objects.count(),
+            Mission.objects.count(),
+            CampaignParticipant.objects.count(),
+        ) == counts
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("collision", ["description", "owner", "scope", "clan"])
+def test_additional_demo_campaign_rejects_unrelated_identity(collision: str) -> None:
+    call_command("bootstrap_dev", verbosity=0)
+    campaign = Campaign.objects.get(pk=demo_id("campaign", "private"))
+    campaign.description = LEGACY_DEMO_CAMPAIGN_DESCRIPTION
+    if collision == "description":
+        campaign.description = "Unrelated campaign with the same deterministic ID."
+    elif collision == "owner":
+        campaign.creator = User.objects.exclude(pk=campaign.creator_id).first()
+    elif collision == "scope":
+        campaign.scope = Campaign.Scope.GLOBAL
+        campaign.target_clan = None
+    else:
+        campaign.target_clan = Clan.objects.get(name="Demo private clan 02")
+    campaign.save()
+    before = (
+        campaign.description,
+        campaign.creator_id,
+        campaign.scope,
+        campaign.target_clan_id,
+    )
+    counts = (
+        Campaign.objects.count(),
+        Mission.objects.count(),
+        CampaignParticipant.objects.count(),
+    )
+
+    with pytest.raises(CommandError, match="campaign identity collision"):
+        call_command("bootstrap_dev", verbosity=0)
+
+    campaign.refresh_from_db()
+    assert (
+        campaign.description,
+        campaign.creator_id,
+        campaign.scope,
+        campaign.target_clan_id,
+    ) == before
+    assert (
+        Campaign.objects.count(),
+        Mission.objects.count(),
+        CampaignParticipant.objects.count(),
+    ) == counts
 
 
 @pytest.mark.django_db(transaction=True)

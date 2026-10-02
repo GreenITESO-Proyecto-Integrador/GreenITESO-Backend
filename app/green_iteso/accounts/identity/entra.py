@@ -94,6 +94,7 @@ class EntraProvider:
                 email=email,
                 given_name=claims.get("given_name"),
                 surname=claims.get("family_name"),
+                directory_profile_available=False,
             )
         return ExternalIdentity(
             oid=oid,

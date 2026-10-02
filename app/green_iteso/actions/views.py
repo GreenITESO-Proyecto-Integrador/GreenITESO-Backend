@@ -5,10 +5,12 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from green_iteso.core.permissions import IsAdmin
+from green_iteso.accounts.selectors import get_profile_clans
+from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -19,6 +21,7 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
+from .services import PointsAlreadySpentError, revoke_awarded_points
 
 
 class ActionCategoryViewSet(
@@ -34,17 +37,24 @@ class ActionCategoryViewSet(
         return list_active_action_categories()
 
 
-class ActionMasterViewSet(
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """List and retrieve action definitions under /api/v1/actions/."""
+class ActionMasterViewSet(viewsets.ModelViewSet):
+    """Full CRUD for action definitions. under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
 
     def get_queryset(self) -> QuerySet[ActionMaster]:
         return list_active_actions()
+
+    def get_permissions(self) -> list[BasePermission]:
+        """
+        Assign distinct permissions based on the invoked action.
+        """
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsAdmin]
+        else:
+            permission_classes = [IsAuthenticated]
+
+        return [permission() for permission in permission_classes]
 
 
 class ActionLogCreateView(views.APIView):
@@ -72,13 +82,7 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
-            profile = user.profile
-            institutional_clan = profile.institutional_clan
-
-            active_membership = user.clan_memberships.filter(
-                is_active_private=True
-            ).first()
-            private_clan = active_membership.clan if active_membership else None
+            profile, institutional_clan, private_clan = get_profile_clans(user)
 
             action_log = ActionLog.objects.create(
                 user=user,
@@ -124,7 +128,7 @@ class ActionLogCreateView(views.APIView):
 
 
 class ActionLogAuditView(views.APIView):
-    """API view for administrators to approve or reject pending action logs."""
+    """API view for administrators to audit pending logs or revoke approved ones."""
 
     permission_classes = [IsAdmin]
 
@@ -134,18 +138,34 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
-        except ActionLog.DoesNotExist:
-            return Response(
-                {"error": "Pending action log not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
+        # Pending logs can be approved or rejected; an approved log can only be
+        # rejected, which revokes the points it already credited.
+        auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
+        if new_status == "REJECTED":
+            auditable_statuses.append(ActionLog.Status.APPROVED)
 
         with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status__in=auditable_statuses
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Auditable action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if action_log.status == ActionLog.Status.APPROVED:
+                try:
+                    revoke_awarded_points(action_log)
+                except PointsAlreadySpentError:
+                    return Response(
+                        {"error": "The user already spent the points to revoke."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
@@ -165,12 +185,18 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

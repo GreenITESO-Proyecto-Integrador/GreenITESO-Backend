@@ -214,6 +214,16 @@ class UserProfile(models.Model):
                 name="profile_visibility_valid",
             ),
         ]
+        indexes = [
+            # Serves the points ranking (gamification selectors): an ordered
+            # scan that stops after limit + offset rows.
+            models.Index(
+                F("total_points").desc(),
+                "user",
+                name="profile_public_ranking_idx",
+                condition=Q(visibility="PUBLIC"),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Profile: {self.user.email}"
@@ -331,3 +341,41 @@ class Friendship(models.Model):
                 else (self.addressee_id, self.requester_id)
             )
         super().save(*args, **kwargs)
+
+
+class UserRoleAudit(models.Model):
+    """Audit record for global user role changes."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.PROTECT,
+        related_name="role_audit_logs",
+    )
+    changed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="performed_role_audits",
+    )
+    previous_role = models.CharField(max_length=16, choices=User.Role.choices)
+    new_role = models.CharField(max_length=16, choices=User.Role.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounts_user_role_audit"
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(previous_role__in=["STUDENT", "STAFF", "ADMIN"]),
+                name="user_role_audit_previous_role_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(new_role__in=["STUDENT", "STAFF", "ADMIN"]),
+                name="user_role_audit_new_role_valid",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Role audit {self.user_id}: {self.previous_role} -> {self.new_role}"

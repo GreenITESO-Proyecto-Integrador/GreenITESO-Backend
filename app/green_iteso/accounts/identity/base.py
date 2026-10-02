@@ -24,6 +24,7 @@ class ExternalIdentity:  # pylint: disable=too-many-instance-attributes
     department: str | None = None
     employee_id: str | None = None
     group_ids: tuple[str, ...] | None = field(default=None)
+    directory_profile_available: bool = True
 
 
 class IdentityProvider(Protocol):

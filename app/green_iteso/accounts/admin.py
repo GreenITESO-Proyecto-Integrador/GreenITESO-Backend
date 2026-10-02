@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 
-from .models import Clan, ClanMembership, Friendship, User, UserProfile
+from .models import Clan, ClanMembership, Friendship, User, UserProfile, UserRoleAudit
 
 
 @admin.register(User)
@@ -171,3 +171,24 @@ class FriendshipAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     search_fields = ("requester__email", "addressee__email")
     readonly_fields = ("low_user", "high_user", "created_at")
+
+
+@admin.register(UserRoleAudit)
+class UserRoleAuditAdmin(admin.ModelAdmin):
+    list_display = ("user", "changed_by", "previous_role", "new_role", "created_at")
+    list_filter = ("previous_role", "new_role")
+    search_fields = ("user__email", "changed_by__email")
+    readonly_fields = ("user", "changed_by", "previous_role", "new_role", "created_at")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: object | None = None
+    ) -> bool:
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: object | None = None
+    ) -> bool:
+        return False

@@ -7,17 +7,22 @@ import uuid
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth.models import update_last_login
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .exceptions import (
     AccountConflictError,
     AccountDisabledError,
+    CannotDemoteLastAdminError,
     DomainNotAllowedError,
+    IdentityProviderUnavailableError,
+    RequestValidationError,
 )
 from .identity import ExternalIdentity, IdentityProvider, get_identity_provider
-from .models import User, UserProfile
+from .models import User, UserProfile, UserRoleAudit
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,16 @@ def _upsert_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def determine_initial_role(identity: ExternalIdentity, email: str) -> str:
+    """Assign STUDENT by default, or STAFF if configured or detected from directory data."""
+    staff_emails = getattr(settings, "STAFF_EMAILS", [])
+    if email.lower() in staff_emails:
+        return User.Role.STAFF
+    if identity.job_title and identity.job_title.strip():
+        return User.Role.STAFF
+    return User.Role.STUDENT
+
+
 def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
     oid = uuid.UUID(identity.oid)
     user = User.objects.select_for_update().filter(microsoft_oid=oid).first()
@@ -130,7 +145,10 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
                 raise AccountConflictError()
             user.microsoft_oid = oid
     if user is None:
-        user = User(email=email, microsoft_oid=oid)
+        if not identity.directory_profile_available:
+            raise IdentityProviderUnavailableError()
+        initial_role = determine_initial_role(identity, email)
+        user = User(email=email, microsoft_oid=oid, role=initial_role)
         user.set_unusable_password()
         created = True
     if not user.is_active:
@@ -148,6 +166,75 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
 
     _sync_profile(user, identity)
     return user, created
+
+
+def update_user_role(*, admin_user: User | None, user: User, new_role: str) -> User:
+    """Change the global role of a user, enforcing admin rules and recording audit."""
+    if new_role not in User.Role.values:
+        raise RequestValidationError(f"Invalid role: {new_role}")
+
+    with transaction.atomic():
+        locked_users = list(
+            User.objects.select_for_update()
+            .filter(Q(role=User.Role.ADMIN, is_active=True) | Q(pk=user.pk))
+            .order_by("pk")
+        )
+        locked_user = next(
+            (locked_user for locked_user in locked_users if locked_user.pk == user.pk),
+            None,
+        )
+        if locked_user is None:
+            raise User.DoesNotExist
+
+        if (
+            locked_user.role == User.Role.ADMIN
+            and new_role != User.Role.ADMIN
+            and len(
+                [
+                    active_admin
+                    for active_admin in locked_users
+                    if active_admin.role == User.Role.ADMIN and active_admin.is_active
+                ]
+            )
+            <= 1
+        ):
+            raise CannotDemoteLastAdminError()
+
+        if locked_user.role == new_role:
+            return locked_user
+
+        previous_role = locked_user.role
+        locked_user.role = new_role
+        locked_user.save(update_fields=["role"])
+
+        UserRoleAudit.objects.create(
+            user=locked_user,
+            changed_by=admin_user,
+            previous_role=previous_role,
+            new_role=new_role,
+        )
+
+        logger.info(
+            "User role changed: target_user_id=%s previous_role=%s new_role=%s changed_by_id=%s",
+            locked_user.pk,
+            previous_role,
+            new_role,
+            admin_user.pk if admin_user is not None else None,
+        )
+
+    try:
+        if admin_user is not None:
+            change_msg = f"Role changed from {previous_role} to {new_role}"
+            LogEntry.objects.log_actions(
+                admin_user.pk,
+                [locked_user],
+                action_flag=CHANGE,
+                change_message=change_msg,
+            )
+    except Exception:  # pragma: no cover
+        logger.exception("Failed to write admin LogEntry for role change")
+
+    return locked_user
 
 
 def _sync_profile(user: User, identity: ExternalIdentity) -> None:

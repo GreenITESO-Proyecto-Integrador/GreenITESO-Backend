@@ -237,9 +237,10 @@ TEMPLATES = [
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
 
-# In-memory layer: events only reach sockets held by the same process. Fine for
-# the single local uvicorn; a deployment with several workers needs a shared
-# layer (channels-redis) before real-time delivery is reliable across them.
+# In-memory layer: events only reach sockets held by the same process. The
+# runtime is therefore pinned to one worker (WEB_CONCURRENCY=1) and the system
+# check notifications.E001 rejects more; several workers or instances need a
+# shared layer (channels-redis) first. See docs/deployment.md.
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 DATABASE_URL = required("DATABASE_URL")

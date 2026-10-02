@@ -47,3 +47,25 @@ The legacy callers are:
 The table records retained workflow inputs, not configured deployment
 environments. The replacement release workflow owns the future branch and
 environment mapping.
+
+## Real-time notifications: single worker
+
+Real-time notifications use Channels with `InMemoryChannelLayer`, which only
+delivers events to WebSockets held by the **same process**. With several
+Gunicorn workers a notification is saved but silently skips every socket that
+lives in another worker, so the runtime is pinned to one process until a shared
+channel layer exists.
+
+- `make -C app gunicorn-asgi` defaults to `--workers ${WEB_CONCURRENCY:-1}`.
+- `make gunicorn-asgi` runs `check --deploy` first. The system check
+  `notifications.E001` fails the start when `WEB_CONCURRENCY` is greater than 1
+  and `CHANNEL_LAYERS` is still the in-memory backend (`E002` when the value is
+  not an integer). Do not set `WEB_CONCURRENCY` above 1 in the environment.
+- Horizontal scaling is also affected: every extra instance is another process,
+  so the Cloud Run service must use `max-instances=1` for now.
+- `app/tests/test_notifications_workers.py` fails if the Makefile default is
+  raised, or if more workers are allowed without a shared layer.
+
+To lift the limit, add `channels-redis`, point `CHANNEL_LAYERS` at a Redis
+instance taken from a secret (`CHANNEL_REDIS_URL`), add a cross-process
+delivery test, and then remove the pin and `notifications.E001`.

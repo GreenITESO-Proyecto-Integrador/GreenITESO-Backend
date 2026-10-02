@@ -15,15 +15,25 @@ from green_iteso.accounts.services import ensure_profile
 
 from .selectors import list_active_clans
 from .serializers import (
+    ClanDetailSerializer,
     ClanMembershipSerializer,
     ClanSerializer,
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
     TransferLeadershipSerializer,
 )
-from .services import assign_institutional_clan, create_clan, dissolve_clan
+from .services import assign_institutional_clan, create_private_clan, dissolve_clan
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
+
+
+def _validation_error_from(
+    exc: ValueError, *, field: str | None = None
+) -> ValidationError:
+    """Convert a domain ValueError into a DRF ValidationError (shared across actions)."""
+    if field:
+        return ValidationError({field: str(exc)})
+    return ValidationError(str(exc))
 
 
 class ClanViewSet(
@@ -37,16 +47,37 @@ class ClanViewSet(
 
     serializer_class = ClanSerializer
 
+    def get_serializer_class(self) -> type[ClanSerializer]:
+        if self.action == "retrieve":
+            return ClanDetailSerializer
+        return ClanSerializer
+
     def get_queryset(self) -> QuerySet[Clan]:
-        return list_active_clans()
+        # `search` only applies to `list`: `get_queryset()` also backs
+        # `get_object()` for retrieve and every detail action (destroy,
+        # transfer-leadership, select-active), where filtering by an
+        # unrelated query param would 404 a clan that otherwise exists.
+        search = (
+            self.request.query_params.get("search", "") if self.action == "list" else ""
+        )
+        queryset = list_active_clans(user=self.request.user, search=search)
+        if self.action == "retrieve":
+            return queryset.prefetch_related("memberships__user")
+        return queryset
 
     def perform_create(self, serializer: ClanSerializer) -> None:
-        serializer.instance = create_clan(
-            name=serializer.validated_data["name"],
-            clan_type=serializer.validated_data["type"],
-            description=serializer.validated_data.get("description", ""),
-            created_by=self.request.user,
-        )
+        try:
+            serializer.instance = create_private_clan(
+                name=serializer.validated_data["name"],
+                description=serializer.validated_data.get("description", ""),
+                avatar_object_key=serializer.validated_data.get(
+                    "avatar_object_key", ""
+                ),
+                privacy=serializer.validated_data.get("privacy", Clan.Privacy.PUBLIC),
+                created_by=self.request.user,
+            )
+        except ValueError as exc:
+            raise _validation_error_from(exc) from exc
 
     def perform_destroy(self, instance: Clan) -> None:
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
@@ -112,7 +143,7 @@ class InstitutionalClanAssignmentView(APIView):
                 user=request.user, career=payload.validated_data["career"]
             )
         except ValueError as exc:
-            raise ValidationError({"career": str(exc)}) from exc
+            raise _validation_error_from(exc, field="career") from exc
         return Response(
             InstitutionalAssignmentSerializer(profile).data,
             status=status.HTTP_200_OK,

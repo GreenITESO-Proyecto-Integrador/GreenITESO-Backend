@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from django.urls import path
 
-from .views import UserRankingView
+from .views import ClanRankingView, UserRankingView
 
 urlpatterns = [
     path("users/", UserRankingView.as_view(), name="ranking-users"),
+    path("", ClanRankingView.as_view(), name="ranking-clans"),
 ]

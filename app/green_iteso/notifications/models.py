@@ -9,12 +9,33 @@ from django.db import models
 from django.db.models import Q
 
 
+class NotificationType(models.TextChoices):
+    AUDIT_APPROVED = "AUDIT_APPROVED", "Photo audit approved"
+    AUDIT_REJECT = "AUDIT_REJECT", "Photo audit rejected"
+    BADGE_EARNED = "BADGE_EARNED", "Badge earned"
+    CAMPAIGN_INVITE = "CAMPAIGN_INVITE", "Campaign invitation"
+    MISSION_COMPLETED = "MISSION_COMPLETED", "Mission completed"
+    SOCIAL_FOLLOW = "SOCIAL_FOLLOW", "New follower"
+    SYSTEM = "SYSTEM", "System announcement"
+
+
+class NotificationQuerySet(models.QuerySet):
+    """Queryset helpers shared between the alive-only and unrestricted managers."""
+
+    def alive(self) -> NotificationQuerySet:
+        """Return notifications that have not been soft-deleted."""
+        return self.filter(deleted_at__isnull=True)
+
+
+class NotificationManager(models.Manager.from_queryset(NotificationQuerySet)):
+    """Default manager: excludes soft-deleted notifications from every query."""
+
+    def get_queryset(self) -> NotificationQuerySet:
+        return super().get_queryset().alive()
+
+
 class Notification(models.Model):
-    class NotificationType(models.TextChoices):
-        AUDIT_REJECT = "AUDIT_REJECT", "Photo audit rejected"
-        BADGE_EARNED = "BADGE_EARNED", "Badge earned"
-        CAMPAIGN_INVITE = "CAMPAIGN_INVITE", "Campaign invitation"
-        MISSION_COMPLETED = "MISSION_COMPLETED", "Mission completed"
+    NotificationType = NotificationType
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -27,20 +48,19 @@ class Notification(models.Model):
     )
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    all_objects = models.Manager()
+    objects = NotificationManager()
 
     class Meta:
         db_table = "notifications_notification"
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ["-created_at"]
         constraints = [
             models.CheckConstraint(
-                condition=Q(
-                    notification_type__in=[
-                        "AUDIT_REJECT",
-                        "BADGE_EARNED",
-                        "CAMPAIGN_INVITE",
-                        "MISSION_COMPLETED",
-                    ]
-                ),
+                condition=Q(notification_type__in=NotificationType.values),
                 name="notification_type_valid",
             ),
         ]

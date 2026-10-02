@@ -13,7 +13,10 @@ from rest_framework.response import Response
 from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
+from green_iteso.feed.services import create_shared_evidence_post
+from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import notify
 
 from .models import ActionCategory, ActionLog, ActionMaster
 from .selectors import list_active_action_categories, list_active_actions
@@ -23,7 +26,29 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
-from .services import PointsAlreadySpentError, revoke_awarded_points
+from .services import (
+    PointsAlreadySpentError,
+    notify_mission_progress,
+    revert_mission_progress,
+    revoke_awarded_points,
+)
+
+
+def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+    """Return the feed body describing a publicly shared action."""
+    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+
+
+def _resolve_evidence_image_url(evidence_object_key: str) -> str:
+    """Return the evidence reference only when it is already an absolute URL.
+
+    Evidence is stored as a private object key and the signed-URL resolver is
+    part of the pending storage work (P1), so a bare key is never published to
+    the feed; the post is created without an image until that lands.
+    """
+    if evidence_object_key.startswith(("http://", "https://")):
+        return evidence_object_key
+    return ""
 
 
 class ActionCategoryViewSet(
@@ -98,7 +123,19 @@ class ActionLogCreateView(views.APIView):
                 plastic_kg_factor_snapshot=action.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
+                is_shared_publicly=data["is_shared_publicly"],
             )
+
+            if action_log.is_shared_publicly:
+                create_shared_evidence_post(
+                    author=user,
+                    content=_build_shared_evidence_content(
+                        action, action_log.points_awarded
+                    ),
+                    image_url=_resolve_evidence_image_url(
+                        action_log.evidence_object_key
+                    ),
+                )
 
             if log_status == ActionLog.Status.APPROVED:
                 # Use database-side increments so concurrent approved actions
@@ -119,6 +156,9 @@ class ActionLogCreateView(views.APIView):
                     type(private_clan).all_objects.filter(pk=private_clan.pk).update(
                         total_points=F("total_points") + action.points
                     )
+
+                check_and_award_badges(user)
+                notify_mission_progress(action_log)
 
         return Response(
             {
@@ -144,7 +184,7 @@ class ActionLogAuditView(views.APIView):
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
         # Pending logs can be approved or rejected; an approved log can only be
-        # rejected, which revokes the points it already credited.
+        # rejected, which revokes the points and mission progress it credited.
         auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
         if new_status == "REJECTED":
             auditable_statuses.append(ActionLog.Status.APPROVED)
@@ -183,12 +223,13 @@ class ActionLogAuditView(views.APIView):
             )
 
             if new_status == "REJECTED":
-                Notification.objects.create(
-                    user=action_log.user,
-                    title="Evidencia Rechazada",
-                    message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
-                    notification_type=Notification.NotificationType.AUDIT_REJECT,
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_REJECT,
+                    reason=rejection_reason,
                 )
+                # Must run after the REJECTED status is saved (campaigns rule).
+                revert_mission_progress(action_log)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 points = action_log.points_awarded
@@ -203,6 +244,16 @@ class ActionLogAuditView(views.APIView):
                     Clan.all_objects.filter(
                         pk=action_log.credited_private_clan_id
                     ).update(total_points=F("total_points") + points)
+
+                check_and_award_badges(action_log.user)
+                notify_mission_progress(action_log)
+
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_APPROVED,
+                    action_name=action_log.action.name,
+                    points=action_log.points_awarded,
+                )
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

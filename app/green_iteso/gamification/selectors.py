@@ -5,7 +5,7 @@ from __future__ import annotations
 from django.db.models import F, QuerySet, Window
 from django.db.models.functions import Rank
 
-from green_iteso.accounts.models import UserProfile
+from green_iteso.accounts.models import Clan, UserProfile
 
 
 def list_user_points_ranking() -> QuerySet[UserProfile]:
@@ -31,4 +31,20 @@ def list_user_points_ranking() -> QuerySet[UserProfile]:
         )
         .annotate(rank=Window(Rank(), order_by=F("total_points").desc()))
         .order_by("-total_points", "user_id")
+    )
+
+
+def list_clan_points_ranking(clan_type: str) -> QuerySet[Clan]:
+    """Return living clans of one type ranked by total points.
+
+    ``clan_type`` is ``INSTITUTIONAL`` or ``PRIVATE``. Soft-deleted clans stay
+    out through the default manager. Tied clans share ``rank``. The id
+    tiebreaker keeps limit/offset pages stable. ``clan_type_points_idx`` covers
+    the type filter and the points order.
+    """
+    return (
+        Clan.objects.filter(type=clan_type)
+        .only("id", "name", "total_points")
+        .annotate(rank=Window(Rank(), order_by=F("total_points").desc()))
+        .order_by("-total_points", "id")
     )

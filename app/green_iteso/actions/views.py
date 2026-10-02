@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.feed.services import create_shared_evidence_post
+from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -152,6 +153,7 @@ class ActionLogCreateView(views.APIView):
                     private_clan.total_points += action.points
                     private_clan.save(update_fields=["total_points"])
 
+                check_and_award_badges(user)
                 notify_mission_progress(action_log)
 
         return Response(
@@ -237,6 +239,7 @@ class ActionLogAuditView(views.APIView):
                         update_fields=["total_points"]
                     )
 
+                check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
 
         return Response(

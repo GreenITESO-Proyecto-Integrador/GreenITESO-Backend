@@ -61,10 +61,12 @@ if [[ "$RUNTIME_SERVICE_ACCOUNT" == "$MIGRATION_SERVICE_ACCOUNT" ]]; then
   echo "RUNTIME_SERVICE_ACCOUNT and MIGRATION_SERVICE_ACCOUNT must be distinct" >&2
   exit 2
 fi
-if [[ "$DJANGO_ALLOWED_HOSTS" == *$'\n'* || "$DJANGO_ALLOWED_HOSTS" == *'@'* ]]; then
-  echo "DJANGO_ALLOWED_HOSTS cannot contain newlines or @ (the release uses @ as the gcloud delimiter)" >&2
-  exit 2
-fi
+for variable in RELEASE_ENVIRONMENT DJANGO_ALLOWED_HOSTS MICROSOFT_TENANT_ID MICROSOFT_CLIENT_ID; do
+  if [[ "${!variable}" == *$'\n'* || "${!variable}" == *$'\r'* || "${!variable}" == *'@'* ]]; then
+    echo "${variable} cannot contain newlines or @ (the release uses @ as the gcloud delimiter)" >&2
+    exit 2
+  fi
+done
 
 IMAGE_REGISTRY="${ARTIFACT_REGISTRY_LOCATION}-docker.pkg.dev/${IMAGE_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
 IMAGE="${IMAGE_REGISTRY}/greeniteso"

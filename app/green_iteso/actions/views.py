@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import F
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
-from green_iteso.accounts.models import UserProfile, Clan
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -167,12 +166,10 @@ class ActionLogAuditView(views.APIView):
                 )
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
-
-                if log_status == ActionLog.Status.APPROVED:
-                    UserProfile.objects.filter(pk=profile.pk).update(
-                        total_points=F("total_points") + action_log.points_awarded,
-                        available_points=F("available_points") + action_log.points_awarded,
-                    )
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action_log.points_awarded,
+                    available_points=F("available_points") + action_log.points_awarded,
+                )
 
                 if action_log.institutional_clan:
                     Clan.objects.filter(pk=action_log.institutional_clan.pk).update(

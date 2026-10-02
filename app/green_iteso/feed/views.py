@@ -32,8 +32,11 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
 
     def get_queryset(self) -> QuerySet[Post]:
-        """Optimize database query with select_related for author profile data."""
-        return Post.objects.select_related("author").all()
+        return (
+            Post.objects.select_related("author", "badge_user__badge")
+            .all()
+            .order_by("-created_at")
+        )
 
     def perform_create(self, serializer: PostSerializer) -> None:
         """Assign authenticated user as author upon creation."""

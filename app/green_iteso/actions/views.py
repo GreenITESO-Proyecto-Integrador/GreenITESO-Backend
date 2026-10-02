@@ -11,6 +11,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.accounts.selectors import get_profile_clans
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.notifications.models import Notification
 
@@ -83,13 +84,7 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
-            profile = user.profile
-            institutional_clan = profile.institutional_clan
-
-            active_membership = user.clan_memberships.filter(
-                is_active_private=True
-            ).first()
-            private_clan = active_membership.clan if active_membership else None
+            profile, institutional_clan, private_clan = get_profile_clans(user)
 
             action_log = ActionLog.objects.create(
                 user=user,

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import uuid
+
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
+
+from green_iteso.accounts.models import Clan, UserProfile
+from green_iteso.accounts.selectors import get_profile_clans
+from green_iteso.core.permissions import IsAdmin, IsAuthenticated
+from green_iteso.feed.services import create_shared_evidence_post
+from green_iteso.gamification.services import check_and_award_badges
+from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import notify
 
 from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
 from .selectors import (
@@ -26,8 +37,38 @@ from .services import (
     AlreadyUnlockedError,
     InsufficientPointsError,
     ItemInactiveError,
+    PointsAlreadySpentError,
+    notify_mission_progress,
     redeem_exchangeable,
+    revert_mission_progress,
+    revoke_awarded_points,
 )
+
+
+def _format_error(exc: Exception) -> str:
+    """Extract a clean string representation from an exception."""
+    if hasattr(exc, "messages") and exc.messages:
+        return str(exc.messages[0])
+    if hasattr(exc, "message") and exc.message:
+        return str(exc.message)
+    return str(exc)
+
+
+def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+    """Return the feed body describing a publicly shared action."""
+    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+
+
+def _resolve_evidence_image_url(evidence_object_key: str) -> str:
+    """Return the evidence reference only when it is already an absolute URL.
+
+    Evidence is stored as a private object key and the signed-URL resolver is
+    part of the pending storage work (P1), so a bare key is never published to
+    the feed; the post is created without an image until that lands.
+    """
+    if evidence_object_key.startswith(("http://", "https://")):
+        return evidence_object_key
+    return ""
 
 
 class ActionCategoryViewSet(
@@ -43,17 +84,22 @@ class ActionCategoryViewSet(
         return list_active_action_categories()
 
 
-class ActionMasterViewSet(
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """List and retrieve action definitions under /api/v1/actions/."""
+class ActionMasterViewSet(viewsets.ModelViewSet):
+    """Full CRUD for action definitions under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
 
     def get_queryset(self) -> QuerySet[ActionMaster]:
         return list_active_actions()
+
+    def get_permissions(self) -> list[BasePermission]:
+        """Assign distinct permissions based on the invoked action."""
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            permission_classes = [IsAdmin]
+        else:
+            permission_classes = [IsAuthenticated]
+
+        return [permission() for permission in permission_classes]
 
 
 class ActionLogCreateView(views.APIView):
@@ -81,13 +127,7 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
-            profile = user.profile
-            institutional_clan = profile.institutional_clan
-
-            active_membership = user.clan_memberships.filter(
-                is_active_private=True
-            ).first()
-            private_clan = active_membership.clan if active_membership else None
+            profile, institutional_clan, private_clan = get_profile_clans(user)
 
             action_log = ActionLog.objects.create(
                 user=user,
@@ -101,20 +141,37 @@ class ActionLogCreateView(views.APIView):
                 plastic_kg_factor_snapshot=action_def.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
+                is_shared_publicly=data.get("is_shared_publicly", False),
             )
 
+            if action_log.is_shared_publicly:
+                create_shared_evidence_post(
+                    author=user,
+                    content=_build_shared_evidence_content(
+                        action_def, action_log.points_awarded
+                    ),
+                    image_url=_resolve_evidence_image_url(
+                        action_log.evidence_object_key
+                    ),
+                )
+
             if log_status == ActionLog.Status.APPROVED:
-                profile.total_points += action_def.points
-                profile.available_points += action_def.points
-                profile.save(update_fields=["total_points", "available_points"])
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action_def.points,
+                    available_points=F("available_points") + action_def.points,
+                )
 
                 if institutional_clan:
-                    institutional_clan.total_points += action_def.points
-                    institutional_clan.save(update_fields=["total_points"])
+                    Clan.objects.filter(pk=institutional_clan.pk).update(
+                        total_points=F("total_points") + action_def.points
+                    )
 
                 if private_clan:
-                    private_clan.total_points += action_def.points
-                    private_clan.save(update_fields=["total_points"])
+                    Clan.objects.filter(pk=private_clan.pk).update(
+                        total_points=F("total_points") + action_def.points
+                    )
+                check_and_award_badges(user)
+                notify_mission_progress(action_log)
 
         return Response(
             {
@@ -126,12 +183,82 @@ class ActionLogCreateView(views.APIView):
         )
 
 
-def _format_error(exc: Exception) -> str:
-    if hasattr(exc, "messages") and exc.messages:
-        return str(exc.messages[0])
-    if hasattr(exc, "message") and exc.message:
-        return str(exc.message)
-    return str(exc)
+class ActionLogAuditView(views.APIView):
+    """API view for administrators to audit pending logs or revoke approved ones."""
+
+    permission_classes = [IsAdmin]
+
+    def patch(self, request: Request, log_id: uuid.UUID) -> Response:
+        data = request.data
+        new_status = data.get("status")
+        rejection_reason = data.get("rejection_reason", "")
+        # Pending logs can be approved or rejected; an approved log can only be
+        # rejected, which revokes the points and mission progress it credited.
+        auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
+        if new_status == "REJECTED":
+            auditable_statuses.append(ActionLog.Status.APPROVED)
+
+        with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status__in=auditable_statuses
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Auditable action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if action_log.status == ActionLog.Status.APPROVED:
+                try:
+                    revoke_awarded_points(action_log)
+                except PointsAlreadySpentError:
+                    return Response(
+                        {"error": "The user already spent the points to revoke."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            action_log.status = new_status
+            action_log.rejection_reason = rejection_reason
+            action_log.reviewed_by = request.user
+            action_log.save(update_fields=["status", "rejection_reason", "reviewed_by"])
+
+            if new_status == "REJECTED":
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_REJECT,
+                    reason=rejection_reason,
+                )
+                # Must run after the REJECTED status is saved (campaigns rule).
+                revert_mission_progress(action_log)
+            elif new_status == "APPROVED":
+                profile = action_log.user.profile
+                UserProfile.objects.filter(pk=profile.pk).update(
+                    total_points=F("total_points") + action_log.points_awarded,
+                    available_points=F("available_points") + action_log.points_awarded,
+                )
+
+                if action_log.institutional_clan:
+                    Clan.objects.filter(pk=action_log.institutional_clan.pk).update(
+                        total_points=F("total_points") + action_log.points_awarded
+                    )
+
+                if action_log.credited_private_clan:
+                    Clan.objects.filter(pk=action_log.credited_private_clan.pk).update(
+                        total_points=F("total_points") + action_log.points_awarded
+                    )
+
+                check_and_award_badges(action_log.user)
+                notify_mission_progress(action_log)
+
+                notify(
+                    action_log.user,
+                    Notification.NotificationType.AUDIT_APPROVED,
+                    action_name=action_log.action.name,
+                    points=action_log.points_awarded,
+                )
+
+        return Response({"message": "Audit processed successfully."})
 
 
 class ExchangeableItemViewSet(
@@ -185,7 +312,6 @@ class ExchangeableItemViewSet(
                 item_key=data.get("item_key"),
                 item_id=data.get("item_id"),
             )
-            # Find the redeemed key
             key_redeemed = data.get("item_key")
             if not key_redeemed and data.get("item_id"):
                 key_redeemed = ExchangeableItem.objects.get(id=data["item_id"]).key

@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from rest_framework import serializers
 
-from .models import User, UserProfile
+from .models import User, UserProfile, UserRoleAudit
 from .selectors import EcologicalProfile
 
 _ALLOWED_AVATAR_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
@@ -21,6 +21,31 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["id", "email", "role", "date_joined"]
+        read_only_fields = fields
+
+
+class ChangeRoleRequestSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Payload to modify a user's global role."""
+
+    role = serializers.ChoiceField(
+        choices=User.Role.choices,
+        help_text="The new global role to assign (STUDENT, STAFF, or ADMIN).",
+    )
+
+
+class UserRoleAuditSerializer(serializers.ModelSerializer):
+    """Audit entry representation for role change history."""
+
+    class Meta:
+        model = UserRoleAudit
+        fields = [
+            "id",
+            "user",
+            "changed_by",
+            "previous_role",
+            "new_role",
+            "created_at",
+        ]
         read_only_fields = fields
 
 

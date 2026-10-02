@@ -125,6 +125,7 @@ else:
     CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -136,10 +137,12 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "green_iteso.accounts",
     "green_iteso.clans",
+    "green_iteso.connections",
     "green_iteso.actions",
     "green_iteso.campaigns",
     "green_iteso.feed",
     "green_iteso.notifications",
+    "green_iteso.gamification.apps.GamificationConfig",
 ]
 
 REST_FRAMEWORK = {
@@ -189,6 +192,11 @@ MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
 ALLOWED_EMAIL_DOMAIN = (
     os.environ.get("ALLOWED_EMAIL_DOMAIN", "iteso.mx").strip().lower()
 )
+STAFF_EMAILS = [
+    email.strip().lower()
+    for email in os.environ.get("STAFF_EMAILS", "").split(",")
+    if email.strip()
+]
 
 if DEPLOYED:
     # TLS terminates at the load balancer, which forwards X-Forwarded-Proto.
@@ -235,7 +243,20 @@ TEMPLATES = [
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
 
+# In-memory layer: events only reach sockets held by the same process. The
+# runtime is therefore pinned to one worker (WEB_CONCURRENCY=1) and the system
+# check notifications.E001 rejects more; several workers or instances need a
+# shared layer (channels-redis) first. See docs/deployment.md.
+CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+
 DATABASE_URL = required("DATABASE_URL")
+if MICROSOFT_AUTH_MODE == "mock" and urlsplit(DATABASE_URL).hostname not in {
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "db",
+}:
+    raise RuntimeError("MICROSOFT_AUTH_MODE=mock requires a local PostgreSQL host.")
 DATABASES = {
     "default": database_from_url(
         DATABASE_URL,

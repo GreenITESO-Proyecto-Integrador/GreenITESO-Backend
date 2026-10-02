@@ -1,0 +1,50 @@
+"""Read queries for the gamification domain."""
+
+from __future__ import annotations
+
+from django.db.models import F, QuerySet, Window
+from django.db.models.functions import Rank
+
+from green_iteso.accounts.models import Clan, UserProfile
+
+
+def list_user_points_ranking() -> QuerySet[UserProfile]:
+    """Return public profiles of active users ranked by total points.
+
+    Ordered by ``total_points`` descending with the user id as a stable
+    tiebreaker, so limit/offset pages never repeat or skip rows. Tied users
+    share the same ``rank`` (1, 1, 3, ...). The query matches the partial
+    ``profile_public_ranking_idx`` index and joins the user in the same
+    query, loading only the columns the ranking exposes.
+    """
+    return (
+        UserProfile.objects.filter(
+            visibility=UserProfile.Visibility.PUBLIC, user__is_active=True
+        )
+        .select_related("user")
+        .only(
+            "total_points",
+            "user__id",
+            "user__nickname",
+            "user__first_name",
+            "user__last_name",
+        )
+        .annotate(rank=Window(Rank(), order_by=F("total_points").desc()))
+        .order_by("-total_points", "user_id")
+    )
+
+
+def list_clan_points_ranking(clan_type: str) -> QuerySet[Clan]:
+    """Return living clans of one type ranked by total points.
+
+    ``clan_type`` is ``INSTITUTIONAL`` or ``PRIVATE``. Soft-deleted clans stay
+    out through the default manager. Tied clans share ``rank``. The id
+    tiebreaker keeps limit/offset pages stable. ``clan_type_points_idx`` covers
+    the type filter and the points order.
+    """
+    return (
+        Clan.objects.filter(type=clan_type)
+        .only("id", "name", "total_points")
+        .annotate(rank=Window(Rank(), order_by=F("total_points").desc()))
+        .order_by("-total_points", "id")
+    )

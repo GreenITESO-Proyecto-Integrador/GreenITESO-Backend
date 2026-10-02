@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -92,10 +92,16 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
     role directly) keeps a single place enforcing "at most one LEADER per
     clan", including its own re-check under the same lock.
 
+    Also locks the ``successor`` row and re-checks BR-04's single-leadership
+    rule on them: without this, a user can be made leader of this clan while
+    concurrently becoming leader of another one (e.g. through
+    ``create_private_clan`` on another connection), ending up leading two
+    clans at once.
+
     Raises:
         PermissionDenied: If ``actor`` is not the clan's current LEADER.
-        ValueError: If ``successor`` is ``actor``, or is not a member of
-            ``clan``.
+        ValueError: If ``successor`` is ``actor``, is not a member of
+            ``clan``, or already leads another clan.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
     actor_membership = ClanMembership.objects.filter(
@@ -111,6 +117,10 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
         successor_membership = ClanMembership.objects.get(clan=locked, user=successor)
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("Successor must be a member of the clan.") from exc
+
+    locked_successor = User.objects.select_for_update().get(pk=successor.pk)
+    if _is_already_leading_a_clan(locked_successor):
+        raise ValueError("Successor already leads another clan.")
 
     actor_membership.role = ClanMembership.MembershipRole.MEMBER
     actor_membership.save(update_fields=["role"])
@@ -204,6 +214,113 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
         defaults={"role": ClanMembership.MembershipRole.MEMBER},
     )
     return profile
+
+
+MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER = 5
+"""BR-04: a user may belong to at most this many private clans at once."""
+
+
+class DuplicateClanNameError(ValueError):
+    """Raised when ``Clan.name`` is already taken by another alive clan."""
+
+
+class AlreadyLeadingAClanError(ValueError):
+    """Raised when BR-04's single-leadership-per-user rule would be violated."""
+
+
+class PrivateClanLimitExceededError(ValueError):
+    """Raised when BR-04's five-private-clan membership limit would be exceeded."""
+
+
+class InvalidClanPrivacyError(ValueError):
+    """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
+
+
+def _is_already_leading_a_clan(user: User) -> bool:
+    """Return whether ``user`` currently leads any non-dissolved clan (BR-04).
+
+    Excludes soft-deleted clans: ``dissolve_clan`` intentionally keeps the
+    LEADER membership row around for points history, so without this filter
+    a user who dissolved their clan would be permanently blocked from ever
+    leading another one.
+    """
+    return ClanMembership.objects.filter(
+        user=user,
+        role=ClanMembership.MembershipRole.LEADER,
+        clan__deleted_at__isnull=True,
+    ).exists()
+
+
+def _count_private_clan_memberships(user: User) -> int:
+    """Return how many non-dissolved private clans ``user`` currently belongs to.
+
+    Excludes soft-deleted clans for the same reason as
+    ``_is_already_leading_a_clan``: a dissolved clan's membership rows are
+    kept for history and must not keep counting against BR-04's 5-clan cap.
+    """
+    return ClanMembership.objects.filter(
+        user=user,
+        clan__type=Clan.ClanType.PRIVATE,
+        clan__deleted_at__isnull=True,
+    ).count()
+
+
+@transaction.atomic
+def create_private_clan(
+    *,
+    name: str,
+    created_by: User,
+    description: str = "",
+    avatar_object_key: str = "",
+    privacy: str = Clan.Privacy.PUBLIC,
+) -> Clan:
+    """Create a private clan and grant its creator the LEADER membership (T2-31).
+
+    Institutional clans are never created through this path; they are
+    auto-assigned during onboarding (see ``assign_institutional_clan``).
+    Enforces BR-04: a user may lead at most one clan at a time, and may
+    belong to at most ``MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER`` private
+    clans. The creator row is locked for the duration of the check-then-act
+    sequence so two concurrent requests from the same user cannot both pass
+    the BR-04 checks before either membership row exists.
+    """
+
+    if privacy not in Clan.Privacy.values:
+        raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+
+    locked_user = User.objects.select_for_update().get(pk=created_by.pk)
+
+    if _is_already_leading_a_clan(locked_user):
+        raise AlreadyLeadingAClanError(
+            "User already leads a clan; BR-04 allows a single leadership at a time."
+        )
+    if (
+        _count_private_clan_memberships(locked_user)
+        >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
+    ):
+        raise PrivateClanLimitExceededError(
+            "User already belongs to "
+            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
+        )
+
+    try:
+        clan = Clan.objects.create(
+            name=name,
+            type=Clan.ClanType.PRIVATE,
+            description=description,
+            avatar_object_key=avatar_object_key,
+            privacy=privacy,
+            created_by=locked_user,
+        )
+    except IntegrityError as exc:
+        if "clan_name_unique_when_alive" not in str(exc):
+            raise
+        raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
+
+    ClanMembership.objects.create(
+        user=locked_user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+    )
+    return clan
 
 
 def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:

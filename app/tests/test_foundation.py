@@ -93,7 +93,7 @@ def test_deployed_database_roles_are_explicit() -> None:
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db", require_ssl=True
         )
-    with pytest.raises(RuntimeError, match="sslmode=verify-full"):
+    with pytest.raises(RuntimeError, match="verify-full.*channel_binding=require"):
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db?sslmode=require",
             require_ssl=True,
@@ -119,6 +119,23 @@ def test_deployed_database_roles_are_explicit() -> None:
         ),
         "channel_binding": "require",
     }
+
+    neon_default = database_from_url(
+        "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=require&channel_binding=require",
+        require_ssl=True,
+        expected_pooled=False,
+    )
+    assert neon_default["OPTIONS"] == {
+        "sslmode": "require",
+        "channel_binding": "require",
+    }
+
+    with pytest.raises(RuntimeError, match="channel_binding=require"):
+        database_from_url(
+            "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=require",
+            require_ssl=True,
+            expected_pooled=False,
+        )
 
     custom_ca = database_from_url(
         "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=verify-full&sslrootcert=%2Fetc%2Fgreeniteso-ca.pem",

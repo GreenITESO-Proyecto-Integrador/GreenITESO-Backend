@@ -20,6 +20,7 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
+from .services import DailyActionLimitError, enforce_calendar_daily_limit
 
 
 class ActionCategoryViewSet(
@@ -79,47 +80,54 @@ class ActionLogCreateView(views.APIView):
             else ActionLog.Status.APPROVED
         )
 
-        with transaction.atomic():
-            profile = user.profile
-            institutional_clan = profile.institutional_clan
+        try:
+            with transaction.atomic():
+                enforce_calendar_daily_limit(user, action)
+                profile = user.profile
+                institutional_clan = profile.institutional_clan
 
-            active_membership = user.clan_memberships.filter(
-                is_active_private=True
-            ).first()
-            private_clan = active_membership.clan if active_membership else None
+                active_membership = user.clan_memberships.filter(
+                    is_active_private=True
+                ).first()
+                private_clan = active_membership.clan if active_membership else None
 
-            action_log = ActionLog.objects.create(
-                user=user,
-                action=action,
-                institutional_clan=institutional_clan,
-                credited_private_clan=private_clan,
-                idempotency_key=data["idempotency_key"],
-                points_awarded=action.points,
-                co2_kg_factor_snapshot=action.co2_kg_factor,
-                water_liters_factor_snapshot=action.water_liters_factor,
-                plastic_kg_factor_snapshot=action.plastic_kg_factor,
-                status=log_status,
-                evidence_object_key=data.get("evidence_object_key", ""),
+                action_log = ActionLog.objects.create(
+                    user=user,
+                    action=action,
+                    institutional_clan=institutional_clan,
+                    credited_private_clan=private_clan,
+                    idempotency_key=data["idempotency_key"],
+                    points_awarded=action.points,
+                    co2_kg_factor_snapshot=action.co2_kg_factor,
+                    water_liters_factor_snapshot=action.water_liters_factor,
+                    plastic_kg_factor_snapshot=action.plastic_kg_factor,
+                    status=log_status,
+                    evidence_object_key=data.get("evidence_object_key", ""),
+                )
+
+                if log_status == ActionLog.Status.APPROVED:
+                    # pylint: disable=fixme
+                    # TODO: Transactionalize point changes to avoid race conditions
+                    # available_points is the spendable balance introduced by T2-02
+                    # (see UserProfile.available_points); it accrues alongside
+                    # total_points and only total_points is drawn down separately
+                    # by the (future) redemption flow.
+                    profile.total_points += action.points
+                    profile.available_points += action.points
+                    profile.save(update_fields=["total_points", "available_points"])
+
+                    if institutional_clan:
+                        institutional_clan.total_points += action.points
+                        institutional_clan.save(update_fields=["total_points"])
+
+                    if private_clan:
+                        private_clan.total_points += action.points
+                        private_clan.save(update_fields=["total_points"])
+        except DailyActionLimitError:
+            return Response(
+                {"error": "Daily action limit exceeded for today."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-
-            if log_status == ActionLog.Status.APPROVED:
-                # pylint: disable=fixme
-                # TODO: Transactionalize point changes to avoid race conditions
-                # available_points is the spendable balance introduced by T2-02
-                # (see UserProfile.available_points); it accrues alongside
-                # total_points and only total_points is drawn down separately
-                # by the (future) redemption flow.
-                profile.total_points += action.points
-                profile.available_points += action.points
-                profile.save(update_fields=["total_points", "available_points"])
-
-                if institutional_clan:
-                    institutional_clan.total_points += action.points
-                    institutional_clan.save(update_fields=["total_points"])
-
-                if private_clan:
-                    private_clan.total_points += action.points
-                    private_clan.save(update_fields=["total_points"])
 
         return Response(
             {

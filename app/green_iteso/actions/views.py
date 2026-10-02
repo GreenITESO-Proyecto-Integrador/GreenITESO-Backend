@@ -5,10 +5,14 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import QuerySet
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from green_iteso.core.permissions import IsAdmin
+from green_iteso.accounts.selectors import get_profile_clans
+from green_iteso.core.permissions import IsAdmin, IsAuthenticated
+from green_iteso.feed.services import create_shared_evidence_post
+from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 
 from .models import ActionCategory, ActionLog, ActionMaster
@@ -19,6 +23,29 @@ from .serializers import (
     ActionLogSerializer,
     ActionMasterSerializer,
 )
+from .services import (
+    PointsAlreadySpentError,
+    notify_mission_progress,
+    revert_mission_progress,
+    revoke_awarded_points,
+)
+
+
+def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+    """Return the feed body describing a publicly shared action."""
+    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+
+
+def _resolve_evidence_image_url(evidence_object_key: str) -> str:
+    """Return the evidence reference only when it is already an absolute URL.
+
+    Evidence is stored as a private object key and the signed-URL resolver is
+    part of the pending storage work (P1), so a bare key is never published to
+    the feed; the post is created without an image until that lands.
+    """
+    if evidence_object_key.startswith(("http://", "https://")):
+        return evidence_object_key
+    return ""
 
 
 class ActionCategoryViewSet(
@@ -34,17 +61,24 @@ class ActionCategoryViewSet(
         return list_active_action_categories()
 
 
-class ActionMasterViewSet(
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """List and retrieve action definitions under /api/v1/actions/."""
+class ActionMasterViewSet(viewsets.ModelViewSet):
+    """Full CRUD for action definitions. under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
 
     def get_queryset(self) -> QuerySet[ActionMaster]:
         return list_active_actions()
+
+    def get_permissions(self) -> list[BasePermission]:
+        """
+        Assign distinct permissions based on the invoked action.
+        """
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsAdmin]
+        else:
+            permission_classes = [IsAuthenticated]
+
+        return [permission() for permission in permission_classes]
 
 
 class ActionLogCreateView(views.APIView):
@@ -72,13 +106,7 @@ class ActionLogCreateView(views.APIView):
         )
 
         with transaction.atomic():
-            profile = user.profile
-            institutional_clan = profile.institutional_clan
-
-            active_membership = user.clan_memberships.filter(
-                is_active_private=True
-            ).first()
-            private_clan = active_membership.clan if active_membership else None
+            profile, institutional_clan, private_clan = get_profile_clans(user)
 
             action_log = ActionLog.objects.create(
                 user=user,
@@ -92,7 +120,19 @@ class ActionLogCreateView(views.APIView):
                 plastic_kg_factor_snapshot=action.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
+                is_shared_publicly=data["is_shared_publicly"],
             )
+
+            if action_log.is_shared_publicly:
+                create_shared_evidence_post(
+                    author=user,
+                    content=_build_shared_evidence_content(
+                        action, action_log.points_awarded
+                    ),
+                    image_url=_resolve_evidence_image_url(
+                        action_log.evidence_object_key
+                    ),
+                )
 
             if log_status == ActionLog.Status.APPROVED:
                 # pylint: disable=fixme
@@ -113,6 +153,9 @@ class ActionLogCreateView(views.APIView):
                     private_clan.total_points += action.points
                     private_clan.save(update_fields=["total_points"])
 
+                check_and_award_badges(user)
+                notify_mission_progress(action_log)
+
         return Response(
             {
                 "message": "Action logged successfully.",
@@ -124,7 +167,7 @@ class ActionLogCreateView(views.APIView):
 
 
 class ActionLogAuditView(views.APIView):
-    """API view for administrators to approve or reject pending action logs."""
+    """API view for administrators to audit pending logs or revoke approved ones."""
 
     permission_classes = [IsAdmin]
 
@@ -134,18 +177,34 @@ class ActionLogAuditView(views.APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        try:
-            action_log = ActionLog.objects.get(id=log_id, status=ActionLog.Status.PENDING_AUDIT)
-        except ActionLog.DoesNotExist:
-            return Response(
-                {"error": "Pending action log not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
+        # Pending logs can be approved or rejected; an approved log can only be
+        # rejected, which revokes the points and mission progress it credited.
+        auditable_statuses = [ActionLog.Status.PENDING_AUDIT]
+        if new_status == "REJECTED":
+            auditable_statuses.append(ActionLog.Status.APPROVED)
 
         with transaction.atomic():
+            try:
+                action_log = ActionLog.objects.select_for_update().get(
+                    id=log_id, status__in=auditable_statuses
+                )
+            except ActionLog.DoesNotExist:
+                return Response(
+                    {"error": "Auditable action log not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if action_log.status == ActionLog.Status.APPROVED:
+                try:
+                    revoke_awarded_points(action_log)
+                except PointsAlreadySpentError:
+                    return Response(
+                        {"error": "The user already spent the points to revoke."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
             action_log.status = new_status
             action_log.rejection_reason = rejection_reason
             action_log.reviewed_by = request.user
@@ -158,6 +217,8 @@ class ActionLogAuditView(views.APIView):
                     message=f"Tu evidencia fue rechazada. Motivo: {rejection_reason}",
                     notification_type=Notification.NotificationType.AUDIT_REJECT,
                 )
+                # Must run after the REJECTED status is saved (campaigns rule).
+                revert_mission_progress(action_log)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 profile.total_points += action_log.points_awarded
@@ -165,12 +226,21 @@ class ActionLogAuditView(views.APIView):
                 profile.save(update_fields=["total_points", "available_points"])
 
                 if action_log.institutional_clan:
-                    action_log.institutional_clan.total_points += action_log.points_awarded
+                    action_log.institutional_clan.total_points += (
+                        action_log.points_awarded
+                    )
                     action_log.institutional_clan.save(update_fields=["total_points"])
 
                 if action_log.credited_private_clan:
-                    action_log.credited_private_clan.total_points += action_log.points_awarded
-                    action_log.credited_private_clan.save(update_fields=["total_points"])
+                    action_log.credited_private_clan.total_points += (
+                        action_log.points_awarded
+                    )
+                    action_log.credited_private_clan.save(
+                        update_fields=["total_points"]
+                    )
+
+                check_and_award_badges(action_log.user)
+                notify_mission_progress(action_log)
 
         return Response(
             {"message": f"Action log {new_status.lower()} successfully."},

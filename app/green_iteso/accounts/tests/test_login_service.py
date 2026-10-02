@@ -11,11 +11,19 @@ from django.test import TransactionTestCase
 from green_iteso.accounts.exceptions import (
     AccountConflictError,
     AccountDisabledError,
+    CannotDemoteLastAdminError,
     DomainNotAllowedError,
+    IdentityProviderUnavailableError,
+    RequestValidationError,
 )
 from green_iteso.accounts.identity.base import ExternalIdentity
-from green_iteso.accounts.models import User, UserProfile
-from green_iteso.accounts.services import is_institutional_email, login_with_microsoft
+from green_iteso.accounts.models import User, UserProfile, UserRoleAudit
+from green_iteso.accounts.services import (
+    determine_initial_role,
+    is_institutional_email,
+    login_with_microsoft,
+    update_user_role,
+)
 
 
 class _StubProvider:
@@ -178,3 +186,133 @@ class ConcurrentFirstLoginTests(TransactionTestCase):
 
         assert not errors, errors
         assert User.objects.filter(email="ana@iteso.mx").count() == 1
+
+
+def test_determine_initial_role_defaults_to_student() -> None:
+    assert (
+        determine_initial_role(_identity(job_title=""), "student@iteso.mx")
+        == User.Role.STUDENT
+    )
+
+
+@pytest.mark.django_db
+def test_first_login_assigns_staff_when_job_title_present() -> None:
+    result = login_with_microsoft(
+        id_token="t",
+        access_token="a",
+        provider=_StubProvider(_identity(job_title="Profesor de Asignatura")),
+    )
+
+    assert result.created is True
+    assert result.user.role == User.Role.STAFF
+
+
+@pytest.mark.django_db
+def test_first_login_assigns_staff_when_in_staff_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "green_iteso.accounts.services.settings.STAFF_EMAILS", ["staff_user@iteso.mx"]
+    )
+    result = login_with_microsoft(
+        id_token="t",
+        access_token="a",
+        provider=_StubProvider(_identity(email="staff_user@iteso.mx", job_title="")),
+    )
+
+    assert result.created is True
+    assert result.user.role == User.Role.STAFF
+
+
+@pytest.mark.django_db
+def test_first_login_waits_for_directory_profile_before_creating_user() -> None:
+    identity = _identity(
+        email="profesor@iteso.mx",
+        job_title="",
+        directory_profile_available=False,
+    )
+
+    with pytest.raises(IdentityProviderUnavailableError):
+        login_with_microsoft(
+            id_token="t", access_token="a", provider=_StubProvider(identity)
+        )
+
+    assert not User.objects.filter(email="profesor@iteso.mx").exists()
+
+
+@pytest.mark.django_db
+def test_subsequent_login_does_not_override_role_assigned_by_admin() -> None:
+    first = login_with_microsoft(
+        id_token="t", access_token="a", provider=_StubProvider(_identity())
+    )
+    assert first.user.role == User.Role.STUDENT
+
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="p", role=User.Role.ADMIN
+    )
+    update_user_role(admin_user=admin, user=first.user, new_role=User.Role.ADMIN)
+
+    second = login_with_microsoft(
+        id_token="t", access_token="a", provider=_StubProvider(_identity())
+    )
+    assert second.created is False
+    assert second.user.role == User.Role.ADMIN
+
+
+@pytest.mark.django_db
+def test_update_user_role_creates_audit_record() -> None:
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="p", role=User.Role.ADMIN
+    )
+    target = User.objects.create_user(
+        email="student@iteso.mx", password="p", role=User.Role.STUDENT
+    )
+
+    updated = update_user_role(admin_user=admin, user=target, new_role=User.Role.STAFF)
+
+    assert updated.role == User.Role.STAFF
+    audit = UserRoleAudit.objects.get(user=target)
+    assert audit.changed_by == admin
+    assert audit.previous_role == User.Role.STUDENT
+    assert audit.new_role == User.Role.STAFF
+    assert audit.created_at is not None
+
+
+@pytest.mark.django_db
+def test_update_user_role_same_role_is_noop() -> None:
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="p", role=User.Role.ADMIN
+    )
+    target = User.objects.create_user(
+        email="student@iteso.mx", password="p", role=User.Role.STUDENT
+    )
+
+    updated = update_user_role(
+        admin_user=admin, user=target, new_role=User.Role.STUDENT
+    )
+
+    assert updated.role == User.Role.STUDENT
+    assert UserRoleAudit.objects.filter(user=target).count() == 0
+
+
+@pytest.mark.django_db
+def test_update_user_role_invalid_role_raises_validation_error() -> None:
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="p", role=User.Role.ADMIN
+    )
+    target = User.objects.create_user(
+        email="student@iteso.mx", password="p", role=User.Role.STUDENT
+    )
+
+    with pytest.raises(RequestValidationError):
+        update_user_role(admin_user=admin, user=target, new_role="INVALID")
+
+
+@pytest.mark.django_db
+def test_update_user_role_prevent_demoting_only_active_admin() -> None:
+    admin = User.objects.create_user(
+        email="sole_admin@iteso.mx", password="p", role=User.Role.ADMIN
+    )
+
+    with pytest.raises(CannotDemoteLastAdminError):
+        update_user_role(admin_user=admin, user=admin, new_role=User.Role.STUDENT)

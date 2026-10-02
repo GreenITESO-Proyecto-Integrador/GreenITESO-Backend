@@ -69,3 +69,11 @@ class RequestValidationError(LoginError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "VALIDATION_ERROR"
     message = "The request body is invalid."
+
+
+class CannotDemoteLastAdminError(LoginError):
+    """Raised when an admin attempts to remove admin role from the last active admin."""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "VALIDATION_ERROR"
+    message = "Cannot demote the only active administrator."

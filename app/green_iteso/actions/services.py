@@ -1,4 +1,4 @@
-"""Write operations for the actions and rewards domain."""
+"""Write operations for the actions and virtual exchangeables domain."""
 
 from __future__ import annotations
 
@@ -11,73 +11,77 @@ from django.db import transaction
 from green_iteso.accounts.models import UserProfile
 from green_iteso.accounts.services import ensure_profile
 
-from .models import Reward, RewardRedemption
+from .models import ExchangeableItem
 
 if TYPE_CHECKING:
     from green_iteso.accounts.models import User
 
 
 class InsufficientPointsError(ValidationError):
-    """Raised when user does not have enough available points to redeem a reward."""
+    """Raised when user does not have enough available_points to acquire an item."""
 
     def __init__(
-        self, message: str = "Puntos disponibles insuficientes para realizar el canje."
+        self, message: str = "Puntos disponibles insuficientes para este canjeable."
     ) -> None:
         super().__init__(message)
 
 
-class RewardOutOfStockError(ValidationError):
-    """Raised when a reward has no stock available."""
+class AlreadyUnlockedError(ValidationError):
+    """Raised when a user already owns the virtual item."""
 
-    def __init__(self, message: str = "Recompensa agotada.") -> None:
+    def __init__(self, message: str = "Ya posees este cosmético en tu perfil.") -> None:
         super().__init__(message)
 
 
-class RewardInactiveError(ValidationError):
-    """Raised when a reward is inactive or not found."""
+class ItemInactiveError(ValidationError):
+    """Raised when an exchangeable item is inactive or not found."""
 
-    def __init__(self, message: str = "Recompensa no disponible.") -> None:
+    def __init__(self, message: str = "Artículo canjeable no disponible.") -> None:
         super().__init__(message)
 
 
 @transaction.atomic
-def redeem_reward(*, user: User, reward_id: uuid.UUID | str) -> RewardRedemption:
-    """Redeem a reward for the user, deducting available points and stock atomically.
+def redeem_exchangeable(
+    *,
+    user: User,
+    item_key: str | None = None,
+    item_id: uuid.UUID | str | None = None,
+) -> UserProfile:
+    """Redeem a virtual cosmetic item for the user.
 
-    Locks both the user's UserProfile and the Reward with select_for_update to prevent
-    race conditions and double-spending. Available points are deducted while
-    historical total_points remains untouched.
+    Stores the unlocked cosmetic key directly in UserProfile.unlocked_cosmetics.
+    Deducts spendable available_points atomically while total_points remains untouched.
+    Guards against race conditions using select_for_update on UserProfile.
     """
     ensure_profile(user)
     profile = UserProfile.objects.select_for_update().get(user=user)
 
+    if not item_key and not item_id:
+        raise ItemInactiveError("Debes proporcionar el ID o key del artículo.")
+
     try:
-        reward = Reward.objects.select_for_update().get(id=reward_id)
-    except Reward.DoesNotExist as exc:
-        raise RewardInactiveError("Recompensa no encontrada.") from exc
+        if item_id:
+            item = ExchangeableItem.objects.get(id=item_id)
+        else:
+            item = ExchangeableItem.objects.get(key=item_key)
+    except (ExchangeableItem.DoesNotExist, ValueError) as exc:
+        raise ItemInactiveError("Artículo canjeable no encontrado.") from exc
 
-    if not reward.is_active:
-        raise RewardInactiveError("Recompensa no disponible.")
+    if not item.is_active:
+        raise ItemInactiveError("Artículo canjeable no disponible.")
 
-    if reward.stock <= 0:
-        raise RewardOutOfStockError("Recompensa agotada.")
+    unlocked_list = profile.unlocked_cosmetics or []
+    if item.key in unlocked_list:
+        raise AlreadyUnlockedError("Ya posees este cosmético en tu perfil.")
 
-    if profile.available_points < reward.points_cost:
+    if profile.available_points < item.points_cost:
         raise InsufficientPointsError(
-            "Puntos disponibles insuficientes para realizar el canje."
+            "Puntos disponibles insuficientes para realizar este canje."
         )
 
-    reward.stock -= 1
-    reward.save(update_fields=["stock", "updated_at"])
+    # Deduct spendable points ONLY. Historical total_points is strictly immutable.
+    profile.available_points -= item.points_cost
+    profile.unlocked_cosmetics = [*unlocked_list, item.key]
+    profile.save(update_fields=["available_points", "unlocked_cosmetics"])
 
-    profile.available_points -= reward.points_cost
-    profile.save(update_fields=["available_points"])
-
-    redemption = RewardRedemption.objects.create(
-        user=user,
-        reward=reward,
-        points_spent=reward.points_cost,
-        status=RewardRedemption.Status.COMPLETED,
-    )
-
-    return redemption
+    return profile

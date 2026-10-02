@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from .models import ActionCategory, ActionMaster, Reward, RewardRedemption
+from .models import ActionCategory, ActionMaster, ExchangeableItem
 
 
 class ActionCategorySerializer(serializers.ModelSerializer):
@@ -60,30 +60,18 @@ class ActionLogSerializer(serializers.Serializer):
         raise NotImplementedError
 
 
-class ActionLogAuditSerializer(serializers.Serializer):
-    """Serializer to validate action log audit data from admins."""
-
-    status = serializers.ChoiceField(choices=["APPROVED", "REJECTED"])
-    rejection_reason = serializers.CharField(required=False, allow_blank=True)
-
-    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        if attrs.get("status") == "REJECTED" and not attrs.get("rejection_reason"):
-            raise serializers.ValidationError(
-                {"rejection_reason": "Se requiere un motivo al rechazar la evidencia."}
-            )
-        return attrs
-
-class RewardSerializer(serializers.ModelSerializer):
-    """Representation of an exchangeable reward item."""
+class ExchangeableItemSerializer(serializers.ModelSerializer):
+    """Representation of a virtual exchangeable item in the shop."""
 
     class Meta:
-        model = Reward
+        model = ExchangeableItem
         fields = [
             "id",
+            "key",
             "name",
             "description",
+            "category",
             "points_cost",
-            "stock",
             "is_active",
             "image_url",
             "created_at",
@@ -92,27 +80,18 @@ class RewardSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RewardRedemptionSerializer(serializers.ModelSerializer):
-    """Representation of a completed reward redemption."""
+class RedeemExchangeableRequestSerializer(serializers.Serializer):
+    """Validation serializer when redeeming a virtual item via JSON body."""
 
-    reward = RewardSerializer(read_only=True)
+    item_id = serializers.UUIDField(required=False)
+    item_key = serializers.CharField(max_length=50, required=False)
 
-    class Meta:
-        model = RewardRedemption
-        fields = [
-            "id",
-            "reward",
-            "points_spent",
-            "status",
-            "created_at",
-        ]
-        read_only_fields = fields
-
-
-class RedeemRewardRequestSerializer(serializers.Serializer):
-    """Validation serializer when redeeming a reward via payload."""
-
-    reward_id = serializers.UUIDField(required=True)
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs.get("item_id") and not attrs.get("item_key"):
+            raise serializers.ValidationError(
+                "Debes enviar 'item_key' o 'item_id' en el cuerpo de la petición."
+            )
+        return attrs
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         raise NotImplementedError

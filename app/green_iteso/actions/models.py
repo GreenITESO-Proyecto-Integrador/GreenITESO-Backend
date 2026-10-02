@@ -201,83 +201,41 @@ class ActionLogMissionContribution(models.Model):
         return f"{self.action_log_id} -> {self.mission_id}"
 
 
-class Reward(models.Model):
-    """Catalog item that can be redeemed using spendable available_points."""
+class ExchangeableItem(models.Model):
+    """Virtual exchangeable item (e.g. cosmetic, frame, badge) available in the shop."""
+
+    class Category(models.TextChoices):
+        FRAME = "FRAME", "Avatar Frame"
+        BACKGROUND = "BACKGROUND", "Profile Background"
+        THEME = "THEME", "Profile Theme"
+        OTHER = "OTHER", "Other"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
+    category = models.CharField(
+        max_length=20, choices=Category.choices, default=Category.FRAME
+    )
     points_cost = models.PositiveIntegerField()
-    stock = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     image_url = models.URLField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "actions_reward"
+        db_table = "actions_exchangeable_item"
         constraints = [
             models.CheckConstraint(
-                condition=Q(points_cost__gt=0), name="reward_points_cost_positive"
-            ),
-            models.CheckConstraint(
-                condition=Q(stock__gte=0), name="reward_stock_nonnegative"
+                condition=Q(points_cost__gt=0), name="exchangeable_points_cost_positive"
             ),
         ]
         indexes = [
             models.Index(
-                fields=["is_active", "points_cost"], name="reward_active_cost_idx"
-            )
+                fields=["is_active", "points_cost"], name="exchangeable_active_cost_idx"
+            ),
+            models.Index(fields=["key"], name="exchangeable_key_idx"),
         ]
 
     def __str__(self) -> str:
-        return self.name
-
-
-class RewardRedemption(models.Model):
-    """Historical audit log of a reward redemption by a user."""
-
-    class Status(models.TextChoices):
-        COMPLETED = "COMPLETED", "Completed"
-        CANCELLED = "CANCELLED", "Cancelled"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="reward_redemptions",
-    )
-    reward = models.ForeignKey(
-        Reward,
-        on_delete=models.PROTECT,
-        related_name="redemptions",
-    )
-    points_spent = models.PositiveIntegerField()
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.COMPLETED
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "actions_reward_redemption"
-        constraints = [
-            models.CheckConstraint(
-                condition=Q(points_spent__gt=0),
-                name="redemption_points_spent_positive",
-            ),
-            models.CheckConstraint(
-                condition=Q(status__in=["COMPLETED", "CANCELLED"]),
-                name="redemption_status_valid",
-            ),
-        ]
-        indexes = [
-            models.Index(
-                fields=["user", "created_at"], name="redemption_user_created_idx"
-            ),
-            models.Index(
-                fields=["status", "created_at"], name="redemption_status_created_idx"
-            ),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.user_id} -> {self.reward_id} ({self.points_spent} pts)"
+        return f"{self.name} ({self.key})"

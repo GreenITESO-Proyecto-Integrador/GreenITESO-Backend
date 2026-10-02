@@ -5,8 +5,7 @@ from .models import (
     ActionLog,
     ActionLogMissionContribution,
     ActionMaster,
-    Reward,
-    RewardRedemption,
+    ExchangeableItem,
 )
 
 
@@ -61,16 +60,15 @@ class ActionLogMissionContributionAdmin(admin.ModelAdmin):
     readonly_fields = ("action_log", "mission", "created_at")
 
 
-@admin.register(Reward)
-class RewardAdmin(admin.ModelAdmin):
-    list_display = ("name", "points_cost", "stock", "is_active", "created_at")
-    list_filter = ("is_active",)
-    search_fields = ("name", "description")
-
-
-@admin.register(RewardRedemption)
-class RewardRedemptionAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "reward", "points_spent", "status", "created_at")
-    list_filter = ("status", "created_at")
-    search_fields = ("user__email", "reward__name")
-    readonly_fields = ("user", "reward", "points_spent", "status", "created_at")
+@admin.register(ExchangeableItem)
+class ExchangeableItemAdmin(admin.ModelAdmin):
+    list_display = (
+        "key",
+        "name",
+        "category",
+        "points_cost",
+        "is_active",
+        "created_at",
+    )
+    list_filter = ("category", "is_active")
+    search_fields = ("key", "name", "description")

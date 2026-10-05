@@ -11,8 +11,9 @@ from green_iteso.gamification.models import Badge, UserBadge
 User = get_user_model()
 
 
-@pytest.fixture
-def authenticated_client() -> tuple[APIClient, User]:
+# La forma correcta de evitar colisiones con Pylint es usar el argumento "name"
+@pytest.fixture(name="api_auth_context")
+def fixture_api_auth_context() -> tuple[APIClient, User]:
     client = APIClient()
     user = User.objects.create_user(
         email="badge_tester@example.com",
@@ -25,9 +26,9 @@ def authenticated_client() -> tuple[APIClient, User]:
 
 @pytest.mark.django_db
 def test_badge_catalog_list_returns_earned_status(
-    authenticated_client: tuple[APIClient, User],
+    api_auth_context: tuple[APIClient, User],
 ) -> None:
-    client, user = authenticated_client
+    client, user = api_auth_context
 
     earned_badge = Badge.objects.create(
         name="Eco Pioneer",
@@ -59,9 +60,9 @@ def test_badge_catalog_list_returns_earned_status(
 
 @pytest.mark.django_db
 def test_badge_catalog_excludes_inactive_badges(
-    authenticated_client: tuple[APIClient, User],
+    api_auth_context: tuple[APIClient, User],
 ) -> None:
-    client, _ = authenticated_client
+    client, _ = api_auth_context
 
     Badge.objects.create(
         name="Active Badge",
@@ -85,9 +86,9 @@ def test_badge_catalog_excludes_inactive_badges(
 
 @pytest.mark.django_db
 def test_badge_catalog_user_isolation(
-    authenticated_client: tuple[APIClient, User],
+    api_auth_context: tuple[APIClient, User],
 ) -> None:
-    client, _ = authenticated_client
+    client, _ = api_auth_context
 
     user_b = User.objects.create_user(
         email="other_user@example.com",
@@ -102,10 +103,8 @@ def test_badge_catalog_user_isolation(
         is_active=True,
     )
 
-    # Award badge only to User B
     UserBadge.objects.create(user=user_b, badge=badge)
 
-    # Current user requests the catalog
     response = client.get("/api/v1/rankings/badges/")
 
     assert response.status_code == status.HTTP_200_OK
@@ -123,9 +122,9 @@ def test_badge_catalog_requires_authentication() -> None:
 
 @pytest.mark.django_db
 def test_badge_catalog_ordering(
-    authenticated_client: tuple[APIClient, User],
+    api_auth_context: tuple[APIClient, User],
 ) -> None:
-    client, _ = authenticated_client
+    client, _ = api_auth_context
 
     Badge.objects.create(name="Zeta Badge", points_required=100, is_active=True)
     Badge.objects.create(name="Alpha Badge", points_required=100, is_active=True)

@@ -115,6 +115,11 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
     visibility = serializers.CharField(source="profile.visibility")
     bio = serializers.CharField(source="profile.bio")
     preferences = serializers.JSONField(source="profile.preferences")
+    unlocked_cosmetics = serializers.ListField(
+        source="profile.unlocked_cosmetics",
+        child=serializers.CharField(),
+        default=list,
+    )
     avatar_url = serializers.CharField(source="profile.avatar_url")
     total_points = serializers.IntegerField(source="profile.total_points")
     available_points = serializers.IntegerField(source="profile.available_points")

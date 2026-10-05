@@ -6,6 +6,8 @@ from rest_framework import serializers
 
 from green_iteso.accounts.models import Clan, UserProfile
 
+from .models import Badge
+
 ANONYMOUS_DISPLAY_NAME = "Usuario GreenITESO"
 
 
@@ -36,4 +38,24 @@ class ClanRankingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Clan
         fields = ["id", "rank", "clan_name", "total_points"]
+        read_only_fields = fields
+
+
+class BadgeCatalogSerializer(serializers.ModelSerializer):
+    """Serializer for badges including user-specific unlock status."""
+
+    is_earned = serializers.BooleanField(read_only=True)
+    earned_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = Badge
+        fields = [
+            "id",
+            "name",
+            "description",
+            "points_required",
+            "icon_name",
+            "is_earned",
+            "earned_at",
+        ]
         read_only_fields = fields

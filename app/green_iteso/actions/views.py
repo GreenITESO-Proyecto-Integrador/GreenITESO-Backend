@@ -54,7 +54,9 @@ def _format_error(exc: Exception) -> str:
     return str(exc)
 
 
-def _build_shared_evidence_content(action_def: ActionMaster, points_awarded: int) -> str:
+def _build_shared_evidence_content(
+    action_def: ActionMaster, points_awarded: int
+) -> str:
     """Return the feed body describing a publicly shared action."""
     return f"Nueva acción registrada: {action_def.name} (+{points_awarded} puntos)."
 
@@ -93,7 +95,10 @@ class ActionMasterViewSet(viewsets.ModelViewSet):
         return list_active_actions()
 
     def get_permissions(self) -> list[BasePermission]:
-        """Assign distinct permissions based on the invoked action."""
+        """
+        Assign distinct permissions based on the invoked action.
+        """
+
         if self.action in ["create", "update", "partial_update", "destroy"]:
             permission_classes = [IsAdmin]
         else:

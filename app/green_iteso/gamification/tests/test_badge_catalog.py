@@ -12,7 +12,7 @@ User = get_user_model()
 
 
 @pytest.fixture
-def auth_client() -> tuple[APIClient, User]:
+def authenticated_client() -> tuple[APIClient, User]:
     client = APIClient()
     user = User.objects.create_user(
         email="badge_tester@example.com",
@@ -25,9 +25,9 @@ def auth_client() -> tuple[APIClient, User]:
 
 @pytest.mark.django_db
 def test_badge_catalog_list_returns_earned_status(
-    auth_client: tuple[APIClient, User],
+    authenticated_client: tuple[APIClient, User],
 ) -> None:
-    client, user = auth_client
+    client, user = authenticated_client
 
     earned_badge = Badge.objects.create(
         name="Eco Pioneer",
@@ -59,9 +59,9 @@ def test_badge_catalog_list_returns_earned_status(
 
 @pytest.mark.django_db
 def test_badge_catalog_excludes_inactive_badges(
-    auth_client: tuple[APIClient, User],
+    authenticated_client: tuple[APIClient, User],
 ) -> None:
-    client, _ = auth_client
+    client, _ = authenticated_client
 
     Badge.objects.create(
         name="Active Badge",
@@ -85,9 +85,9 @@ def test_badge_catalog_excludes_inactive_badges(
 
 @pytest.mark.django_db
 def test_badge_catalog_user_isolation(
-    auth_client: tuple[APIClient, User],
+    authenticated_client: tuple[APIClient, User],
 ) -> None:
-    client, user_a = auth_client
+    client, _ = authenticated_client
 
     user_b = User.objects.create_user(
         email="other_user@example.com",
@@ -105,7 +105,7 @@ def test_badge_catalog_user_isolation(
     # Award badge only to User B
     UserBadge.objects.create(user=user_b, badge=badge)
 
-    # User A requests the catalog
+    # Current user requests the catalog
     response = client.get("/api/v1/rankings/badges/")
 
     assert response.status_code == status.HTTP_200_OK
@@ -123,9 +123,9 @@ def test_badge_catalog_requires_authentication() -> None:
 
 @pytest.mark.django_db
 def test_badge_catalog_ordering(
-    auth_client: tuple[APIClient, User],
+    authenticated_client: tuple[APIClient, User],
 ) -> None:
-    client, _ = auth_client
+    client, _ = authenticated_client
 
     Badge.objects.create(name="Zeta Badge", points_required=100, is_active=True)
     Badge.objects.create(name="Alpha Badge", points_required=100, is_active=True)

@@ -192,6 +192,7 @@ class UserProfile(models.Model):
     )
     bio = models.CharField(max_length=500, blank=True)
     preferences = models.JSONField(default=dict, blank=True)
+    unlocked_cosmetics = models.JSONField(default=list, blank=True)
     # The object itself lives in Cloud Storage (T2-21); only its URL is
     # persisted here, never the binary. The GCS bucket/account is not
     # provisioned yet (see docs/avatar-upload.md), so this is populated by

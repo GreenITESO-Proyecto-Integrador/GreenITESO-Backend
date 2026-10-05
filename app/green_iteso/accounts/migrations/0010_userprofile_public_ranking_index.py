@@ -4,14 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('accounts', '0009_profile_editing_fields'),
+        ("accounts", "0009_profile_editing_fields"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='userprofile',
-            index=models.Index(models.OrderBy(models.F('total_points'), descending=True), models.F('user'), condition=models.Q(('visibility', 'PUBLIC')), name='profile_public_ranking_idx'),
+            model_name="userprofile",
+            index=models.Index(
+                models.OrderBy(models.F("total_points"), descending=True),
+                models.F("user"),
+                condition=models.Q(("visibility", "PUBLIC")),
+                name="profile_public_ranking_idx",
+            ),
         ),
     ]

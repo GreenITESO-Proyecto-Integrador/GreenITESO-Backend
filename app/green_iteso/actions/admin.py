@@ -5,6 +5,7 @@ from .models import (
     ActionLog,
     ActionLogMissionContribution,
     ActionMaster,
+    ExchangeableItem,
 )
 
 
@@ -57,3 +58,17 @@ class ActionLogAdmin(admin.ModelAdmin):
 class ActionLogMissionContributionAdmin(admin.ModelAdmin):
     list_display = ("action_log", "mission", "created_at")
     readonly_fields = ("action_log", "mission", "created_at")
+
+
+@admin.register(ExchangeableItem)
+class ExchangeableItemAdmin(admin.ModelAdmin):
+    list_display = (
+        "key",
+        "name",
+        "category",
+        "points_cost",
+        "is_active",
+        "created_at",
+    )
+    list_filter = ("category", "is_active")
+    search_fields = ("key", "name", "description")

@@ -398,9 +398,13 @@ def join_clan(*, clan: Clan, user: User) -> ClanMembership:
 def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMembership:
     """Accept a PENDING join request for a PRIVATE_INVITE clan (T2-32).
 
-    Only the clan's current LEADER may accept. Enforces BR-04 at acceptance
+    Only the clan's current LEADER may accept. Locks the ``clan`` row before
+    checking leadership, matching ``transfer_leadership``: an unlocked read
+    would leave a window where a concurrent transfer commits in between and
+    a just-demoted ex-leader still gets through. Enforces BR-04 at acceptance
     time, since this is the moment the applicant actually becomes a member:
-    locks the applicant's user row and re-checks the 5-clan cap before
+    locks the applicant's user row (always after the clan row, the same
+    order ``transfer_leadership`` uses) and re-checks the 5-clan cap before
     flipping PENDING to ACCEPTED.
 
     Raises:
@@ -409,8 +413,9 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
         PrivateClanLimitExceededError: If accepting would exceed BR-04's
             5-clan cap.
     """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
     is_leader = ClanMembership.objects.filter(
-        clan=clan,
+        clan=locked,
         user=actor,
         role=ClanMembership.MembershipRole.LEADER,
         status=ClanMembership.Status.ACCEPTED,
@@ -421,7 +426,7 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
     locked_applicant = User.objects.select_for_update().get(pk=applicant.pk)
     try:
         membership = ClanMembership.objects.get(
-            clan=clan, user=locked_applicant, status=ClanMembership.Status.PENDING
+            clan=locked, user=locked_applicant, status=ClanMembership.Status.PENDING
         )
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("No pending join request from this user.") from exc
@@ -444,17 +449,21 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
 def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMembership:
     """Reject a PENDING join request for a PRIVATE_INVITE clan (T2-32).
 
-    Only the clan's current LEADER may reject. The row is kept as REJECTED
-    rather than deleted, matching ``membership_user_clan_unique``: it lets
-    the applicant file a new request later (``join_clan`` reuses the row)
-    without a stale row blocking the insert.
+    Only the clan's current LEADER may reject. Locks the ``clan`` row before
+    checking leadership, for the same reason as ``accept_join_request``: a
+    concurrent ``transfer_leadership`` must not be able to demote the actor
+    between the check and the write. The row is kept as REJECTED rather than
+    deleted, matching ``membership_user_clan_unique``: it lets the applicant
+    file a new request later (``join_clan`` reuses the row) without a stale
+    row blocking the insert.
 
     Raises:
         PermissionDenied: If ``actor`` is not the clan's current LEADER.
         ValueError: If there is no PENDING request from ``applicant``.
     """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
     is_leader = ClanMembership.objects.filter(
-        clan=clan,
+        clan=locked,
         user=actor,
         role=ClanMembership.MembershipRole.LEADER,
         status=ClanMembership.Status.ACCEPTED,
@@ -464,7 +473,7 @@ def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
 
     try:
         membership = ClanMembership.objects.get(
-            clan=clan, user=applicant, status=ClanMembership.Status.PENDING
+            clan=locked, user=applicant, status=ClanMembership.Status.PENDING
         )
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("No pending join request from this user.") from exc

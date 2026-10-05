@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 import pytest
 from django.core.exceptions import PermissionDenied
+from django.db import connection, transaction
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import (
@@ -13,6 +17,7 @@ from green_iteso.clans.services import (
     join_clan,
     leave_clan,
     reject_join_request,
+    transfer_leadership,
 )
 
 
@@ -264,3 +269,57 @@ def test_leave_clan_rejects_a_non_member(clan: Clan) -> None:
 
     with pytest.raises(ValueError):
         leave_clan(clan=clan, user=outsider)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("review", [accept_join_request, reject_join_request])
+def test_join_request_review_serializes_against_a_concurrent_leadership_transfer(
+    review: Callable[..., ClanMembership], leader: User
+) -> None:
+    """Regression test for the TOCTOU the review caught in accept/reject.
+
+    The ``transfer_leadership`` below stays uncommitted (and so holds the clan
+    row lock) while the former leader tries to review a join request from a
+    second thread. The review must block on that lock instead of passing an
+    unlocked ``is_leader`` read against the old committed state; once the
+    transfer commits, the re-check sees the actor demoted and the review is
+    refused, leaving the request PENDING.
+    """
+    clan = create_private_clan(
+        name="Invite Only", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    successor = User.objects.create_user(
+        email="successor@iteso.mx", password="local-only"
+    )
+    ClanMembership.objects.create(
+        user=successor, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    join_clan(clan=clan, user=applicant)
+
+    outcome: list[Exception | None] = []
+
+    def review_as_former_leader() -> None:
+        try:
+            review(clan=clan, actor=leader, applicant=applicant)
+            outcome.append(None)
+        except PermissionDenied as exc:
+            outcome.append(exc)
+        finally:
+            connection.close()
+
+    worker = threading.Thread(target=review_as_former_leader)
+    with transaction.atomic():
+        transfer_leadership(clan=clan, actor=leader, successor=successor)
+        worker.start()
+        worker.join(timeout=1.0)
+        blocked_on_the_clan_lock = worker.is_alive()
+    worker.join()
+
+    assert blocked_on_the_clan_lock
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], PermissionDenied)
+    request = ClanMembership.objects.get(user=applicant, clan=clan)
+    assert request.status == ClanMembership.Status.PENDING

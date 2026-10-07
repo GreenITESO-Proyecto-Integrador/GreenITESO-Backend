@@ -494,10 +494,19 @@ def leave_clan(*, clan: Clan, user: User) -> None:
     leadership (or dissolve the clan) before leaving, so a clan is never
     left without a leader.
 
+    Institutional clans can't be left: ``join_clan`` refuses them, and their
+    membership is assigned from ``profile.institutional_clan`` (BR-04), so
+    deleting it would leave the profile pointing at a clan the user no longer
+    belongs to.
+
     Raises:
         PermissionDenied: If the caller is the clan's current LEADER.
-        ValueError: If the caller has no ACCEPTED membership in this clan.
+        ValueError: If the clan is institutional, or the caller has no
+            ACCEPTED membership in this clan.
     """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Only private clans can be left through this action.")
+
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
     try:
         membership = ClanMembership.objects.get(

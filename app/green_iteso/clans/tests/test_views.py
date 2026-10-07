@@ -482,6 +482,21 @@ def test_member_leaves_a_clan(member: User, clan: Clan) -> None:
 
 
 @pytest.mark.django_db
+def test_member_cannot_leave_an_institutional_clan(member: User) -> None:
+    institutional_clan = Clan.objects.create(
+        name="Software Engineering", type=Clan.ClanType.INSTITUTIONAL
+    )
+    ClanMembership.objects.create(user=member, clan=institutional_clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.post(f"/api/v1/clans/{institutional_clan.pk}/leave/")
+
+    assert response.status_code == 400
+    assert ClanMembership.objects.filter(user=member, clan=institutional_clan).exists()
+
+
+@pytest.mark.django_db
 def test_leader_cannot_leave_their_own_clan(leader: User, clan: Clan) -> None:
     client = APIClient()
     client.force_authenticate(leader)

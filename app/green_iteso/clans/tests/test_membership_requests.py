@@ -254,6 +254,19 @@ def test_leave_clan_removes_the_callers_membership(member: User, clan: Clan) -> 
 
 
 @pytest.mark.django_db
+def test_leave_clan_rejects_an_institutional_clan(member: User) -> None:
+    institutional_clan = Clan.objects.create(
+        name="Software Engineering", type=Clan.ClanType.INSTITUTIONAL
+    )
+    ClanMembership.objects.create(user=member, clan=institutional_clan)
+
+    with pytest.raises(ValueError):
+        leave_clan(clan=institutional_clan, user=member)
+
+    assert ClanMembership.objects.filter(user=member, clan=institutional_clan).exists()
+
+
+@pytest.mark.django_db
 def test_leave_clan_rejects_the_leader(leader: User, clan: Clan) -> None:
     with pytest.raises(PermissionDenied):
         leave_clan(clan=clan, user=leader)

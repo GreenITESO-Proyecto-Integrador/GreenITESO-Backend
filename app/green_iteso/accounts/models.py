@@ -237,6 +237,13 @@ class ClanMembership(models.Model):
         LEADER = "LEADER", "Leader"
         MEMBER = "MEMBER", "Member"
 
+    class Status(models.TextChoices):
+        """Join-request lifecycle (T2-32): only ACCEPTED counts as real membership."""
+
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         "accounts.User", on_delete=models.CASCADE, related_name="clan_memberships"
@@ -246,6 +253,12 @@ class ClanMembership(models.Model):
     )
     role = models.CharField(
         max_length=10, choices=MembershipRole.choices, default=MembershipRole.MEMBER
+    )
+    # Defaults to ACCEPTED: every existing creation path (create_private_clan,
+    # assign_institutional_clan, create_clan) grants real membership on the
+    # spot. Only join_clan's PRIVATE_INVITE branch ever sets PENDING.
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACCEPTED
     )
     is_active_private = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
@@ -264,6 +277,10 @@ class ClanMembership(models.Model):
             models.CheckConstraint(
                 condition=Q(role__in=["LEADER", "MEMBER"]),
                 name="membership_role_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["PENDING", "ACCEPTED", "REJECTED"]),
+                name="membership_status_valid",
             ),
         ]
 

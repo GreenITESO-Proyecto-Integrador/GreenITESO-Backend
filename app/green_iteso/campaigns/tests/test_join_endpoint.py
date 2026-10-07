@@ -93,6 +93,40 @@ class TestCampaignJoinEndpoint:
 
         assert response.status_code == 201
 
+    @pytest.mark.parametrize(
+        "membership_status",
+        [ClanMembership.Status.PENDING, ClanMembership.Status.REJECTED],
+    )
+    def test_join_private_campaign_rejected_for_non_accepted_membership(
+        self,
+        api_client: APIClient,
+        user: User,
+        other_user: User,
+        clan: Clan,
+        membership_status: str,
+    ) -> None:
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan,
+                status=Campaign.Status.PROMOTION,
+            )
+        )
+        ClanMembership.objects.create(
+            user=other_user, clan=clan, status=membership_status
+        )
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.post(
+            reverse("campaign-join", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert response.status_code == 403
+        assert not CampaignParticipant.objects.filter(
+            campaign=campaign, user=other_user
+        ).exists()
+
     def test_join_twice_returns_400(
         self, api_client: APIClient, user: User, campaign: Campaign
     ) -> None:

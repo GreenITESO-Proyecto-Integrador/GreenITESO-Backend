@@ -36,15 +36,14 @@ class Post(models.Model):
         blank=True,
         default="",
     )
-    # Note (Equipo 1): Uncomment when actions.UserBadge is implemented
-    # badge_user = models.ForeignKey(
-    #     "actions.UserBadge",
-    #     on_delete=models.SET_NULL,
-    #     null=True,
-    #     blank=True,
-    #     related_name="feed_posts",
-    #     db_column="badge_user_id",
-    # )
+    badge_user = models.ForeignKey(
+        "gamification.UserBadge",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="feed_posts",
+        db_column="badge_user_id",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -85,3 +84,7 @@ class Post(models.Model):
             raise ValidationError({"content": "Content cannot be empty."})
         if self.post_type not in PostType.values:
             raise ValidationError({"post_type": "Invalid post type specified."})
+        if self.badge_user and self.author and self.badge_user.user_id != self.author_id:
+            raise ValidationError(
+                {"badge_user": "The attached badge must belong to the post author."}
+            )

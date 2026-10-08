@@ -16,13 +16,16 @@ start-asgi:
 
 # --- Production Servers ---
 
-# Production ASGI server (Gunicorn process manager + Uvicorn async workers)
+# Production ASGI server (Gunicorn process manager + Uvicorn async workers).
+# Pinned to one worker: the channel layer is in-memory, so real-time
+# notifications only reach sockets in the same process. `check --deploy` fails
+# if WEB_CONCURRENCY > 1 without a shared layer. See docs/deployment.md.
 gunicorn-asgi:
 	@$(DJANGO) check --deploy
 	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; gunicorn green_iteso.asgi:application \
 		-k uvicorn.workers.UvicornWorker \
 		--bind 0.0.0.0:$${PORT:-8000} \
-		--workers $${WEB_CONCURRENCY:-2} \
+		--workers $${WEB_CONCURRENCY:-1} \
 		--timeout $${GUNICORN_TIMEOUT:-60}
 
 # Default production alias pointing to the ASGI runner

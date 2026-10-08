@@ -125,6 +125,7 @@ else:
     CORS_ALLOWED_ORIGINS = []
 
 INSTALLED_APPS = [
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -136,6 +137,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "green_iteso.accounts",
     "green_iteso.clans",
+    "green_iteso.connections",
     "green_iteso.actions",
     "green_iteso.campaigns",
     "green_iteso.feed",
@@ -241,7 +243,20 @@ TEMPLATES = [
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
 
+# In-memory layer: events only reach sockets held by the same process. The
+# runtime is therefore pinned to one worker (WEB_CONCURRENCY=1) and the system
+# check notifications.E001 rejects more; several workers or instances need a
+# shared layer (channels-redis) first. See docs/deployment.md.
+CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+
 DATABASE_URL = required("DATABASE_URL")
+if MICROSOFT_AUTH_MODE == "mock" and urlsplit(DATABASE_URL).hostname not in {
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "db",
+}:
+    raise RuntimeError("MICROSOFT_AUTH_MODE=mock requires a local PostgreSQL host.")
 DATABASES = {
     "default": database_from_url(
         DATABASE_URL,

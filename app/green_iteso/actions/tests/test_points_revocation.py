@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import NamedTuple
 
 import pytest
 from django.utils import timezone
-from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import ActionLog, ActionMaster
 from green_iteso.notifications.models import Notification
+
+from .helpers import (
+    audit_action_log,
+    create_admin,
+    create_bike_action,
+    create_student,
+    post_action_log,
+)
 
 POINTS = 50
 
@@ -28,55 +34,30 @@ class AuditWorld(NamedTuple):
 
 @pytest.fixture(name="world")
 def world_fixture() -> AuditWorld:
-    user = User.objects.create_user(email="student@iteso.mx", password="local-only")
-    admin = User.objects.create_user(
-        email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
-    )
-    institutional_clan = Clan.objects.create(
-        name="Ingeniería de Software", type=Clan.ClanType.INSTITUTIONAL
-    )
+    user = create_student()
     private_clan = Clan.objects.create(
         name="Ciclistas", type=Clan.ClanType.PRIVATE, created_by=user
     )
-    UserProfile.objects.create(user=user, institutional_clan=institutional_clan)
     ClanMembership.objects.create(user=user, clan=private_clan, is_active_private=True)
-    category = ActionCategory.objects.create(code="MOBILITY", name="Movilidad")
-    action = ActionMaster.objects.create(
-        code="BIKE",
-        category=category,
-        name="Uso de Bicicleta",
-        description="Llegar en bici al campus",
-        points=POINTS,
-        validation_type=ActionMaster.ValidationType.NONE,
+    return AuditWorld(
+        user,
+        create_admin(),
+        user.profile.institutional_clan,
+        private_clan,
+        create_bike_action(points=POINTS),
     )
-    return AuditWorld(user, admin, institutional_clan, private_clan, action)
-
-
-def _client(user: User) -> APIClient:
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
 
 
 def _log_approved_action(world: AuditWorld) -> str:
-    response = _client(world.user).post(
-        "/api/v1/action-logs/",
-        {"action_id": str(world.action.id), "idempotency_key": str(uuid.uuid4())},
-        format="json",
-    )
+    response = post_action_log(world.user, world.action)
     assert response.status_code == 201
     assert response.json()["status"] == ActionLog.Status.APPROVED
     return response.json()["log_id"]
 
 
 def _audit(world: AuditWorld, log_id: str, decision: str) -> int:
-    payload = {"status": decision}
-    if decision == "REJECTED":
-        payload["rejection_reason"] = "La evidencia no corresponde."
-    response = _client(world.admin).patch(
-        f"/api/v1/action-logs/{log_id}/audit/", payload, format="json"
-    )
-    return response.status_code
+    reason = "La evidencia no corresponde." if decision == "REJECTED" else ""
+    return audit_action_log(world.admin, log_id, decision, reason).status_code
 
 
 def _points(world: AuditWorld) -> tuple[int, int, int, int]:
@@ -142,14 +123,8 @@ def test_dissolved_clan_is_still_debited(world: AuditWorld) -> None:
 def test_rejecting_pending_log_does_not_touch_points(world: AuditWorld) -> None:
     world.action.validation_type = ActionMaster.ValidationType.PHOTO
     world.action.save(update_fields=["validation_type"])
-    response = _client(world.user).post(
-        "/api/v1/action-logs/",
-        {
-            "action_id": str(world.action.id),
-            "idempotency_key": str(uuid.uuid4()),
-            "evidence_object_key": "evidence/bici.jpg",
-        },
-        format="json",
+    response = post_action_log(
+        world.user, world.action, evidence_object_key="evidence/bici.jpg"
     )
     assert response.json()["status"] == ActionLog.Status.PENDING_AUDIT
 
@@ -198,11 +173,7 @@ def test_spent_points_block_revocation_without_side_effects(
 def test_only_admins_can_revoke(world: AuditWorld) -> None:
     log_id = _log_approved_action(world)
 
-    response = _client(world.user).patch(
-        f"/api/v1/action-logs/{log_id}/audit/",
-        {"status": "REJECTED", "rejection_reason": "Intento propio."},
-        format="json",
-    )
+    response = audit_action_log(world.user, log_id, "REJECTED", "Intento propio.")
 
     assert response.status_code == 403
     assert _points(world) == (POINTS, POINTS, POINTS, POINTS)

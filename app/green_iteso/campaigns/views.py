@@ -86,7 +86,11 @@ def _visible_campaigns(user: Any) -> QuerySet[Campaign]:
         return approved.filter(Q(scope=Campaign.Scope.GLOBAL) | live_private)
     return approved.filter(
         Q(scope=Campaign.Scope.GLOBAL)
-        | Q(live_private, target_clan__memberships__user=user)
+        | Q(
+            live_private,
+            target_clan__memberships__user=user,
+            target_clan__memberships__status=ClanMembership.Status.ACCEPTED,
+        )
     ).distinct()
 
 
@@ -456,7 +460,9 @@ class CampaignJoinView(CampaignStatusSyncMixin, APIView):
         if (
             campaign.scope == Campaign.Scope.PRIVATE
             and not ClanMembership.objects.filter(
-                user=request.user, clan=campaign.target_clan
+                user=request.user,
+                clan=campaign.target_clan,
+                status=ClanMembership.Status.ACCEPTED,
             ).exists()
         ):
             return Response(

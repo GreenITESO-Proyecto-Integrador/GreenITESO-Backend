@@ -806,7 +806,9 @@ def test_bootstrap_does_not_recreate_reversed_contributions() -> None:
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("spent", [0, 2])
-def test_local_bootstrap_reconciles_rejected_log_preserving_spending(spent: int) -> None:
+def test_local_bootstrap_reconciles_rejected_log_preserving_spending(
+    spent: int,
+) -> None:
     call_command("bootstrap_dev", verbosity=0)
     log = ActionLog.objects.get(pk=demo_id("action-log", "0"))
     profile = UserProfile.objects.get(user_id=log.user_id)
@@ -833,7 +835,9 @@ def test_local_bootstrap_reconciles_rejected_log_preserving_spending(spent: int)
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("invalid_balance", [False, True])
-def test_local_bootstrap_rolls_back_unreconcilable_balance(invalid_balance: bool) -> None:
+def test_local_bootstrap_rolls_back_unreconcilable_balance(
+    invalid_balance: bool,
+) -> None:
     call_command("bootstrap_dev", verbosity=0)
     log = ActionLog.objects.get(pk=demo_id("action-log", "3"))
     profile = UserProfile.objects.get(user_id=log.user_id)
@@ -848,9 +852,11 @@ def test_local_bootstrap_rolls_back_unreconcilable_balance(invalid_balance: bool
     # balance. Its insertion and every projection update must roll back.
     missing_id = demo_id("action-log", "1")
     ActionLog.objects.filter(pk=missing_id).delete()
-    before = list(UserProfile.objects.order_by("pk").values_list(
-        "pk", "total_points", "available_points"
-    ))
+    before = list(
+        UserProfile.objects.order_by("pk").values_list(
+            "pk", "total_points", "available_points"
+        )
+    )
     before_logs = ActionLog.objects.count()
 
     with pytest.raises(CommandError, match="balance.*docs/semillas-locales"):
@@ -858,9 +864,14 @@ def test_local_bootstrap_rolls_back_unreconcilable_balance(invalid_balance: bool
 
     assert not ActionLog.objects.filter(pk=missing_id).exists()
     assert ActionLog.objects.count() == before_logs
-    assert list(UserProfile.objects.order_by("pk").values_list(
-        "pk", "total_points", "available_points"
-    )) == before
+    assert (
+        list(
+            UserProfile.objects.order_by("pk").values_list(
+                "pk", "total_points", "available_points"
+            )
+        )
+        == before
+    )
 
 
 def test_real_approved_catalog_path_stays_closed_pending_product(

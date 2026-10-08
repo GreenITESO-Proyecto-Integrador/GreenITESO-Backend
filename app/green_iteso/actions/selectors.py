@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from .models import ActionCategory, ActionLog, ActionMaster
+from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
 
 ACTION_LIMIT_TIME_ZONE = ZoneInfo("America/Mexico_City")
 
@@ -46,3 +46,10 @@ def list_active_action_categories() -> QuerySet[ActionCategory]:
 def list_active_actions() -> QuerySet[ActionMaster]:
     """Return active actions ordered by code."""
     return ActionMaster.objects.filter(is_active=True).order_by("code")
+
+
+def list_active_exchangeables() -> QuerySet[ExchangeableItem]:
+    """Return active virtual exchangeable items ordered by points_cost and name."""
+    return ExchangeableItem.objects.filter(is_active=True).order_by(
+        "points_cost", "name"
+    )

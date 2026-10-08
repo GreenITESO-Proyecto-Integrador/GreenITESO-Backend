@@ -644,8 +644,15 @@ def test_audit_credits_frozen_deleted_clans_or_rolls_back_missing_profile(
     assert log.credited_private_clan_id == private.pk
     assert log.points_awarded == 10
     assert current.total_points == 0
-    assert Notification.objects.filter(user=user).count() == 0
+    assert Notification.objects.filter(user=user).count() == int(has_profile)
     if has_profile:
+        assert (
+            Notification.objects.filter(
+                user=user,
+                notification_type=Notification.NotificationType.AUDIT_APPROVED,
+            ).count()
+            == 1
+        )
         profile = UserProfile.objects.get(user=user)
         assert (profile.total_points, profile.available_points) == (10, 10)
         assert log.status == ActionLog.Status.APPROVED

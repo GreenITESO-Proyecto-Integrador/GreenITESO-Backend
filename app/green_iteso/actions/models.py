@@ -126,6 +126,7 @@ class ActionLog(models.Model):
         max_length=20, choices=Status.choices, default=Status.APPROVED
     )
     evidence_object_key = models.CharField(max_length=500, blank=True)
+    is_shared_publicly = models.BooleanField(default=False)
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -199,3 +200,43 @@ class ActionLogMissionContribution(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action_log_id} -> {self.mission_id}"
+
+
+class ExchangeableItem(models.Model):
+    """Virtual exchangeable item (e.g. cosmetic, frame, badge) available in the shop."""
+
+    class Category(models.TextChoices):
+        FRAME = "FRAME", "Avatar Frame"
+        BACKGROUND = "BACKGROUND", "Profile Background"
+        THEME = "THEME", "Profile Theme"
+        OTHER = "OTHER", "Other"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    category = models.CharField(
+        max_length=20, choices=Category.choices, default=Category.FRAME
+    )
+    points_cost = models.PositiveIntegerField()
+    is_active = models.BooleanField(default=True)
+    image_url = models.URLField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "actions_exchangeable_item"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(points_cost__gt=0), name="exchangeable_points_cost_positive"
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["is_active", "points_cost"], name="exchangeable_active_cost_idx"
+            ),
+            models.Index(fields=["key"], name="exchangeable_key_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.key})"

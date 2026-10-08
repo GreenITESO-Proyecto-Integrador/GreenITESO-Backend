@@ -30,6 +30,7 @@ class IsAuthenticated(BasePermission):
         user = request.user
         return bool(user and user.is_authenticated)
 
+
 class IsStaff(BasePermission):
     """Allow access only to callers with the global STAFF role."""
 

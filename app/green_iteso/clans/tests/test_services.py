@@ -7,14 +7,20 @@ import threading
 import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.test import TestCase
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import (
+    AlreadyLeadingAClanError,
     DuplicateClanLeaderError,
+    DuplicateClanNameError,
+    InvalidClanPrivacyError,
     MembershipClanMismatchError,
+    PrivateClanLimitExceededError,
     assign_institutional_clan,
     assign_leader,
     create_clan,
+    create_private_clan,
     dissolve_clan,
     select_active_private_clan,
     transfer_leadership,
@@ -677,3 +683,68 @@ def test_assign_institutional_clan_removes_the_stale_membership_on_change() -> N
     assert memberships.count() == 1
     assert memberships.get().clan == second_profile.institutional_clan
     assert first_profile.institutional_clan != second_profile.institutional_clan
+
+
+class CreatePrivateClanTests(TestCase):
+    """Tests for services.create_private_clan (T2-31)."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(
+            email="creator@iteso.mx", password="pass1234"
+        )
+
+    def test_creates_clan_and_leader_membership(self) -> None:
+        clan = create_private_clan(name="Los Rayos", created_by=self.user)
+
+        self.assertEqual(clan.type, Clan.ClanType.PRIVATE)
+        self.assertEqual(clan.privacy, Clan.Privacy.PUBLIC)
+        membership = ClanMembership.objects.get(user=self.user, clan=clan)
+        self.assertEqual(membership.role, ClanMembership.MembershipRole.LEADER)
+
+    def test_accepts_explicit_privacy_and_optional_fields(self) -> None:
+        clan = create_private_clan(
+            name="Los Ocultos",
+            created_by=self.user,
+            description="secret squad",
+            avatar_object_key="avatars/x.png",
+            privacy=Clan.Privacy.PRIVATE_INVITE,
+        )
+
+        self.assertEqual(clan.privacy, Clan.Privacy.PRIVATE_INVITE)
+        self.assertEqual(clan.description, "secret squad")
+        self.assertEqual(clan.avatar_object_key, "avatars/x.png")
+
+    def test_duplicate_name_raises(self) -> None:
+        create_private_clan(name="Duplicado", created_by=self.user)
+        other_user = User.objects.create_user(
+            email="other@iteso.mx", password="pass1234"
+        )
+
+        with self.assertRaises(DuplicateClanNameError):
+            create_private_clan(name="Duplicado", created_by=other_user)
+
+    def test_already_leading_a_clan_raises(self) -> None:
+        create_private_clan(name="Primero", created_by=self.user)
+
+        with self.assertRaises(AlreadyLeadingAClanError):
+            create_private_clan(name="Segundo", created_by=self.user)
+
+    def test_private_clan_limit_exceeded_raises(self) -> None:
+        # user reaches the 5-private-clan membership cap as a plain MEMBER
+        # of five different clans (never LEADER, so BR-04's leadership rule
+        # doesn't get in the way of testing the count rule in isolation).
+        for i in range(5):
+            other_leader = User.objects.create_user(
+                email=f"leader{i}@iteso.mx", password="pass1234"
+            )
+            clan = create_private_clan(name=f"Clan {i}", created_by=other_leader)
+            ClanMembership.objects.create(
+                user=self.user, clan=clan, role=ClanMembership.MembershipRole.MEMBER
+            )
+
+        with self.assertRaises(PrivateClanLimitExceededError):
+            create_private_clan(name="Sexto", created_by=self.user)
+
+    def test_rejects_invalid_privacy_value(self) -> None:
+        with self.assertRaises(InvalidClanPrivacyError):
+            create_private_clan(name="Bad", created_by=self.user, privacy="NOT_REAL")

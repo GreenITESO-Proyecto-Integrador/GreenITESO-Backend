@@ -729,7 +729,9 @@ def refresh_profile_totals(
             # Preserve the spent balance when local log status edits change
             # earned points; never restore redeemed points during a rerun.
             available_points = (
-                locked_profile.available_points + total_points - locked_profile.total_points
+                locked_profile.available_points
+                + total_points
+                - locked_profile.total_points
             )
             if (
                 not 0 <= locked_profile.available_points <= locked_profile.total_points

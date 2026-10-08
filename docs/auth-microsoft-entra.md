@@ -145,6 +145,10 @@ pedirle a IT que apruebe `GroupMember.Read.All`.
 Con `MICROSOFT_AUTH_MODE=mock` (valor por defecto en `.env.example`), el
 backend acepta un `id_token` con el prefijo `mock:`:
 
+`compose.yaml` pasa este valor al contenedor `app`; si falta en `.env`,
+`docker compose up` falla con `set MICROSOFT_AUTH_MODE in .env` en vez de
+iniciar el backend en modo Entra.
+
 ```sh
 # Email simple
 curl -X POST localhost:8000/api/v1/auth/login/ \
@@ -159,7 +163,14 @@ curl -X POST localhost:8000/api/v1/auth/login/ \
 
 El `access_token` se ignora en modo mock. `MICROSOFT_AUTH_MODE=mock` se
 rechaza al arrancar Django si `DJANGO_ENV` no es `dev` o si
-`DJANGO_DEPLOYED=true`.
+`DJANGO_DEPLOYED=true`, o si `DATABASE_URL` apunta a un host PostgreSQL que
+no sea `127.0.0.1`, `localhost`, `::1` o `db`. No uses credenciales de Neon en
+un proceso con mock auth: el modo mock acepta identidades arbitrarias y está
+pensado sólo para una base de desarrollo local descartable. Los usuarios
+`demo-XX@example.invalid` creados por `bootstrap_dev` no pueden iniciar sesión
+por este endpoint porque no usan el dominio institucional. Un flujo interactivo
+para esos personajes requiere una herramienta local aparte; no está habilitado
+en Neon dev desplegado.
 
 ## Contrato para el frontend (T2-12)
 

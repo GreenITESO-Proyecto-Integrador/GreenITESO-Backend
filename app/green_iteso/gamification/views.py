@@ -6,13 +6,23 @@ from django.db.models import QuerySet
 from rest_framework import generics
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from green_iteso.accounts.models import Clan, UserProfile
 
-from .selectors import list_clan_points_ranking, list_user_points_ranking
-from .serializers import ClanRankingSerializer, UserRankingSerializer
+from .models import Badge
+from .selectors import (
+    list_badges_with_user_status,
+    list_clan_points_ranking,
+    list_user_points_ranking,
+)
+from .serializers import (
+    BadgeCatalogSerializer,
+    ClanRankingSerializer,
+    UserRankingSerializer,
+)
 
 CLAN_RANKING_TYPES = {
     "INSTITUTIONAL": Clan.ClanType.INSTITUTIONAL,
@@ -55,3 +65,14 @@ class ClanRankingView(generics.ListAPIView):
         response = super().list(request, *args, **kwargs)
         response.data["ranking_type"] = request.query_params["type"]
         return response
+
+
+class BadgeCatalogView(generics.ListAPIView):
+    """List all active badges indicating if the requesting user owns them."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = BadgeCatalogSerializer
+    pagination_class = None  # Se deshabilita para devolver el catálogo completo
+
+    def get_queryset(self) -> QuerySet[Badge]:
+        return list_badges_with_user_status(self.request.user)

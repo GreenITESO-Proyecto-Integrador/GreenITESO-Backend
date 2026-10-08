@@ -352,6 +352,38 @@ class TestCampaignEndpoints:
 
         assert response.status_code == 404
 
+    @pytest.mark.parametrize(
+        "membership_status",
+        [ClanMembership.Status.PENDING, ClanMembership.Status.REJECTED],
+    )
+    def test_private_campaign_hidden_from_non_accepted_applicant(
+        self,
+        api_client: APIClient,
+        user: User,
+        other_user: User,
+        clan: Clan,
+        membership_status: str,
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=clan)
+        ClanMembership.objects.create(
+            user=other_user, clan=clan, status=membership_status
+        )
+        campaign = Campaign.objects.create(
+            **campaign_data(
+                creator=user, scope=Campaign.Scope.PRIVATE, target_clan=clan
+            )
+        )
+        api_client.force_authenticate(user=other_user)
+
+        list_response = api_client.get(reverse("campaign-list"))
+        detail_response = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+        )
+
+        assert list_response.status_code == 200
+        assert campaign.pk not in [item["id"] for item in list_response.data["results"]]
+        assert detail_response.status_code == 404
+
     def test_private_campaign_visible_to_clan_member(
         self, api_client: APIClient, user: User, clan: Clan
     ) -> None:

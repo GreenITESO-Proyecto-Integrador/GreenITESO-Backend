@@ -326,3 +326,206 @@ def test_list_clans_excludes_private_invite_clan_for_non_member() -> None:
 
     names = [row["name"] for row in response.json()["results"]]
     assert "Secret Clan" not in names
+
+
+@pytest.mark.django_db
+def test_join_requires_authentication(clan: Clan) -> None:
+    response = APIClient().post(f"/api/v1/clans/{clan.pk}/join/")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_join_public_clan_grants_accepted_membership() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_private_clan(name="Open Team", created_by=owner)
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "ACCEPTED"
+
+
+@pytest.mark.django_db
+def test_join_private_invite_clan_creates_a_pending_request() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_private_clan(
+        name="Secret Clan", created_by=owner, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "PENDING"
+
+
+@pytest.mark.django_db
+def test_join_rejects_an_already_pending_request() -> None:
+    owner = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    clan = create_private_clan(
+        name="Secret Clan", created_by=owner, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+    client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_accept_request_requires_authentication(clan: Clan) -> None:
+    response = APIClient().post(
+        f"/api/v1/clans/{clan.pk}/accept-request/", {"applicant_id": str(clan.pk)}
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_leader_accepts_a_pending_join_request(leader: User) -> None:
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+    client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    client.force_authenticate(leader)
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/accept-request/",
+        {"applicant_id": str(applicant.pk)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ACCEPTED"
+
+
+@pytest.mark.django_db
+def test_member_cannot_accept_a_join_request(leader: User, member: User) -> None:
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    ClanMembership.objects.create(user=member, clan=clan)
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+    client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    client.force_authenticate(member)
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/accept-request/",
+        {"applicant_id": str(applicant.pk)},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_leader_rejects_a_pending_join_request(leader: User) -> None:
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+    client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    client.force_authenticate(leader)
+    response = client.post(
+        f"/api/v1/clans/{clan.pk}/reject-request/",
+        {"applicant_id": str(applicant.pk)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "REJECTED"
+
+
+@pytest.mark.django_db
+def test_leave_requires_authentication(clan: Clan) -> None:
+    response = APIClient().post(f"/api/v1/clans/{clan.pk}/leave/")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_member_leaves_a_clan(member: User, clan: Clan) -> None:
+    ClanMembership.objects.create(user=member, clan=clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/leave/")
+
+    assert response.status_code == 204
+    assert not ClanMembership.objects.filter(user=member, clan=clan).exists()
+
+
+@pytest.mark.django_db
+def test_member_cannot_leave_an_institutional_clan(member: User) -> None:
+    institutional_clan = Clan.objects.create(
+        name="Software Engineering", type=Clan.ClanType.INSTITUTIONAL
+    )
+    ClanMembership.objects.create(user=member, clan=institutional_clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.post(f"/api/v1/clans/{institutional_clan.pk}/leave/")
+
+    assert response.status_code == 400
+    assert ClanMembership.objects.filter(user=member, clan=institutional_clan).exists()
+
+
+@pytest.mark.django_db
+def test_leader_cannot_leave_their_own_clan(leader: User, clan: Clan) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post(f"/api/v1/clans/{clan.pk}/leave/")
+
+    assert response.status_code == 403
+    assert ClanMembership.objects.filter(user=leader, clan=clan).exists()
+
+
+@pytest.mark.django_db
+def test_retrieve_clan_excludes_a_pending_applicant_from_roster_and_count(
+    leader: User,
+) -> None:
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    client = APIClient()
+    client.force_authenticate(applicant)
+    client.post(f"/api/v1/clans/{clan.pk}/join/")
+
+    client.force_authenticate(leader)
+    response = client.get(f"/api/v1/clans/{clan.pk}/")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["member_count"] == 1
+    member_ids = [member["user_id"] for member in body["members"]]
+    assert str(applicant.pk) not in member_ids

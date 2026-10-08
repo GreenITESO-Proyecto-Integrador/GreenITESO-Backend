@@ -34,7 +34,9 @@ def _campaign_invite_recipient_ids(campaign: Campaign) -> list[Any]:
         recipients = get_user_model().objects.filter(is_active=True)
         id_field = "id"
     else:
-        recipients = ClanMembership.objects.filter(clan=campaign.target_clan)
+        recipients = ClanMembership.objects.filter(
+            clan=campaign.target_clan, status=ClanMembership.Status.ACCEPTED
+        )
         id_field = "user_id"
     return list(
         recipients.exclude(**{id_field: campaign.creator_id}).values_list(

@@ -1,11 +1,14 @@
-"""DRF views for the actions domain."""
+"""DRF views for the actions and virtual exchangeables domain."""
 
 from __future__ import annotations
+
+import uuid
 
 from django.db import transaction
 from django.db.models import F, QuerySet
 from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -18,25 +21,46 @@ from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.services import notify
 
-from .models import ActionCategory, ActionLog, ActionMaster
-from .selectors import list_active_action_categories, list_active_actions
+from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
+from .selectors import (
+    list_active_action_categories,
+    list_active_actions,
+    list_active_exchangeables,
+)
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
+    ExchangeableItemSerializer,
+    RedeemExchangeableRequestSerializer,
 )
 from .services import (
+    AlreadyUnlockedError,
+    InsufficientPointsError,
+    ItemInactiveError,
     PointsAlreadySpentError,
     notify_mission_progress,
+    redeem_exchangeable,
     revert_mission_progress,
     revoke_awarded_points,
 )
 
 
-def _build_shared_evidence_content(action: ActionMaster, points_awarded: int) -> str:
+def _format_error(exc: Exception) -> str:
+    """Extract a clean string representation from an exception."""
+    if hasattr(exc, "messages") and exc.messages:
+        return str(exc.messages[0])
+    if hasattr(exc, "message") and exc.message:
+        return str(exc.message)
+    return str(exc)
+
+
+def _build_shared_evidence_content(
+    action_def: ActionMaster, points_awarded: int
+) -> str:
     """Return the feed body describing a publicly shared action."""
-    return f"Nueva acción registrada: {action.name} (+{points_awarded} puntos)."
+    return f"Nueva acción registrada: {action_def.name} (+{points_awarded} puntos)."
 
 
 def _resolve_evidence_image_url(evidence_object_key: str) -> str:
@@ -65,7 +89,7 @@ class ActionCategoryViewSet(
 
 
 class ActionMasterViewSet(viewsets.ModelViewSet):
-    """Full CRUD for action definitions. under /api/v1/actions/."""
+    """Full CRUD for action definitions under /api/v1/actions/."""
 
     serializer_class = ActionMasterSerializer
 
@@ -76,7 +100,8 @@ class ActionMasterViewSet(viewsets.ModelViewSet):
         """
         Assign distinct permissions based on the invoked action.
         """
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+
+        if self.action in ["create", "update", "partial_update", "destroy"]:
             permission_classes = [IsAdmin]
         else:
             permission_classes = [IsAuthenticated]
@@ -95,7 +120,7 @@ class ActionLogCreateView(views.APIView):
         user = request.user
 
         try:
-            action = ActionMaster.objects.get(id=data["action_id"], is_active=True)
+            action_def = ActionMaster.objects.get(id=data["action_id"], is_active=True)
         except ActionMaster.DoesNotExist:
             return Response(
                 {"error": "Action not found or inactive."},
@@ -104,7 +129,7 @@ class ActionLogCreateView(views.APIView):
 
         log_status = (
             ActionLog.Status.PENDING_AUDIT
-            if action.validation_type == ActionMaster.ValidationType.PHOTO
+            if action_def.validation_type == ActionMaster.ValidationType.PHOTO
             else ActionLog.Status.APPROVED
         )
 
@@ -113,24 +138,24 @@ class ActionLogCreateView(views.APIView):
 
             action_log = ActionLog.objects.create(
                 user=user,
-                action=action,
+                action=action_def,
                 institutional_clan=institutional_clan,
                 credited_private_clan=private_clan,
                 idempotency_key=data["idempotency_key"],
-                points_awarded=action.points,
-                co2_kg_factor_snapshot=action.co2_kg_factor,
-                water_liters_factor_snapshot=action.water_liters_factor,
-                plastic_kg_factor_snapshot=action.plastic_kg_factor,
+                points_awarded=action_def.points,
+                co2_kg_factor_snapshot=action_def.co2_kg_factor,
+                water_liters_factor_snapshot=action_def.water_liters_factor,
+                plastic_kg_factor_snapshot=action_def.plastic_kg_factor,
                 status=log_status,
                 evidence_object_key=data.get("evidence_object_key", ""),
-                is_shared_publicly=data["is_shared_publicly"],
+                is_shared_publicly=data.get("is_shared_publicly", False),
             )
 
             if action_log.is_shared_publicly:
                 create_shared_evidence_post(
                     author=user,
                     content=_build_shared_evidence_content(
-                        action, action_log.points_awarded
+                        action_def, action_log.points_awarded
                     ),
                     image_url=_resolve_evidence_image_url(
                         action_log.evidence_object_key
@@ -141,22 +166,23 @@ class ActionLogCreateView(views.APIView):
                 # Use database-side increments so concurrent approved actions
                 # cannot overwrite each other's balance.
                 type(profile).objects.filter(pk=profile.pk).update(
-                    total_points=F("total_points") + action.points,
-                    available_points=F("available_points") + action.points,
+                    total_points=F("total_points") + action_def.points,
+                    available_points=F("available_points") + action_def.points,
                 )
 
                 if institutional_clan:
                     type(institutional_clan).all_objects.filter(
                         pk=institutional_clan.pk
-                    ).update(total_points=F("total_points") + action.points)
+                    ).update(total_points=F("total_points") + action_def.points)
 
                 if private_clan:
                     # Credit the ActionLog snapshot even if the clan was
                     # dissolved after the active membership was read.
                     type(private_clan).all_objects.filter(pk=private_clan.pk).update(
-                        total_points=F("total_points") + action.points
+                        total_points=F("total_points") + action_def.points
                     )
 
+                user.profile.refresh_from_db(fields=["total_points"])
                 check_and_award_badges(user)
                 notify_mission_progress(action_log)
 
@@ -175,12 +201,10 @@ class ActionLogAuditView(views.APIView):
 
     permission_classes = [IsAdmin]
 
-    def patch(self, request: Request, log_id: str) -> Response:
-        """Process an audit decision and notify the user if rejected."""
+    def patch(self, request: Request, log_id: uuid.UUID) -> Response:
         serializer = ActionLogAuditSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
         new_status = data["status"]
         rejection_reason = data.get("rejection_reason", "")
         # Pending logs can be approved or rejected; an approved log can only be
@@ -245,6 +269,7 @@ class ActionLogAuditView(views.APIView):
                         pk=action_log.credited_private_clan_id
                     ).update(total_points=F("total_points") + points)
 
+                profile.refresh_from_db(fields=["total_points"])
                 check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
 
@@ -255,7 +280,90 @@ class ActionLogAuditView(views.APIView):
                     points=action_log.points_awarded,
                 )
 
+        return Response({"message": "Audit processed successfully."})
+
+
+class ExchangeableItemViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """List, retrieve, and redeem virtual exchangeables under /api/v1/exchangeables/."""
+
+    serializer_class = ExchangeableItemSerializer
+
+    def get_queryset(self) -> QuerySet[ExchangeableItem]:
+        return list_active_exchangeables()
+
+    @action(detail=True, methods=["post"], url_path="redeem")
+    def redeem(self, request: Request, pk: str | None = None) -> Response:  # pylint: disable=unused-argument
+        """Redeem a specific virtual item by its ID in the URL path."""
+        item = self.get_object()
+        try:
+            profile = redeem_exchangeable(user=request.user, item_id=item.id)
+        except (
+            InsufficientPointsError,
+            AlreadyUnlockedError,
+            ItemInactiveError,
+        ) as exc:
+            return Response(
+                {"error": _format_error(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         return Response(
-            {"message": f"Action log {new_status.lower()} successfully."},
-            status=status.HTTP_200_OK,
+            {
+                "message": "Canjeable obtenido exitosamente.",
+                "unlocked_key": item.key,
+                "available_points": profile.available_points,
+                "unlocked_cosmetics": profile.unlocked_cosmetics,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="redeem")
+    def redeem_by_body(self, request: Request) -> Response:
+        """Redeem a virtual item providing item_key or item_id in JSON payload."""
+        serializer = RedeemExchangeableRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            profile = redeem_exchangeable(
+                user=request.user,
+                item_key=data.get("item_key"),
+                item_id=data.get("item_id"),
+            )
+            key_redeemed = data.get("item_key")
+            if not key_redeemed and data.get("item_id"):
+                key_redeemed = ExchangeableItem.objects.get(id=data["item_id"]).key
+        except (
+            InsufficientPointsError,
+            AlreadyUnlockedError,
+            ItemInactiveError,
+        ) as exc:
+            return Response(
+                {"error": _format_error(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "message": "Canjeable obtenido exitosamente.",
+                "unlocked_key": key_redeemed,
+                "available_points": profile.available_points,
+                "unlocked_cosmetics": profile.unlocked_cosmetics,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="my-inventory")
+    def my_inventory(self, request: Request) -> Response:
+        """Return the list of unlocked cosmetic keys for the authenticated user."""
+        profile = request.user.profile
+        profile.refresh_from_db()
+        return Response(
+            {
+                "unlocked_cosmetics": profile.unlocked_cosmetics or [],
+            }
         )

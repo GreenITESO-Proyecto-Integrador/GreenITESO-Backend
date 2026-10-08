@@ -65,7 +65,9 @@ def assign_leader(*, clan: Clan, membership: ClanMembership) -> ClanMembership:
     Clan.objects.select_for_update().get(pk=clan.pk)
     existing_leader = (
         ClanMembership.objects.filter(
-            clan=clan, role=ClanMembership.MembershipRole.LEADER
+            clan=clan,
+            role=ClanMembership.MembershipRole.LEADER,
+            status=ClanMembership.Status.ACCEPTED,
         )
         .exclude(pk=membership.pk)
         .first()
@@ -94,18 +96,21 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
 
     Also locks the ``successor`` row and re-checks BR-04's single-leadership
     rule on them: without this, a user can be made leader of this clan while
-    concurrently becoming leader of another one (e.g. through
-    ``create_private_clan`` on another connection), ending up leading two
-    clans at once.
+    concurrently becoming leader of another one, ending up leading two
+    clans at once. Both the actor's and the successor's memberships must be
+    ACCEPTED: a PENDING join request is not membership yet.
 
     Raises:
         PermissionDenied: If ``actor`` is not the clan's current LEADER.
-        ValueError: If ``successor`` is ``actor``, is not a member of
-            ``clan``, or already leads another clan.
+        ValueError: If ``successor`` is ``actor``, is not an accepted member
+            of ``clan``, or already leads another clan.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
     actor_membership = ClanMembership.objects.filter(
-        clan=locked, user=actor, role=ClanMembership.MembershipRole.LEADER
+        clan=locked,
+        user=actor,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
     ).first()
     if actor_membership is None:
         raise PermissionDenied(
@@ -114,7 +119,9 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
     if successor.pk == actor.pk:
         raise ValueError("Cannot transfer leadership to yourself.")
     try:
-        successor_membership = ClanMembership.objects.get(clan=locked, user=successor)
+        successor_membership = ClanMembership.objects.get(
+            clan=locked, user=successor, status=ClanMembership.Status.ACCEPTED
+        )
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("Successor must be a member of the clan.") from exc
 
@@ -139,14 +146,16 @@ def select_active_private_clan(*, user: User, clan: Clan) -> ClanMembership:
     the same transaction keeps exactly one active row per user at all times.
 
     Raises:
-        ValueError: If ``clan`` is not PRIVATE, or ``user`` is not one of
-            its members.
+        ValueError: If ``clan`` is not PRIVATE, or ``user`` has no accepted
+            membership in it.
     """
     if clan.type != Clan.ClanType.PRIVATE:
         raise ValueError("Only private clans can be selected as active.")
     User.objects.select_for_update().get(pk=user.pk)
     try:
-        membership = ClanMembership.objects.get(user=user, clan=clan)
+        membership = ClanMembership.objects.get(
+            user=user, clan=clan, status=ClanMembership.Status.ACCEPTED
+        )
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("User is not a member of this clan.") from exc
 
@@ -242,11 +251,13 @@ def _is_already_leading_a_clan(user: User) -> bool:
     Excludes soft-deleted clans: ``dissolve_clan`` intentionally keeps the
     LEADER membership row around for points history, so without this filter
     a user who dissolved their clan would be permanently blocked from ever
-    leading another one.
+    leading another one. Excludes non-ACCEPTED rows too: a PENDING or
+    REJECTED row is not real leadership.
     """
     return ClanMembership.objects.filter(
         user=user,
         role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
         clan__deleted_at__isnull=True,
     ).exists()
 
@@ -257,10 +268,13 @@ def _count_private_clan_memberships(user: User) -> int:
     Excludes soft-deleted clans for the same reason as
     ``_is_already_leading_a_clan``: a dissolved clan's membership rows are
     kept for history and must not keep counting against BR-04's 5-clan cap.
+    Excludes non-ACCEPTED rows: a PENDING join request isn't membership yet
+    and shouldn't count against, or be blocked by, the cap.
     """
     return ClanMembership.objects.filter(
         user=user,
         clan__type=Clan.ClanType.PRIVATE,
+        status=ClanMembership.Status.ACCEPTED,
         clan__deleted_at__isnull=True,
     ).count()
 
@@ -318,9 +332,195 @@ def create_private_clan(
         raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
 
     ClanMembership.objects.create(
-        user=locked_user, clan=clan, role=ClanMembership.MembershipRole.LEADER
+        user=locked_user,
+        clan=clan,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
     )
     return clan
+
+
+@transaction.atomic
+def join_clan(*, clan: Clan, user: User) -> ClanMembership:
+    """Join a PUBLIC clan directly, or file a pending request for a
+    PRIVATE_INVITE one (T2-32).
+
+    PUBLIC clans grant an ACCEPTED membership immediately, enforcing BR-04's
+    5-clan cap right away since the user becomes a real member on the spot.
+    PRIVATE_INVITE clans only create a PENDING request: BR-04 is deferred to
+    ``accept_join_request``, since a pending request isn't membership yet
+    and shouldn't count against, or be blocked by, the cap.
+
+    A previously REJECTED row is reused (its status flips back to PENDING or
+    ACCEPTED) rather than inserting a new row, since ``membership_user_clan_
+    unique`` only allows one ``ClanMembership`` per (user, clan) pair.
+
+    Raises:
+        ValueError: If the clan is institutional, or the user already has a
+            pending or accepted record for this clan.
+        PrivateClanLimitExceededError: If joining a PUBLIC clan would exceed
+            BR-04's 5-clan cap.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Only private clans can be joined through this action.")
+
+    locked_user = User.objects.select_for_update().get(pk=user.pk)
+    existing = ClanMembership.objects.filter(user=locked_user, clan=clan).first()
+    if existing is not None and existing.status != ClanMembership.Status.REJECTED:
+        state = (
+            "a pending request"
+            if existing.status == ClanMembership.Status.PENDING
+            else "membership"
+        )
+        raise ValueError(f"User already has {state} for this clan.")
+
+    if clan.privacy == Clan.Privacy.PUBLIC:
+        if (
+            _count_private_clan_memberships(locked_user)
+            >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
+        ):
+            raise PrivateClanLimitExceededError(
+                "User already belongs to "
+                f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
+            )
+        new_status = ClanMembership.Status.ACCEPTED
+    else:
+        new_status = ClanMembership.Status.PENDING
+
+    if existing is not None:
+        existing.status = new_status
+        existing.save(update_fields=["status"])
+        return existing
+    return ClanMembership.objects.create(user=locked_user, clan=clan, status=new_status)
+
+
+@transaction.atomic
+def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMembership:
+    """Accept a PENDING join request for a PRIVATE_INVITE clan (T2-32).
+
+    Only the clan's current LEADER may accept. Locks the ``clan`` row before
+    checking leadership, matching ``transfer_leadership``: an unlocked read
+    would leave a window where a concurrent transfer commits in between and
+    a just-demoted ex-leader still gets through. Enforces BR-04 at acceptance
+    time, since this is the moment the applicant actually becomes a member:
+    locks the applicant's user row (always after the clan row, the same
+    order ``transfer_leadership`` uses) and re-checks the 5-clan cap before
+    flipping PENDING to ACCEPTED.
+
+    Raises:
+        PermissionDenied: If ``actor`` is not the clan's current LEADER.
+        ValueError: If there is no PENDING request from ``applicant``.
+        PrivateClanLimitExceededError: If accepting would exceed BR-04's
+            5-clan cap.
+    """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    is_leader = ClanMembership.objects.filter(
+        clan=locked,
+        user=actor,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+    ).exists()
+    if not is_leader:
+        raise PermissionDenied("Only the clan's leader can accept join requests.")
+
+    locked_applicant = User.objects.select_for_update().get(pk=applicant.pk)
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked, user=locked_applicant, status=ClanMembership.Status.PENDING
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("No pending join request from this user.") from exc
+
+    if (
+        _count_private_clan_memberships(locked_applicant)
+        >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
+    ):
+        raise PrivateClanLimitExceededError(
+            "User already belongs to "
+            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
+        )
+
+    membership.status = ClanMembership.Status.ACCEPTED
+    membership.save(update_fields=["status"])
+    return membership
+
+
+@transaction.atomic
+def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMembership:
+    """Reject a PENDING join request for a PRIVATE_INVITE clan (T2-32).
+
+    Only the clan's current LEADER may reject. Locks the ``clan`` row before
+    checking leadership, for the same reason as ``accept_join_request``: a
+    concurrent ``transfer_leadership`` must not be able to demote the actor
+    between the check and the write. The row is kept as REJECTED rather than
+    deleted, matching ``membership_user_clan_unique``: it lets the applicant
+    file a new request later (``join_clan`` reuses the row) without a stale
+    row blocking the insert.
+
+    Raises:
+        PermissionDenied: If ``actor`` is not the clan's current LEADER.
+        ValueError: If there is no PENDING request from ``applicant``.
+    """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    is_leader = ClanMembership.objects.filter(
+        clan=locked,
+        user=actor,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+    ).exists()
+    if not is_leader:
+        raise PermissionDenied("Only the clan's leader can reject join requests.")
+
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked, user=applicant, status=ClanMembership.Status.PENDING
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("No pending join request from this user.") from exc
+
+    membership.status = ClanMembership.Status.REJECTED
+    membership.save(update_fields=["status"])
+    return membership
+
+
+@transaction.atomic
+def leave_clan(*, clan: Clan, user: User) -> None:
+    """Leave a private clan, removing the caller's own membership (T2-33).
+
+    Locks the ``clan`` row before checking the caller's role, matching the
+    discipline ``transfer_leadership`` and ``dissolve_clan`` already use: a
+    concurrent transfer committing in between could otherwise let a stale
+    "I'm not the leader" read through incorrectly. The LEADER must transfer
+    leadership (or dissolve the clan) before leaving, so a clan is never
+    left without a leader.
+
+    Institutional clans can't be left: ``join_clan`` refuses them, and their
+    membership is assigned from ``profile.institutional_clan`` (BR-04), so
+    deleting it would leave the profile pointing at a clan the user no longer
+    belongs to.
+
+    Raises:
+        PermissionDenied: If the caller is the clan's current LEADER.
+        ValueError: If the clan is institutional, or the caller has no
+            ACCEPTED membership in this clan.
+    """
+    if clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Only private clans can be left through this action.")
+
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked, user=user, status=ClanMembership.Status.ACCEPTED
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not a member of this clan.") from exc
+
+    if membership.role == ClanMembership.MembershipRole.LEADER:
+        raise PermissionDenied(
+            "The clan's leader must transfer leadership or dissolve the clan "
+            "before leaving."
+        )
+    membership.delete()
 
 
 def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
@@ -333,7 +533,10 @@ def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
     if clan.type != Clan.ClanType.PRIVATE:
         raise PermissionDenied("Only private clans can be dissolved.")
     is_leader = ClanMembership.objects.filter(
-        clan=clan, user=actor, role=ClanMembership.MembershipRole.LEADER
+        clan=clan,
+        user=actor,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
     ).exists()
     if not is_leader:
         raise PermissionDenied("Only the clan leader can dissolve the clan.")

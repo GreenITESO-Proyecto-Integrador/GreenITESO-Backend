@@ -16,6 +16,8 @@ from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
+from green_iteso.gamification.models import Badge, UserBadge
+from green_iteso.notifications.models import Notification
 
 
 @pytest.mark.django_db
@@ -137,6 +139,16 @@ def test_pending_audit_can_be_decided_only_once() -> None:
         force_authenticate(request, user=admin)
         return view(request, log_id=str(log.pk))
 
+    for payload in ({"status": "UNKNOWN"}, {"status": "REJECTED"}, {}):
+        invalid_request = factory.patch(
+            "/api/v1/action-logs/audit/", payload, format="json"
+        )
+        force_authenticate(invalid_request, user=admin)
+        assert view(invalid_request, log_id=str(log.pk)).status_code == 400
+        log.refresh_from_db()
+        assert log.status == ActionLog.Status.PENDING_AUDIT
+        assert log.reviewed_at is None
+
     assert approve().status_code == 200
     assert approve().status_code == 404
     log.refresh_from_db()
@@ -232,3 +244,61 @@ def test_action_credits_institutional_clan_if_soft_deleted_during_submission() -
     clan.refresh_from_db()
     assert clan.deleted_at is not None
     assert clan.total_points == action.points
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("operation", ("create", "approve"))
+def test_action_crossing_points_threshold_awards_badge(operation: str) -> None:
+    """Badge eligibility must use the credited balance on both approval paths."""
+    user = User.objects.create_user(email="threshold@iteso.mx", password="local-only")
+    admin = User.objects.create_user(
+        email="threshold-reviewer@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    clan = Clan.objects.create(name="Badge clan", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(
+        user=user, institutional_clan=clan, total_points=90, available_points=90
+    )
+    category = ActionCategory.objects.create(code="BADGE", name="Badge")
+    action = ActionMaster.objects.create(
+        code="BADGE_THRESHOLD",
+        category=category,
+        name="Threshold action",
+        points=10,
+        validation_type=(
+            ActionMaster.ValidationType.PHOTO
+            if operation == "approve"
+            else ActionMaster.ValidationType.NONE
+        ),
+    )
+    badge = Badge.objects.create(name="100 points", points_required=100)
+    factory = APIRequestFactory()
+    if operation == "create":
+        request = factory.post(
+            "/api/v1/action-logs/",
+            {"action_id": str(action.pk), "idempotency_key": str(uuid.uuid4())},
+            format="json",
+        )
+        force_authenticate(request, user=user)
+        response = ActionLogCreateView.as_view()(request)
+        assert response.status_code == 201
+    else:
+        log = ActionLog.objects.create(
+            user=user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=10,
+            status=ActionLog.Status.PENDING_AUDIT,
+        )
+        request = factory.patch(
+            "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
+        )
+        force_authenticate(request, user=admin)
+        response = ActionLogAuditView.as_view()(request, log_id=str(log.pk))
+        assert response.status_code == 200
+    profile.refresh_from_db()
+    assert profile.total_points == profile.available_points == 100
+    assert UserBadge.objects.filter(user=user, badge=badge).count() == 1
+    assert Notification.objects.filter(
+        user=user, notification_type=Notification.NotificationType.BADGE_EARNED
+    ).count() == 1

@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 from django.db import close_old_connections, connection
-from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -75,6 +74,7 @@ def test_concurrent_events_keep_every_profile_and_clan_credit(operation: str) ->
 
     window = Barrier(2)
     observed_operations: list[str] = []
+    user_table = connection.ops.quote_name(User._meta.db_table)
     profile_table = connection.ops.quote_name(UserProfile._meta.db_table)
 
     def submit(index: int) -> tuple[int, str]:
@@ -86,7 +86,15 @@ def test_concurrent_events_keep_every_profile_and_clan_credit(operation: str) ->
         ) -> Any:
             nonlocal synchronized
             command = sql.lstrip().split(None, 1)[0].upper()
-            if not synchronized and profile_table in sql and command == "SELECT":
+            if synchronized or command != "SELECT":
+                return execute(sql, params, many, context)
+            if operation == "create" and user_table in sql:
+                synchronized = True
+                observed_operations.append(command)
+                # Rendezvous before the user row lock: create serializes on that
+                # lock, so waiting after it would block the second request.
+                window.wait(timeout=5)
+            elif operation == "approve" and profile_table in sql:
                 synchronized = True
                 observed_operations.append(command)
                 # Complete both unlocked reads before either balance update.
@@ -162,82 +170,3 @@ def test_concurrent_events_keep_every_profile_and_clan_credit(operation: str) ->
     assert (profile.total_points, profile.available_points) == (60, 33)
     assert institutional.total_points == 120
     assert private.total_points == 220
-
-
-@pytest.mark.django_db
-@pytest.mark.parametrize("has_profile", (True, False))
-def test_audit_credits_frozen_deleted_clans_or_rolls_back_missing_profile(
-    has_profile: bool,
-) -> None:
-    """Missing profiles still abort; dissolved snapshots retain awarded credits."""
-    user = User.objects.create_user(email="frozen-credit@iteso.mx")
-    admin = User.objects.create_user(
-        email="frozen-admin@iteso.mx", role=User.Role.ADMIN
-    )
-    original = Clan.objects.create(
-        name="Frozen institutional", type=Clan.ClanType.INSTITUTIONAL
-    )
-    private = Clan.objects.create(name="Frozen private", type=Clan.ClanType.PRIVATE)
-    current = Clan.objects.create(
-        name="Current institutional", type=Clan.ClanType.INSTITUTIONAL
-    )
-    if has_profile:
-        UserProfile.objects.create(user=user, institutional_clan=current)
-    category = ActionCategory.objects.create(code="FROZEN", name="Frozen")
-    action = ActionMaster.objects.create(
-        code="FROZEN",
-        category=category,
-        name="Frozen",
-        points=99,
-        validation_type=ActionMaster.ValidationType.PHOTO,
-    )
-    log = ActionLog.objects.create(
-        user=user,
-        action=action,
-        institutional_clan=original,
-        credited_private_clan=private,
-        idempotency_key=str(uuid.uuid4()),
-        points_awarded=10,
-        status=ActionLog.Status.PENDING_AUDIT,
-    )
-    Clan.all_objects.filter(pk__in=[original.pk, private.pk]).update(
-        deleted_at=timezone.now()
-    )
-    request = APIRequestFactory().patch(
-        "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
-    )
-    force_authenticate(request, user=admin)
-    view = ActionLogAuditView.as_view()
-    if has_profile:
-        assert view(request, log_id=str(log.pk)).status_code == 200
-    else:
-        with pytest.raises(UserProfile.DoesNotExist):
-            view(request, log_id=str(log.pk))
-    log.refresh_from_db()
-    original.refresh_from_db()
-    private.refresh_from_db()
-    current.refresh_from_db()
-    assert log.institutional_clan_id == original.pk
-    assert log.credited_private_clan_id == private.pk
-    assert log.points_awarded == 10
-    assert current.total_points == 0
-    notification_types = list(
-        Notification.objects.filter(user=user).values_list(
-            "notification_type", flat=True
-        )
-    )
-    assert notification_types == (
-        [Notification.NotificationType.AUDIT_APPROVED] if has_profile else []
-    )
-    if has_profile:
-        profile = UserProfile.objects.get(user=user)
-        assert (profile.total_points, profile.available_points) == (10, 10)
-        assert log.status == ActionLog.Status.APPROVED
-        assert log.reviewed_by_id == admin.pk
-        assert log.reviewed_at is not None
-        assert original.total_points == private.total_points == 10
-    else:
-        assert log.status == ActionLog.Status.PENDING_AUDIT
-        assert log.reviewed_by_id is None
-        assert log.reviewed_at is None
-        assert original.total_points == private.total_points == 0

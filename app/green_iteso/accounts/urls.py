@@ -9,6 +9,7 @@ from .views import (
     EcologicalProfileView,
     LoginView,
     LogoutView,
+    ProfileMetricsView,
     TokenRefreshView,
     UserViewSet,
 )
@@ -21,5 +22,6 @@ urlpatterns = [
     path("auth/refresh/", TokenRefreshView.as_view(), name="auth-refresh"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("profile/me/", EcologicalProfileView.as_view(), name="profile-me"),
+    path("profile/me/metrics/", ProfileMetricsView.as_view(), name="profile-metrics"),
     *router.urls,
 ]

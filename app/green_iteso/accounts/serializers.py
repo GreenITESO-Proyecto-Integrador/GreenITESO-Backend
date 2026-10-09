@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 
 from rest_framework import serializers
 
+from green_iteso.actions.models import ActionCategory
+
 from .models import User, UserProfile, UserRoleAudit
 from .selectors import EcologicalProfile
 
@@ -138,6 +140,95 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
     def get_active_private_clan(self, obj: EcologicalProfile) -> dict[str, Any] | None:
         clan = obj.active_private_clan
         return ClanSummarySerializer(clan).data if clan is not None else None
+
+
+class ProfileMetricsQuerySerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Optional query params narrowing GET /profile/me/metrics/ (#126)."""
+
+    category = serializers.SlugRelatedField(
+        slug_field="code", queryset=ActionCategory.objects.all(), required=False
+    )
+    granularity = serializers.ChoiceField(
+        choices=["week", "month"], required=False, default="week"
+    )
+
+    def get_fields(self) -> dict[str, serializers.Field]:
+        # ``from`` is a Python keyword, so these can't be class attributes.
+        fields = super().get_fields()
+        fields["from"] = serializers.DateField(required=False, source="date_from")
+        fields["to"] = serializers.DateField(required=False, source="date_to")
+        return fields
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        date_from = attrs.get("date_from")
+        date_to = attrs.get("date_to")
+        if date_from is not None and date_to is not None and date_from > date_to:
+            raise serializers.ValidationError({"from": "from must not be after to."})
+        return attrs
+
+
+class CategoryActivitySerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Approved actions and points in one action category."""
+
+    code = serializers.CharField()
+    name = serializers.CharField()
+    approved_actions = serializers.IntegerField()
+    points = serializers.IntegerField()
+
+
+class PeriodActivitySerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Approved actions and points in one week or month."""
+
+    period_start = serializers.DateField()
+    approved_actions = serializers.IntegerField()
+    points = serializers.IntegerField()
+
+
+class MetricsFiltersSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """The filters applied, echoed back with the public query-param names."""
+
+    granularity = serializers.CharField()
+    category = serializers.CharField(allow_null=True)
+
+    def get_fields(self) -> dict[str, serializers.Field]:
+        # ``from`` is a Python keyword, so these can't be class attributes.
+        fields = super().get_fields()
+        fields["from"] = serializers.DateField(source="date_from", allow_null=True)
+        fields["to"] = serializers.DateField(source="date_to", allow_null=True)
+        return fields
+
+
+class ActionMetricsSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Approved actions and the points they earned."""
+
+    approved = serializers.IntegerField()
+    points_earned = serializers.IntegerField()
+    by_category = CategoryActivitySerializer(many=True)
+
+
+class PointsBalanceSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Current points balance of the caller."""
+
+    total = serializers.IntegerField()
+    available = serializers.IntegerField()
+
+
+class AchievementMetricsSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Badges earned and finished campaigns."""
+
+    badges_earned = serializers.IntegerField()
+    finished_campaigns = serializers.IntegerField()
+
+
+class ProfileMetricsSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Ecological-profile metrics of the caller (#126)."""
+
+    filters = MetricsFiltersSerializer()
+    impact = ImpactMetricsSerializer()
+    actions = ActionMetricsSerializer()
+    points = PointsBalanceSerializer()
+    activity = PeriodActivitySerializer(many=True)
+    achievements = AchievementMetricsSerializer()
 
 
 def _validate_avatar_url(value: str) -> None:

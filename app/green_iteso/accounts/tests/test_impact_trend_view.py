@@ -10,7 +10,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, User
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import ActionCategory, ActionLog
+from green_iteso.actions.tests.helpers import create_compost_action
 
 IMPACT_TREND_URL = "/api/v1/profile/me/impact-trend/"
 
@@ -19,14 +20,7 @@ def _create_action_log(
     *, user: User, institutional_clan: Clan, created_at: datetime
 ) -> ActionLog:
     category = ActionCategory.objects.create(code="CAT-TREND", name="Waste")
-    action = ActionMaster.objects.create(
-        code="ACT-TREND",
-        category=category,
-        name="Compost",
-        description="Compost organic waste",
-        points=15,
-        validation_type=ActionMaster.ValidationType.NONE,
-    )
+    action = create_compost_action(code="ACT-TREND", category=category)
     log = ActionLog.objects.create(
         user=user,
         action=action,

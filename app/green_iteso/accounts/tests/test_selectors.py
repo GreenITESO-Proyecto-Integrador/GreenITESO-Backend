@@ -15,7 +15,8 @@ from green_iteso.accounts.selectors import (
     get_profile_clans,
     get_user_by_id,
 )
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import ActionCategory, ActionLog
+from green_iteso.actions.tests.helpers import create_compost_action
 from green_iteso.campaigns.models import Campaign, CampaignParticipant
 
 
@@ -90,14 +91,7 @@ def _create_action_log(
     category = ActionCategory.objects.create(
         code=f"CAT-{idempotency_key}", name="Waste"
     )
-    action = ActionMaster.objects.create(
-        code=f"ACT-{idempotency_key}",
-        category=category,
-        name="Compost",
-        description="Compost organic waste",
-        points=15,
-        validation_type=ActionMaster.ValidationType.NONE,
-    )
+    action = create_compost_action(code=f"ACT-{idempotency_key}", category=category)
     return ActionLog.objects.create(
         user=user,
         action=action,

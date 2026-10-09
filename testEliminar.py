@@ -1,4 +1,5 @@
 import os
+
 import django
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "green_iteso.settings")
@@ -6,7 +7,7 @@ os.environ.setdefault("DJANGO_ENV", "dev")
 
 django.setup()
 
-from green_iteso.accounts.models import User, UserProfile
+from green_iteso.accounts.models import User
 from green_iteso.accounts.services import ensure_profile
 
 user, _ = User.objects.get_or_create(email="prueba@iteso.mx")

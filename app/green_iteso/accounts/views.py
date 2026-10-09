@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from django.db.models import QuerySet
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -22,8 +23,10 @@ from green_iteso.core.permissions import IsAdmin
 from .exceptions import RequestValidationError
 from .models import User
 from .selectors import (
+    MetricsFilters,
     get_ecological_profile,
     get_impact_trend,
+    get_profile_metrics,
     get_user_by_id,
     list_users,
 )
@@ -33,6 +36,8 @@ from .serializers import (
     ImpactTrendPointSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
+    ProfileMetricsQuerySerializer,
+    ProfileMetricsSerializer,
     ProfileUpdateSerializer,
     UserRoleAuditSerializer,
     UserSerializer,
@@ -239,6 +244,58 @@ class EcologicalProfileView(APIView):
         update_profile(user=request.user, **payload.validated_data)
         profile = get_ecological_profile(request.user)
         return Response(EcologicalProfileSerializer(profile).data)
+
+
+class ProfileMetricsView(APIView):
+    """Return the caller's own ecological-profile metrics (#126).
+
+    Self-scoped like ``EcologicalProfileView``: only the caller's own data is
+    read, so there is no user id to pass.
+    """
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "from",
+                OpenApiTypes.DATE,
+                description="First local day (America/Mexico_City) included.",
+            ),
+            OpenApiParameter(
+                "to",
+                OpenApiTypes.DATE,
+                description="Last local day (America/Mexico_City) included.",
+            ),
+            OpenApiParameter(
+                "category",
+                OpenApiTypes.STR,
+                description="ActionCategory code; narrows action-derived metrics only.",
+            ),
+            OpenApiParameter(
+                "granularity",
+                OpenApiTypes.STR,
+                enum=["week", "month"],
+                description="Bucket size of `activity` (default `week`).",
+            ),
+        ],
+        responses={
+            200: ProfileMetricsSerializer,
+            400: OpenApiResponse(description="VALIDATION_ERROR"),
+        },
+    )
+    def get(self, request: Request) -> Response:
+        """Aggregate impact, actions, points, activity, badges and campaigns."""
+        query = ProfileMetricsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        category = params.get("category")
+        filters = MetricsFilters(
+            date_from=params.get("date_from"),
+            date_to=params.get("date_to"),
+            category=category.code if category is not None else None,
+            granularity=params["granularity"],
+        )
+        metrics = get_profile_metrics(request.user, filters)
+        return Response(ProfileMetricsSerializer(metrics).data)
 
 
 class ImpactTrendView(APIView):

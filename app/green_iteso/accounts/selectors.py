@@ -6,14 +6,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
-from django.db.models import QuerySet, Sum
-from django.db.models.functions import TruncWeek
+from django.db.models import Count, DateField, QuerySet, Sum
+from django.db.models.functions import TruncMonth, TruncWeek
 from django.utils import timezone
 
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import Campaign
+from green_iteso.gamification.models import UserBadge
 
 from .models import Clan, ClanMembership, User, UserProfile
 from .services import ensure_profile
@@ -98,6 +99,25 @@ class EcologicalProfile:
     finished_campaigns: list[FinishedCampaign]
 
 
+def _approved_action_logs(user: User) -> QuerySet[ActionLog]:
+    """Return ``user``'s own approved action logs, the only ones that count as impact."""
+    return ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
+
+
+def _sum_impact(logs: QuerySet[ActionLog]) -> ImpactMetrics:
+    """Sum the frozen impact snapshots of ``logs``, reporting zero when empty."""
+    impact = logs.aggregate(
+        co2_kg=Sum("co2_kg_factor_snapshot"),
+        water_liters=Sum("water_liters_factor_snapshot"),
+        plastic_kg=Sum("plastic_kg_factor_snapshot"),
+    )
+    return ImpactMetrics(
+        co2_kg=impact["co2_kg"] or Decimal("0"),
+        water_liters=impact["water_liters"] or Decimal("0"),
+        plastic_kg=impact["plastic_kg"] or Decimal("0"),
+    )
+
+
 def get_ecological_profile(user: User) -> EcologicalProfile:
     """Aggregate ``user``'s own profile with E1 (points/badges) and E3 (campaigns) data.
 
@@ -121,18 +141,7 @@ def get_ecological_profile(user: User) -> EcologicalProfile:
     )
     active_private_clan = active_membership.clan if active_membership else None
 
-    impact = ActionLog.objects.filter(
-        user=user, status=ActionLog.Status.APPROVED
-    ).aggregate(
-        co2_kg=Sum("co2_kg_factor_snapshot"),
-        water_liters=Sum("water_liters_factor_snapshot"),
-        plastic_kg=Sum("plastic_kg_factor_snapshot"),
-    )
-    metrics = ImpactMetrics(
-        co2_kg=impact["co2_kg"] or Decimal("0"),
-        water_liters=impact["water_liters"] or Decimal("0"),
-        plastic_kg=impact["plastic_kg"] or Decimal("0"),
-    )
+    metrics = _sum_impact(_approved_action_logs(user))
 
     finished_campaigns = [
         FinishedCampaign(
@@ -151,6 +160,163 @@ def get_ecological_profile(user: User) -> EcologicalProfile:
         badges=[],
         impact_metrics=metrics,
         finished_campaigns=finished_campaigns,
+    )
+
+
+MetricsGranularity = Literal["week", "month"]
+
+_PERIOD_TRUNCATORS = {"week": TruncWeek, "month": TruncMonth}
+
+
+@dataclass(frozen=True)
+class CategoryActivity:
+    """Approved actions and points the caller earned in one action category."""
+
+    code: str
+    name: str
+    approved_actions: int
+    points: int
+
+
+@dataclass(frozen=True)
+class PeriodActivity:
+    """Approved actions and points the caller earned in one week or month."""
+
+    period_start: date
+    approved_actions: int
+    points: int
+
+
+@dataclass(frozen=True)
+class MetricsFilters:
+    """Optional bounds of GET /profile/me/metrics/ (#126).
+
+    ``date_from``/``date_to`` are inclusive local calendar days and narrow
+    every metric except the points balance, which is always the current one.
+    ``category`` narrows only the action-derived metrics (impact, actions and
+    activity); badges and campaigns have no action category.
+    """
+
+    date_from: date | None = None
+    date_to: date | None = None
+    category: str | None = None
+    granularity: MetricsGranularity = "week"
+
+
+@dataclass(frozen=True)
+class ActionMetrics:
+    """Approved actions and the points they earned, overall and per category."""
+
+    approved: int
+    points_earned: int
+    by_category: list[CategoryActivity]
+
+
+@dataclass(frozen=True)
+class PointsBalance:
+    """The caller's current points, unaffected by the metrics filters."""
+
+    total: int
+    available: int
+
+
+@dataclass(frozen=True)
+class AchievementMetrics:
+    """Badges earned and finished campaigns the caller took part in."""
+
+    badges_earned: int
+    finished_campaigns: int
+
+
+@dataclass(frozen=True)
+class ProfileMetrics:
+    """Metrics shown on the caller's ecological profile (#126)."""
+
+    filters: MetricsFilters
+    impact: ImpactMetrics
+    actions: ActionMetrics
+    points: PointsBalance
+    activity: list[PeriodActivity]
+    achievements: AchievementMetrics
+
+
+def get_profile_metrics(user: User, filters: MetricsFilters) -> ProfileMetrics:
+    """Aggregate ``user``'s own ecological-profile metrics (#126).
+
+    Date bounds are inclusive local calendar days: ``__date`` and the
+    week/month truncation both use the active time zone
+    (America/Mexico_City), so an action logged late at night counts on the
+    day the user saw it. Weeks start on Monday, matching ``TruncWeek``.
+
+    Args:
+        user: Account whose own metrics are read.
+        filters: Date range, action category and activity bucket size.
+
+    Returns:
+        The metrics; empty aggregates are reported as zero, and ``activity``
+        lists only periods with at least one approved action, oldest first.
+    """
+    profile = ensure_profile(user)
+
+    logs = _approved_action_logs(user)
+    badges = UserBadge.objects.filter(user=user)
+    campaigns = Campaign.objects.filter(
+        participants__user=user, status=Campaign.Status.FINISHED
+    )
+    if filters.date_from is not None:
+        logs = logs.filter(created_at__date__gte=filters.date_from)
+        badges = badges.filter(earned_at__date__gte=filters.date_from)
+        campaigns = campaigns.filter(end_date__date__gte=filters.date_from)
+    if filters.date_to is not None:
+        logs = logs.filter(created_at__date__lte=filters.date_to)
+        badges = badges.filter(earned_at__date__lte=filters.date_to)
+        campaigns = campaigns.filter(end_date__date__lte=filters.date_to)
+    if filters.category is not None:
+        logs = logs.filter(action__category__code=filters.category)
+
+    totals = logs.aggregate(approved=Count("id"), points=Sum("points_awarded"))
+    by_category = [
+        CategoryActivity(
+            code=row["action__category__code"],
+            name=row["action__category__name"],
+            approved_actions=row["approved_actions"],
+            points=row["points"],
+        )
+        for row in logs.values("action__category__code", "action__category__name")
+        .annotate(approved_actions=Count("id"), points=Sum("points_awarded"))
+        .order_by("-approved_actions", "action__category__code")
+    ]
+    truncate = _PERIOD_TRUNCATORS[filters.granularity]
+    activity = [
+        PeriodActivity(
+            period_start=row["period_start"],
+            approved_actions=row["approved_actions"],
+            points=row["points"],
+        )
+        for row in logs.annotate(
+            period_start=truncate("created_at", output_field=DateField())
+        )
+        .values("period_start")
+        .annotate(approved_actions=Count("id"), points=Sum("points_awarded"))
+        .order_by("period_start")
+    ]
+
+    return ProfileMetrics(
+        filters=filters,
+        impact=_sum_impact(logs),
+        actions=ActionMetrics(
+            approved=totals["approved"],
+            points_earned=totals["points"] or 0,
+            by_category=by_category,
+        ),
+        points=PointsBalance(
+            total=profile.total_points, available=profile.available_points
+        ),
+        activity=activity,
+        achievements=AchievementMetrics(
+            badges_earned=badges.count(),
+            finished_campaigns=campaigns.distinct().count(),
+        ),
     )
 
 

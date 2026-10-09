@@ -46,6 +46,18 @@ def create_bike_action(points: int = 50) -> ActionMaster:
     )
 
 
+def create_compost_action(*, code: str, category: ActionCategory) -> ActionMaster:
+    """Create a no-validation compost action under ``category``."""
+    return ActionMaster.objects.create(
+        code=code,
+        category=category,
+        name="Compost",
+        description="Compost organic waste",
+        points=15,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+
 def create_mission_for(
     user: User, action: ActionMaster, target_count: int = 2
 ) -> Mission:

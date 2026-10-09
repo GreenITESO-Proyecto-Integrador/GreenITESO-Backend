@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,10 +11,12 @@ from django.utils import timezone
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.accounts.selectors import (
     get_ecological_profile,
+    get_impact_trend,
     get_profile_clans,
     get_user_by_id,
 )
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import ActionCategory, ActionLog
+from green_iteso.actions.tests.helpers import create_compost_action
 from green_iteso.campaigns.models import Campaign, CampaignParticipant
 
 
@@ -89,14 +91,7 @@ def _create_action_log(
     category = ActionCategory.objects.create(
         code=f"CAT-{idempotency_key}", name="Waste"
     )
-    action = ActionMaster.objects.create(
-        code=f"ACT-{idempotency_key}",
-        category=category,
-        name="Compost",
-        description="Compost organic waste",
-        points=15,
-        validation_type=ActionMaster.ValidationType.NONE,
-    )
+    action = create_compost_action(code=f"ACT-{idempotency_key}", category=category)
     return ActionLog.objects.create(
         user=user,
         action=action,
@@ -108,6 +103,11 @@ def _create_action_log(
         plastic_kg_factor_snapshot=Decimal("0.500"),
         status=status,
     )
+
+
+def _set_created_at(log: ActionLog, when: datetime) -> None:
+    """Back-date ``log.created_at`` past ``auto_now_add`` for trend tests."""
+    ActionLog.objects.filter(pk=log.pk).update(created_at=when)
 
 
 def _create_campaign(*, creator: User, status: str, title: str) -> Campaign:
@@ -206,3 +206,99 @@ def test_get_ecological_profile_includes_the_active_private_clan() -> None:
     profile = get_ecological_profile(user)
 
     assert profile.active_private_clan == clan
+
+
+def _current_week_start() -> date:
+    today = timezone.localdate()
+    return today - timedelta(days=today.weekday())
+
+
+@pytest.mark.django_db
+def test_get_impact_trend_returns_four_zero_weeks_for_a_fresh_user() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    points = get_impact_trend(user)
+
+    current_week_start = _current_week_start()
+    assert [point.week_start for point in points] == [
+        current_week_start - timedelta(weeks=3),
+        current_week_start - timedelta(weeks=2),
+        current_week_start - timedelta(weeks=1),
+        current_week_start,
+    ]
+    assert all(point.co2_kg == Decimal("0") for point in points)
+    assert all(point.water_liters == Decimal("0") for point in points)
+    assert all(point.plastic_kg == Decimal("0") for point in points)
+
+
+@pytest.mark.django_db
+def test_get_impact_trend_buckets_approved_actions_by_week_and_excludes_others() -> (
+    None
+):
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    institutional_clan = Clan.objects.create(
+        name="Ingeniería de Software", type=Clan.ClanType.INSTITUTIONAL
+    )
+    current_week_start = _current_week_start()
+    now = timezone.now()
+
+    # Two approved logs in the current week: sums should add up.
+    log_a = _create_action_log(
+        user=user,
+        institutional_clan=institutional_clan,
+        status=ActionLog.Status.APPROVED,
+        idempotency_key="current-1",
+    )
+    _set_created_at(log_a, now)
+    log_b = _create_action_log(
+        user=user,
+        institutional_clan=institutional_clan,
+        status=ActionLog.Status.APPROVED,
+        idempotency_key="current-2",
+    )
+    _set_created_at(log_b, now)
+
+    # One approved log two weeks ago: its own, separate bucket.
+    log_two_weeks_ago = _create_action_log(
+        user=user,
+        institutional_clan=institutional_clan,
+        status=ActionLog.Status.APPROVED,
+        idempotency_key="two-weeks-ago",
+    )
+    _set_created_at(log_two_weeks_ago, now - timedelta(weeks=2))
+
+    # Rejected in the current week: must not count anywhere.
+    log_rejected = _create_action_log(
+        user=user,
+        institutional_clan=institutional_clan,
+        status=ActionLog.Status.REJECTED,
+        idempotency_key="rejected",
+    )
+    _set_created_at(log_rejected, now)
+
+    # Approved but outside the 4-week window: must not count anywhere.
+    log_too_old = _create_action_log(
+        user=user,
+        institutional_clan=institutional_clan,
+        status=ActionLog.Status.APPROVED,
+        idempotency_key="too-old",
+    )
+    _set_created_at(log_too_old, now - timedelta(weeks=10))
+
+    points = get_impact_trend(user)
+    by_week = {point.week_start: point for point in points}
+
+    current_week_point = by_week[current_week_start]
+    assert current_week_point.co2_kg == Decimal("3.000")
+    assert current_week_point.water_liters == Decimal("5.000")
+    assert current_week_point.plastic_kg == Decimal("1.000")
+
+    two_weeks_ago_point = by_week[current_week_start - timedelta(weeks=2)]
+    assert two_weeks_ago_point.co2_kg == Decimal("1.500")
+    assert two_weeks_ago_point.water_liters == Decimal("2.500")
+    assert two_weeks_ago_point.plastic_kg == Decimal("0.500")
+
+    one_week_ago_point = by_week[current_week_start - timedelta(weeks=1)]
+    assert one_week_ago_point.co2_kg == Decimal("0")
+    three_weeks_ago_point = by_week[current_week_start - timedelta(weeks=3)]
+    assert three_weeks_ago_point.co2_kg == Decimal("0")

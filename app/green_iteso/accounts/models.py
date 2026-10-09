@@ -1,4 +1,6 @@
-"""Provisional identity and clan schema for the T9a core draft."""
+"""Provisional identity and clan schema for the T9a core draft, extended with
+profile visibility and clan soft-delete support.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +8,7 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 
 class UserManager(BaseUserManager):
@@ -38,7 +40,7 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractUser):
-    """Institutional account; Firebase verification is an API concern."""
+    """Institutional account, identified by its Microsoft Entra object id."""
 
     class Role(models.TextChoices):
         STUDENT = "STUDENT", "Student"
@@ -49,7 +51,11 @@ class User(AbstractUser):
     username = None
     email = models.EmailField(unique=True, max_length=255)
     firebase_uid = models.CharField(max_length=128, unique=True, null=True, blank=True)
+    microsoft_oid = models.UUIDField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.STUDENT)
+    # Display name shown across the app; set during onboarding, so it starts
+    # blank rather than enforcing NOT NULL against pre-onboarding accounts.
+    nickname = models.CharField(max_length=50, blank=True, default="")
     objects = UserManager()
 
     USERNAME_FIELD = "email"
@@ -65,6 +71,25 @@ class User(AbstractUser):
         ]
 
 
+class ClanQuerySet(models.QuerySet):
+    """Queryset helpers shared between the alive-only and unrestricted managers."""
+
+    def alive(self) -> ClanQuerySet:
+        """Return clans that have not been soft-deleted."""
+        return self.filter(deleted_at__isnull=True)
+
+    def deleted(self) -> ClanQuerySet:
+        """Return only soft-deleted clans."""
+        return self.filter(deleted_at__isnull=False)
+
+
+class ClanManager(models.Manager.from_queryset(ClanQuerySet)):
+    """Default manager: excludes soft-deleted clans from every query."""
+
+    def get_queryset(self) -> ClanQuerySet:
+        return super().get_queryset().alive()
+
+
 class Clan(models.Model):
     """Institutional or private clan; deletion is represented by ``deleted_at``."""
 
@@ -77,7 +102,10 @@ class Clan(models.Model):
         PRIVATE_INVITE = "PRIVATE_INVITE", "Private invite"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
+    # Not globally unique: uniqueness is scoped to alive rows by the
+    # ``clan_name_unique_when_alive`` constraint below, so a soft-deleted
+    # clan's name can be reused without an IntegrityError.
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     avatar_object_key = models.CharField(max_length=500, blank=True)
     type = models.CharField(max_length=16, choices=ClanType.choices)
@@ -95,8 +123,13 @@ class Clan(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    all_objects = models.Manager()
+    objects = ClanManager()
+
     class Meta:
         db_table = "accounts_clan"
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         constraints = [
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
@@ -110,6 +143,11 @@ class Clan(models.Model):
                 condition=Q(privacy__in=["PUBLIC", "PRIVATE_INVITE"]),
                 name="clan_privacy_valid",
             ),
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=Q(deleted_at__isnull=True),
+                name="clan_name_unique_when_alive",
+            ),
         ]
         indexes = [
             models.Index(fields=["type", "total_points"], name="clan_type_points_idx")
@@ -121,6 +159,10 @@ class Clan(models.Model):
 
 class UserProfile(models.Model):
     """Onboarding and denormalized personal totals for the points transaction."""
+
+    class Visibility(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public"
+        PRIVATE = "PRIVATE", "Private"
 
     user = models.OneToOneField(
         "accounts.User",
@@ -136,10 +178,26 @@ class UserProfile(models.Model):
         blank=True,
     )
     career = models.CharField(max_length=150, blank=True)
+    job_title = models.CharField(max_length=255, blank=True)
+    department = models.CharField(max_length=255, blank=True)
+    employee_id = models.CharField(max_length=64, blank=True)
+    microsoft_group_ids = models.JSONField(default=list, blank=True)
     onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     total_points = models.BigIntegerField(default=0)
+    available_points = models.BigIntegerField(default=0)
     current_streak = models.PositiveIntegerField(default=0)
     last_action_date = models.DateField(null=True, blank=True)
+    visibility = models.CharField(
+        max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC
+    )
+    bio = models.CharField(max_length=500, blank=True)
+    preferences = models.JSONField(default=dict, blank=True)
+    unlocked_cosmetics = models.JSONField(default=list, blank=True)
+    # The object itself lives in Cloud Storage (T2-21); only its URL is
+    # persisted here, never the binary. The GCS bucket/account is not
+    # provisioned yet (see docs/avatar-upload.md), so this is populated by
+    # whatever the client uploaded the file to in the meantime.
+    avatar_url = models.URLField(max_length=500, blank=True)
 
     class Meta:
         db_table = "accounts_user_profile"
@@ -147,6 +205,24 @@ class UserProfile(models.Model):
             models.CheckConstraint(
                 condition=Q(total_points__gte=0),
                 name="profile_total_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(available_points__gte=0),
+                name="profile_available_points_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(visibility__in=["PUBLIC", "PRIVATE"]),
+                name="profile_visibility_valid",
+            ),
+        ]
+        indexes = [
+            # Serves the points ranking (gamification selectors): an ordered
+            # scan that stops after limit + offset rows.
+            models.Index(
+                F("total_points").desc(),
+                "user",
+                name="profile_public_ranking_idx",
+                condition=Q(visibility="PUBLIC"),
             ),
         ]
 
@@ -161,6 +237,13 @@ class ClanMembership(models.Model):
         LEADER = "LEADER", "Leader"
         MEMBER = "MEMBER", "Member"
 
+    class Status(models.TextChoices):
+        """Join-request lifecycle (T2-32): only ACCEPTED counts as real membership."""
+
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         "accounts.User", on_delete=models.CASCADE, related_name="clan_memberships"
@@ -170,6 +253,12 @@ class ClanMembership(models.Model):
     )
     role = models.CharField(
         max_length=10, choices=MembershipRole.choices, default=MembershipRole.MEMBER
+    )
+    # Defaults to ACCEPTED: every existing creation path (create_private_clan,
+    # assign_institutional_clan, create_clan) grants real membership on the
+    # spot. Only join_clan's PRIVATE_INVITE branch ever sets PENDING.
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACCEPTED
     )
     is_active_private = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
@@ -189,7 +278,122 @@ class ClanMembership(models.Model):
                 condition=Q(role__in=["LEADER", "MEMBER"]),
                 name="membership_role_valid",
             ),
+            models.CheckConstraint(
+                condition=Q(status__in=["PENDING", "ACCEPTED", "REJECTED"]),
+                name="membership_status_valid",
+            ),
         ]
 
     def __str__(self) -> str:
         return f"{self.user.email} @ {self.clan.name}"
+
+
+class Friendship(models.Model):
+    """Mutual friend relationship between two users (T2-50).
+
+    ``requester``/``addressee`` preserve who sent the request, which
+    ``respond_to_friend_request`` needs to allow only the addressee to
+    accept/reject. ``low_user``/``high_user`` mirror the same pair sorted by
+    id, so the unique constraint below catches a request in either direction
+    (AC-2: no A->B duplicate of an existing B->A).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    requester = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="sent_friend_requests"
+    )
+    addressee = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="received_friend_requests",
+    )
+    low_user = models.UUIDField(editable=False)
+    high_user = models.UUIDField(editable=False)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_friendship"
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(requester=F("addressee")),
+                name="friendship_not_self",
+            ),
+            models.CheckConstraint(
+                condition=Q(low_user__lt=F("high_user")),
+                name="friendship_pair_ordered",
+            ),
+            models.UniqueConstraint(
+                fields=["low_user", "high_user"], name="friendship_pair_unique"
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["PENDING", "ACCEPTED", "REJECTED"]),
+                name="friendship_status_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["addressee", "status"], name="friendship_addr_st_idx"),
+            models.Index(fields=["requester", "status"], name="friendship_req_st_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.requester_id} -> {self.addressee_id} ({self.status})"
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        # Derive the unordered pair here rather than trusting every caller to
+        # set it (the admin's Add form can't, since low_user/high_user are
+        # read-only and therefore absent from the submitted data, which
+        # otherwise fails the NOT NULL columns at the database).
+        if self.requester_id is not None and self.addressee_id is not None:
+            self.low_user, self.high_user = (
+                (self.requester_id, self.addressee_id)
+                if self.requester_id < self.addressee_id
+                else (self.addressee_id, self.requester_id)
+            )
+        super().save(*args, **kwargs)
+
+
+class UserRoleAudit(models.Model):
+    """Audit record for global user role changes."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.PROTECT,
+        related_name="role_audit_logs",
+    )
+    changed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="performed_role_audits",
+    )
+    previous_role = models.CharField(max_length=16, choices=User.Role.choices)
+    new_role = models.CharField(max_length=16, choices=User.Role.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounts_user_role_audit"
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(previous_role__in=["STUDENT", "STAFF", "ADMIN"]),
+                name="user_role_audit_previous_role_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(new_role__in=["STUDENT", "STAFF", "ADMIN"]),
+                name="user_role_audit_new_role_valid",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Role audit {self.user_id}: {self.previous_role} -> {self.new_role}"

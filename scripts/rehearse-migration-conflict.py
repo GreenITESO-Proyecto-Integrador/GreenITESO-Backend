@@ -26,7 +26,7 @@ CONTAINER_DATABASE = "rehearsal"
 def write_fixture(root: Path) -> None:
     """Create an isolated Django project with two conflicting, compatible migration leaves."""
     files = {
-        "manage.py": '''#!/usr/bin/env python3
+        "manage.py": """#!/usr/bin/env python3
 import os
 import sys
 
@@ -35,9 +35,9 @@ if __name__ == "__main__":
     from django.core.management import execute_from_command_line
 
     execute_from_command_line(sys.argv)
-''',
+""",
         "fixture_project/__init__.py": "",
-        "fixture_project/settings.py": '''import os
+        "fixture_project/settings.py": """import os
 from urllib.parse import unquote, urlsplit
 
 DATABASE_URL = os.environ["MIGRATION_REHEARSAL_DATABASE_URL"]
@@ -62,17 +62,17 @@ DATABASES = {
         "PORT": str(parsed.port or "5432"),
     }
 }
-''',
+""",
         "fixture_project/urls.py": "urlpatterns = []\n",
         "rehearsal_records/__init__.py": "",
-        "rehearsal_records/apps.py": '''from django.apps import AppConfig
+        "rehearsal_records/apps.py": """from django.apps import AppConfig
 
 
 class RehearsalRecordsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "rehearsal_records"
-''',
-        "rehearsal_records/models.py": '''from django.db import models
+""",
+        "rehearsal_records/models.py": """from django.db import models
 
 
 class SharedRecord(models.Model):
@@ -83,9 +83,9 @@ class SharedRecord(models.Model):
 
     class Meta:
         db_table = "rehearsal_shared_record"
-''',
+""",
         "rehearsal_records/migrations/__init__.py": "",
-        "rehearsal_records/migrations/0001_initial.py": '''from django.db import migrations, models
+        "rehearsal_records/migrations/0001_initial.py": """from django.db import migrations, models
 from django.utils import timezone
 
 
@@ -109,8 +109,8 @@ class Migration(migrations.Migration):
         ),
         migrations.RunPython(seed_shared_record, migrations.RunPython.noop),
     ]
-''',
-        "rehearsal_records/migrations/0002_team_a.py": '''from django.db import migrations, models
+""",
+        "rehearsal_records/migrations/0002_team_a.py": """from django.db import migrations, models
 
 
 def set_team_a_code(apps, schema_editor):
@@ -128,8 +128,8 @@ class Migration(migrations.Migration):
         ),
         migrations.RunPython(set_team_a_code, migrations.RunPython.noop),
     ]
-''',
-        "rehearsal_records/migrations/0002_team_b.py": '''from django.db import migrations, models
+""",
+        "rehearsal_records/migrations/0002_team_b.py": """from django.db import migrations, models
 
 
 def set_team_b_code(apps, schema_editor):
@@ -147,7 +147,7 @@ class Migration(migrations.Migration):
         ),
         migrations.RunPython(set_team_b_code, migrations.RunPython.noop),
     ]
-''',
+""",
     }
     for relative, content in files.items():
         path = root / relative
@@ -155,7 +155,9 @@ class Migration(migrations.Migration):
         path.write_text(content, encoding="utf-8")
 
 
-def run_manage(root: Path, database_url: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+def run_manage(
+    root: Path, database_url: str, *arguments: str
+) -> subprocess.CompletedProcess[str]:
     """Run one management command and return its captured result."""
     environment = os.environ.copy()
     environment["MIGRATION_REHEARSAL_DATABASE_URL"] = database_url
@@ -184,13 +186,15 @@ def assert_failed(label: str, result: subprocess.CompletedProcess[str]) -> None:
     if result.returncode == 0:
         raise AssertionError(f"{label} unexpectedly succeeded")
     if "Conflicting migrations detected" not in result.stdout + result.stderr:
-        raise AssertionError(f"{label} failed for a reason other than a migration conflict")
+        raise AssertionError(
+            f"{label} failed for a reason other than a migration conflict"
+        )
 
 
 def add_merge_migration(root: Path) -> None:
     """Add the reviewed merge node after the conflict has been observed."""
     (root / "rehearsal_records/migrations/0003_merge_team_leaves.py").write_text(
-        '''from django.db import migrations
+        """from django.db import migrations
 
 
 class Migration(migrations.Migration):
@@ -199,7 +203,7 @@ class Migration(migrations.Migration):
         ("rehearsal_records", "0002_team_b"),
     ]
     operations = []
-''',
+""",
         encoding="utf-8",
     )
 
@@ -316,9 +320,13 @@ def main() -> int:
         version = postgres_version(database_url)
         print(f"[database] PostgreSQL server_version_num={version}")
         if not version.startswith("18"):
-            raise AssertionError(f"expected PostgreSQL 18, got server_version_num={version}")
+            raise AssertionError(
+                f"expected PostgreSQL 18, got server_version_num={version}"
+            )
 
-        with tempfile.TemporaryDirectory(prefix="django-migration-rehearsal-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="django-migration-rehearsal-"
+        ) as temporary:
             root = Path(temporary)
             write_fixture(root)
 
@@ -326,8 +334,13 @@ def main() -> int:
             show_result("before migrate --plan (expected conflict)", conflict_plan)
             assert_failed("migrate --plan", conflict_plan)
 
-            conflict_check = run_manage(root, database_url, "makemigrations", "--check", "--dry-run")
-            show_result("before makemigrations --check --dry-run (expected conflict)", conflict_check)
+            conflict_check = run_manage(
+                root, database_url, "makemigrations", "--check", "--dry-run"
+            )
+            show_result(
+                "before makemigrations --check --dry-run (expected conflict)",
+                conflict_check,
+            )
             assert_failed("makemigrations --check --dry-run", conflict_check)
 
             add_merge_migration(root)
@@ -338,13 +351,21 @@ def main() -> int:
 
             clean_plan = run_manage(root, database_url, "migrate", "--plan")
             show_result("after migrate --plan", clean_plan)
-            clean_check = run_manage(root, database_url, "makemigrations", "--check", "--dry-run")
+            clean_check = run_manage(
+                root, database_url, "makemigrations", "--check", "--dry-run"
+            )
             show_result("after makemigrations --check --dry-run", clean_check)
             if clean_plan.returncode != 0 or clean_check.returncode != 0:
                 raise AssertionError("resolved migration graph is not clean")
 
             columns, row = database_snapshot(database_url)
-            expected_columns = {"id", "label", "created_at", "team_a_code", "team_b_code"}
+            expected_columns = {
+                "id",
+                "label",
+                "created_at",
+                "team_a_code",
+                "team_b_code",
+            }
             expected_row = ("seed", "A-READY", "B-READY")
             print(f"[after snapshot] columns={sorted(columns)}")
             print(f"[after snapshot] seed_row={row}")
@@ -352,10 +373,14 @@ def main() -> int:
                 raise AssertionError(
                     f"unexpected schema/data: columns={columns!r}, row={row!r}"
                 )
-            print("RESULT: conflict reproduced, compatible merge applied, schema/data match expected")
+            print(
+                "RESULT: conflict reproduced, compatible merge applied, schema/data match expected"
+            )
     finally:
         if container is not None and not args.keep_container:
-            subprocess.run(["docker", "rm", "--force", container], check=False, capture_output=True)
+            subprocess.run(
+                ["docker", "rm", "--force", container], check=False, capture_output=True
+            )
         elif container is not None:
             print(f"[container] retained={container}")
     return 0

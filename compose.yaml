@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:18
-    restart: unless-stopped
+    restart: "no"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?copy .env.example to .env}
       POSTGRES_USER: ${POSTGRES_USER:?copy .env.example to .env}
@@ -29,6 +29,7 @@ services:
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS in .env}
       DJANGO_DEPLOYED: ${DJANGO_DEPLOYED:?set DJANGO_DEPLOYED in .env}
       DJANGO_CONNECTION_ROLE: ${DJANGO_CONNECTION_ROLE:?set DJANGO_CONNECTION_ROLE in .env}
+      MICROSOFT_AUTH_MODE: ${MICROSOFT_AUTH_MODE:?set MICROSOFT_AUTH_MODE in .env}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     depends_on:
       db:
@@ -37,7 +38,7 @@ services:
       - "127.0.0.1:${APP_PORT:?set APP_PORT in .env}:8000"
     volumes:
       - .:/workspace
-    command: ["make", "-C", "app", "start"]
+    command: ["make", "-C", "app", "start-asgi"]
 
 volumes:
   greeniteso_postgres_data:

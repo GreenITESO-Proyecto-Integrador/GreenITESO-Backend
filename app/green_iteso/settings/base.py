@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -64,8 +65,15 @@ def database_from_url(
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}
     sslmode = query.get("sslmode", [""])[0]
-    if require_ssl and sslmode != "verify-full":
-        raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
+    channel_binding = query.get("channel_binding", [""])[0]
+    if require_ssl and not (
+        sslmode == "verify-full"
+        or (sslmode == "require" and channel_binding == "require")
+    ):
+        raise RuntimeError(
+            "Deployed PostgreSQL URLs must use sslmode=verify-full or "
+            "sslmode=require with channel_binding=require."
+        )
     if require_ssl:
         deployed_environment = os.environ.get("DJANGO_ENV", "")
         expected_host = canonical_neon_host(deployed_environment, pooled=is_pooled)
@@ -83,8 +91,8 @@ def database_from_url(
         bundle = Path("/etc/ssl/certs/ca-certificates.crt")
         default_ca = str(bundle) if bundle.is_file() else "system"
         options["sslrootcert"] = query.get("sslrootcert", [default_ca])[0] or default_ca
-    if query.get("channel_binding", [""])[0]:
-        options["channel_binding"] = query["channel_binding"][0]
+    if channel_binding:
+        options["channel_binding"] = channel_binding
 
     database: dict[str, object] = {
         "ENGINE": "django.db.backends.postgresql",
@@ -104,23 +112,114 @@ def database_from_url(
 
 SECRET_KEY = required("DJANGO_SECRET_KEY")
 DEPLOYED = required_bool("DJANGO_DEPLOYED")
+LOCAL_DEVELOPMENT = os.environ.get("DJANGO_ENV") == "dev" and not DEPLOYED
 CONNECTION_ROLE = required("DJANGO_CONNECTION_ROLE")
 if CONNECTION_ROLE not in {"app", "direct"}:
     raise RuntimeError("DJANGO_CONNECTION_ROLE must be exactly app or direct.")
 DEBUG = False
 ALLOWED_HOSTS = csv_setting("DJANGO_ALLOWED_HOSTS")
 
+# Only the development middleware uses this setting.
+if LOCAL_DEVELOPMENT:
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in os.environ.get(
+            "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
+        ).split(",")
+        if origin.strip()
+    ]
+else:
+    CORS_ALLOWED_ORIGINS = []
+
 INSTALLED_APPS = [
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
     "django.contrib.staticfiles",
+    "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
+    "drf_spectacular",
     "green_iteso.accounts",
+    "green_iteso.clans",
+    "green_iteso.connections",
     "green_iteso.actions",
     "green_iteso.campaigns",
+    "green_iteso.feed",
+    "green_iteso.notifications",
+    "green_iteso.gamification.apps.GamificationConfig",
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication"
+    ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 50,
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_login": "10/min",
+        "auth_refresh": "30/min",
+        "auth_logout": "30/min",
+    },
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    # A refresh becomes single-use: each redemption blacklists the token it
+    # rotated out, so a stolen (but not yet used) refresh token still works
+    # for the attacker, but the legitimate client's next refresh detects the
+    # theft (its old token is already blacklisted) instead of both silently
+    # sharing one live refresh token indefinitely (T2-11).
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+}
+
+# Microsoft Entra ID login (T2-10). ``mock`` skips Microsoft entirely, so it is
+# only accepted on a local, non-deployed dev process. Tenant and client ids are
+# checked when the first login is attempted, so releases that only run
+# migrations do not need them.
+MICROSOFT_AUTH_MODE = os.environ.get("MICROSOFT_AUTH_MODE", "entra").strip().lower()
+if MICROSOFT_AUTH_MODE not in {"entra", "mock"}:
+    raise RuntimeError("MICROSOFT_AUTH_MODE must be exactly entra or mock.")
+if MICROSOFT_AUTH_MODE == "mock" and (
+    os.environ.get("DJANGO_ENV") != "dev" or DEPLOYED
+):
+    raise RuntimeError(
+        "MICROSOFT_AUTH_MODE=mock is only allowed with DJANGO_ENV=dev and "
+        "DJANGO_DEPLOYED=false."
+    )
+MICROSOFT_TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID", "").strip()
+MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
+ALLOWED_EMAIL_DOMAIN = (
+    os.environ.get("ALLOWED_EMAIL_DOMAIN", "iteso.mx").strip().lower()
+)
+STAFF_EMAILS = [
+    email.strip().lower()
+    for email in os.environ.get("STAFF_EMAILS", "").split(",")
+    if email.strip()
+]
+
+if DEPLOYED:
+    # TLS terminates at the load balancer, which forwards X-Forwarded-Proto.
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "GreenITESO API",
+    "DESCRIPTION": "REST API for the GreenITESO backend.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -130,6 +229,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+if LOCAL_DEVELOPMENT:
+    MIDDLEWARE.insert(1, "green_iteso.core.middleware.DevelopmentCorsMiddleware")
 
 ROOT_URLCONF = "green_iteso.urls"
 TEMPLATES = [
@@ -149,7 +250,20 @@ TEMPLATES = [
 WSGI_APPLICATION = "green_iteso.wsgi.application"
 ASGI_APPLICATION = "green_iteso.asgi.application"
 
+# In-memory layer: events only reach sockets held by the same process. The
+# runtime is therefore pinned to one worker (WEB_CONCURRENCY=1) and the system
+# check notifications.E001 rejects more; several workers or instances need a
+# shared layer (channels-redis) first. See docs/deployment.md.
+CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+
 DATABASE_URL = required("DATABASE_URL")
+if MICROSOFT_AUTH_MODE == "mock" and urlsplit(DATABASE_URL).hostname not in {
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "db",
+}:
+    raise RuntimeError("MICROSOFT_AUTH_MODE=mock requires a local PostgreSQL host.")
 DATABASES = {
     "default": database_from_url(
         DATABASE_URL,

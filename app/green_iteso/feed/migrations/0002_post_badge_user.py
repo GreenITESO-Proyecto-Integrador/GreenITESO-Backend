@@ -5,16 +5,22 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('feed', '0001_initial'),
-        ('gamification', '0001_initial'),
+        ("feed", "0001_initial"),
+        ("gamification", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='post',
-            name='badge_user',
-            field=models.ForeignKey(blank=True, db_column='badge_user_id', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='feed_posts', to='gamification.userbadge'),
+            model_name="post",
+            name="badge_user",
+            field=models.ForeignKey(
+                blank=True,
+                db_column="badge_user_id",
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="feed_posts",
+                to="gamification.userbadge",
+            ),
         ),
     ]

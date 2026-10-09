@@ -17,6 +17,7 @@ import pytest
 from django.db import close_old_connections, connection, transaction
 from django.db.models import F
 from django.utils import timezone
+from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -24,7 +25,10 @@ from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.actions.selectors import count_user_action_logs_for_local_day
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
+from green_iteso.gamification.models import Badge
 from green_iteso.notifications.models import Notification
+
+from .helpers import assert_single_badge_award
 
 
 @pytest.mark.django_db
@@ -111,6 +115,58 @@ def test_approved_action_credits_available_points_alongside_total_points() -> No
     user.profile.refresh_from_db()
     assert user.profile.total_points == 10
     assert user.profile.available_points == 10
+
+
+@pytest.mark.django_db
+def test_pending_audit_can_be_decided_only_once() -> None:
+    user = User.objects.create_user(email="pending@iteso.mx", password="local-only")
+    admin = User.objects.create_user(
+        email="reviewer@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    clan = Clan.objects.create(name="Audit test clan", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(user=user, institutional_clan=clan)
+    category = ActionCategory.objects.create(code="AUDIT", name="Audit")
+    action = ActionMaster.objects.create(
+        code="PHOTO_AUDIT",
+        category=category,
+        name="Photo audit",
+        description="Evidence requiring review",
+        points=10,
+        validation_type=ActionMaster.ValidationType.PHOTO,
+    )
+    log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key=str(uuid.uuid4()),
+        points_awarded=10,
+        status=ActionLog.Status.PENDING_AUDIT,
+    )
+    factory = APIRequestFactory()
+    view = ActionLogAuditView.as_view()
+
+    def approve() -> Response:
+        request = factory.patch("/api/v1/action-logs/audit/", {"status": "APPROVED"})
+        force_authenticate(request, user=admin)
+        return view(request, log_id=str(log.pk))
+
+    for payload in ({"status": "UNKNOWN"}, {"status": "REJECTED"}, {}):
+        invalid_request = factory.patch(
+            "/api/v1/action-logs/audit/", payload, format="json"
+        )
+        force_authenticate(invalid_request, user=admin)
+        assert view(invalid_request, log_id=str(log.pk)).status_code == 400
+        log.refresh_from_db()
+        assert log.status == ActionLog.Status.PENDING_AUDIT
+        assert log.reviewed_at is None
+
+    assert approve().status_code == 200
+    assert approve().status_code == 404
+    log.refresh_from_db()
+    profile.refresh_from_db()
+    assert log.reviewed_at is not None
+    assert log.reviewed_by_id == admin.pk
+    assert profile.total_points == profile.available_points == 10
 
 
 @pytest.mark.django_db
@@ -466,6 +522,61 @@ def test_action_credits_institutional_clan_if_soft_deleted_during_submission() -
     assert clan.total_points == action.points
 
 
+@pytest.mark.django_db
+@pytest.mark.parametrize("operation", ("create", "approve"))
+def test_action_crossing_points_threshold_awards_badge(operation: str) -> None:
+    """Badge eligibility must use the credited balance on both approval paths."""
+    user = User.objects.create_user(email="threshold@iteso.mx", password="local-only")
+    admin = User.objects.create_user(
+        email="threshold-reviewer@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    clan = Clan.objects.create(name="Badge clan", type=Clan.ClanType.INSTITUTIONAL)
+    profile = UserProfile.objects.create(
+        user=user, institutional_clan=clan, total_points=90, available_points=90
+    )
+    category = ActionCategory.objects.create(code="BADGE", name="Badge")
+    action = ActionMaster.objects.create(
+        code="BADGE_THRESHOLD",
+        category=category,
+        name="Threshold action",
+        points=10,
+        validation_type=(
+            ActionMaster.ValidationType.PHOTO
+            if operation == "approve"
+            else ActionMaster.ValidationType.NONE
+        ),
+    )
+    badge = Badge.objects.create(name="100 points", points_required=100)
+    factory = APIRequestFactory()
+    if operation == "create":
+        request = factory.post(
+            "/api/v1/action-logs/",
+            {"action_id": str(action.pk), "idempotency_key": str(uuid.uuid4())},
+            format="json",
+        )
+        force_authenticate(request, user=user)
+        response = ActionLogCreateView.as_view()(request)
+        assert response.status_code == 201
+    else:
+        log = ActionLog.objects.create(
+            user=user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=10,
+            status=ActionLog.Status.PENDING_AUDIT,
+        )
+        request = factory.patch(
+            "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
+        )
+        force_authenticate(request, user=admin)
+        response = ActionLogAuditView.as_view()(request, log_id=str(log.pk))
+        assert response.status_code == 200
+    profile.refresh_from_db()
+    assert profile.total_points == profile.available_points == 100
+    assert_single_badge_award(user, badge)
+
+
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
     """Two admins racing on one pending log must not grant points twice."""
@@ -541,9 +652,6 @@ def test_concurrent_audits_credit_a_pending_log_only_once() -> None:
                             if monitor.fetchone() == ("Lock",):
                                 second_blocked.set()
                                 break
-                        # Negative control: an unlocked lookup lets the peer
-                        # commit first, so the buffered pending decision can
-                        # credit twice instead of merely timing out here.
                         if second_finished.is_set():
                             break
                         sleep(0.01)

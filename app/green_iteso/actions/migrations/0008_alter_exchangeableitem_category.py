@@ -4,15 +4,23 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('actions', '0007_add_one_cosmetic'),
+        ("actions", "0007_add_one_cosmetic"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='exchangeableitem',
-            name='category',
-            field=models.CharField(choices=[('FRAME', 'Avatar Frame'), ('BACKGROUND', 'Profile Background'), ('THEME', 'Profile Theme'), ('OTHER', 'Other')], default='FRAME', max_length=20),
+            model_name="exchangeableitem",
+            name="category",
+            field=models.CharField(
+                choices=[
+                    ("FRAME", "Avatar Frame"),
+                    ("BACKGROUND", "Profile Background"),
+                    ("THEME", "Profile Theme"),
+                    ("OTHER", "Other"),
+                ],
+                default="FRAME",
+                max_length=20,
+            ),
         ),
     ]

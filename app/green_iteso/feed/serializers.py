@@ -94,7 +94,11 @@ class PostSerializer(serializers.ModelSerializer):
             return None
 
         request = self.context.get("request")
-        if request and request.user.is_authenticated and value.user_id != request.user.pk:
+        if (
+            request
+            and request.user.is_authenticated
+            and value.user_id != request.user.pk
+        ):
             raise serializers.ValidationError(
                 "You can only attach a badge that you have earned."
             )

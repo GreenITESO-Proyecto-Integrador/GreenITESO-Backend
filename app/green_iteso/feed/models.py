@@ -84,7 +84,11 @@ class Post(models.Model):
             raise ValidationError({"content": "Content cannot be empty."})
         if self.post_type not in PostType.values:
             raise ValidationError({"post_type": "Invalid post type specified."})
-        if self.badge_user and self.author and self.badge_user.user_id != self.author_id:
+        if (
+            self.badge_user
+            and self.author
+            and self.badge_user.user_id != self.author_id
+        ):
             raise ValidationError(
                 {"badge_user": "The attached badge must belong to the post author."}
             )

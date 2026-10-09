@@ -65,8 +65,15 @@ def database_from_url(
     query = parse_qs(parsed.query)
     options: dict[str, str] = {}
     sslmode = query.get("sslmode", [""])[0]
-    if require_ssl and sslmode != "verify-full":
-        raise RuntimeError("Deployed PostgreSQL URLs must include sslmode=verify-full.")
+    channel_binding = query.get("channel_binding", [""])[0]
+    if require_ssl and not (
+        sslmode == "verify-full"
+        or (sslmode == "require" and channel_binding == "require")
+    ):
+        raise RuntimeError(
+            "Deployed PostgreSQL URLs must use sslmode=verify-full or "
+            "sslmode=require with channel_binding=require."
+        )
     if require_ssl:
         deployed_environment = os.environ.get("DJANGO_ENV", "")
         expected_host = canonical_neon_host(deployed_environment, pooled=is_pooled)
@@ -84,8 +91,8 @@ def database_from_url(
         bundle = Path("/etc/ssl/certs/ca-certificates.crt")
         default_ca = str(bundle) if bundle.is_file() else "system"
         options["sslrootcert"] = query.get("sslrootcert", [default_ca])[0] or default_ca
-    if query.get("channel_binding", [""])[0]:
-        options["channel_binding"] = query["channel_binding"][0]
+    if channel_binding:
+        options["channel_binding"] = channel_binding
 
     database: dict[str, object] = {
         "ENGINE": "django.db.backends.postgresql",

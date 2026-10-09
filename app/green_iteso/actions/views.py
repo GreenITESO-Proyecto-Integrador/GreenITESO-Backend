@@ -202,7 +202,7 @@ class ActionLogCreateView(views.APIView):
 
             if log_status == ActionLog.Status.APPROVED:
                 # Use database-side increments so concurrent approved actions
-                # and a shared-dev seed cannot overwrite each other's balance.
+                # cannot overwrite each other's balance.
                 type(profile).objects.filter(pk=profile.pk).update(
                     total_points=F("total_points") + action_def.points,
                     available_points=F("available_points") + action_def.points,
@@ -219,6 +219,10 @@ class ActionLogCreateView(views.APIView):
                     type(private_clan).all_objects.filter(pk=private_clan.pk).update(
                         total_points=F("total_points") + action_def.points
                     )
+
+                user.profile.refresh_from_db(
+                    fields=["total_points", "available_points"]
+                )
                 check_and_award_badges(user)
                 notify_mission_progress(action_log)
 
@@ -305,7 +309,7 @@ class ActionLogAuditView(views.APIView):
                         pk=action_log.credited_private_clan_id
                     ).update(total_points=F("total_points") + points)
 
-                profile.refresh_from_db()
+                profile.refresh_from_db(fields=["total_points", "available_points"])
                 check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
 

@@ -18,16 +18,16 @@ def create_cosmetic(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> None
     - points_cost: 10 (the positive minimum required by the ``exchangeable_points_cost_positive`` constraint).
     """
     del schema_editor
-    ExchangeableItem: Any = apps.get_model('actions', 'ExchangeableItem')
+    ExchangeableItem: Any = apps.get_model("actions", "ExchangeableItem")
     # Evitamos duplicados verificando la existencia del ``key``.
-    if not ExchangeableItem.objects.filter(key='1').exists():
+    if not ExchangeableItem.objects.filter(key="1").exists():
         ExchangeableItem.objects.create(
-            key='1',
-            name='Fondo Ecologico',
-            description='Cosmético de fondo verde.',
-            category='BACKGROUND',
+            key="1",
+            name="Fondo Ecologico",
+            description="Cosmético de fondo verde.",
+            category="BACKGROUND",
             points_cost=10,
-            image_url='https://wallpaperaccess.com/full/9378120.jpg',
+            image_url="https://wallpaperaccess.com/full/9378120.jpg",
             is_active=True,
         )
 
@@ -38,13 +38,13 @@ def eliminate_cosmetic(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> N
     Executed when reverting the migration.
     """
     del schema_editor
-    ExchangeableItem: Any = apps.get_model('actions', 'ExchangeableItem')
-    ExchangeableItem.objects.filter(key='other_special').delete()
+    ExchangeableItem: Any = apps.get_model("actions", "ExchangeableItem")
+    ExchangeableItem.objects.filter(key="other_special").delete()
 
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('actions', '0006_reward_rewardredemption'),
+        ("actions", "0006_reward_rewardredemption"),
     ]
 
     operations = [

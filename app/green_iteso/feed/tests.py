@@ -103,6 +103,7 @@ class PostModelTests(APITestCase):
 
 class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-instance-attributes
     """Integration tests for feed REST API endpoints."""
+
     def setUp(self) -> None:
         self.author = User.objects.create_user(
             email="author@iteso.mx",

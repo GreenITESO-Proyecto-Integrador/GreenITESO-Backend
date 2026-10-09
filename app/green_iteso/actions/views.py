@@ -220,7 +220,9 @@ class ActionLogCreateView(views.APIView):
                         total_points=F("total_points") + action_def.points
                     )
 
-                user.profile.refresh_from_db(fields=["total_points", "available_points"])
+                user.profile.refresh_from_db(
+                    fields=["total_points", "available_points"]
+                )
                 check_and_award_badges(user)
                 notify_mission_progress(action_log)
 

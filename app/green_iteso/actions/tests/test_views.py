@@ -573,9 +573,12 @@ def test_action_crossing_points_threshold_awards_badge(operation: str) -> None:
     profile.refresh_from_db()
     assert profile.total_points == profile.available_points == 100
     assert UserBadge.objects.filter(user=user, badge=badge).count() == 1
-    assert Notification.objects.filter(
-        user=user, notification_type=Notification.NotificationType.BADGE_EARNED
-    ).count() == 1
+    assert (
+        Notification.objects.filter(
+            user=user, notification_type=Notification.NotificationType.BADGE_EARNED
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db(transaction=True)

@@ -33,6 +33,8 @@ class RevertWorld(NamedTuple):
 def world_fixture() -> RevertWorld:
     user = create_student()
     action = create_bike_action()
+    action.daily_limit = 3
+    action.save(update_fields=["daily_limit"])
     return RevertWorld(user, create_admin(), action, create_mission_for(user, action))
 
 

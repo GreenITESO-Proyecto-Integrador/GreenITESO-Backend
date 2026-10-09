@@ -5,9 +5,9 @@ import pytest
 from green_iteso.accounts.models import UserProfile
 from green_iteso.actions.models import ActionMaster
 from green_iteso.gamification.models import Badge, UserBadge
-from green_iteso.notifications.models import Notification
 
 from .helpers import (
+    assert_single_badge_award,
     audit_action_log,
     create_admin,
     create_bike_action,
@@ -40,10 +40,4 @@ def test_credit_awards_badge_at_new_points_threshold(requires_audit: bool) -> No
 
     profile = UserProfile.objects.get(user=user)
     assert (profile.total_points, profile.available_points) == (100, 100)
-    assert UserBadge.objects.filter(user=user, badge=badge).count() == 1
-    assert (
-        Notification.objects.filter(
-            user=user, notification_type=Notification.NotificationType.BADGE_EARNED
-        ).count()
-        == 1
-    )
+    assert_single_badge_award(user, badge)

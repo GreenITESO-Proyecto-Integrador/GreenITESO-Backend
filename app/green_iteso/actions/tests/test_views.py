@@ -25,8 +25,10 @@ from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.actions.selectors import count_user_action_logs_for_local_day
 from green_iteso.actions.views import ActionLogAuditView, ActionLogCreateView
 from green_iteso.clans.services import dissolve_clan
-from green_iteso.gamification.models import Badge, UserBadge
+from green_iteso.gamification.models import Badge
 from green_iteso.notifications.models import Notification
+
+from .helpers import assert_single_badge_award
 
 
 @pytest.mark.django_db
@@ -572,13 +574,7 @@ def test_action_crossing_points_threshold_awards_badge(operation: str) -> None:
         assert response.status_code == 200
     profile.refresh_from_db()
     assert profile.total_points == profile.available_points == 100
-    assert UserBadge.objects.filter(user=user, badge=badge).count() == 1
-    assert (
-        Notification.objects.filter(
-            user=user, notification_type=Notification.NotificationType.BADGE_EARNED
-        ).count()
-        == 1
-    )
+    assert_single_badge_award(user, badge)
 
 
 @pytest.mark.django_db(transaction=True)

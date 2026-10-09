@@ -12,6 +12,8 @@ from rest_framework.test import APIClient
 from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.actions.models import ActionCategory, ActionMaster
 from green_iteso.campaigns.models import Campaign, CampaignParticipant, Mission
+from green_iteso.gamification.models import Badge, UserBadge
+from green_iteso.notifications.models import Notification
 
 ACTION_LOGS_URL = "/api/v1/action-logs/"
 
@@ -87,3 +89,14 @@ def audit_action_log(
     client = APIClient()
     client.force_authenticate(admin)
     return client.patch(f"{ACTION_LOGS_URL}{log_id}/audit/", payload, format="json")
+
+
+def assert_single_badge_award(user: User, badge: Badge) -> None:
+    """Assert ``badge`` was granted once and announced with one notification."""
+    assert UserBadge.objects.filter(user=user, badge=badge).count() == 1
+    assert (
+        Notification.objects.filter(
+            user=user, notification_type=Notification.NotificationType.BADGE_EARNED
+        ).count()
+        == 1
+    )

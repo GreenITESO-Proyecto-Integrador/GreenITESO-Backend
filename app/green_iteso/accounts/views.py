@@ -25,6 +25,7 @@ from .models import User
 from .selectors import (
     MetricsFilters,
     get_ecological_profile,
+    get_impact_trend,
     get_profile_metrics,
     get_user_by_id,
     list_users,
@@ -32,6 +33,7 @@ from .selectors import (
 from .serializers import (
     ChangeRoleRequestSerializer,
     EcologicalProfileSerializer,
+    ImpactTrendPointSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
     ProfileMetricsQuerySerializer,
@@ -294,3 +296,19 @@ class ProfileMetricsView(APIView):
         )
         metrics = get_profile_metrics(request.user, filters)
         return Response(ProfileMetricsSerializer(metrics).data)
+
+
+class ImpactTrendView(APIView):
+    """Caller's own weekly impact totals for the last 4 ISO weeks.
+
+    Self-scoped only, same as ``EcologicalProfileView``. Feeds a dashboard
+    trend chart: a fixed-size array (one entry per week, zero-filled) rather
+    than a paginated collection, since the client always wants exactly
+    ``IMPACT_TREND_WEEKS`` points to plot.
+    """
+
+    @extend_schema(responses=ImpactTrendPointSerializer(many=True))
+    def get(self, request: Request) -> Response:
+        """Return the last 4 weeks of approved-action impact, oldest first."""
+        points = get_impact_trend(request.user)
+        return Response(ImpactTrendPointSerializer(points, many=True).data)

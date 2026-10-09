@@ -7,6 +7,7 @@ from rest_framework.routers import SimpleRouter
 
 from .views import (
     EcologicalProfileView,
+    ImpactTrendView,
     LoginView,
     LogoutView,
     ProfileMetricsView,
@@ -23,5 +24,10 @@ urlpatterns = [
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("profile/me/", EcologicalProfileView.as_view(), name="profile-me"),
     path("profile/me/metrics/", ProfileMetricsView.as_view(), name="profile-metrics"),
+    path(
+        "profile/me/impact-trend/",
+        ImpactTrendView.as_view(),
+        name="profile-impact-trend",
+    ),
     *router.urls,
 ]

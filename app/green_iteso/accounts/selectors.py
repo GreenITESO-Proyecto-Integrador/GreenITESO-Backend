@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal, NamedTuple
 
 from django.db.models import Count, DateField, QuerySet, Sum
 from django.db.models.functions import TruncMonth, TruncWeek
+from django.utils import timezone
 
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import Campaign
@@ -317,3 +318,63 @@ def get_profile_metrics(user: User, filters: MetricsFilters) -> ProfileMetrics:
             finished_campaigns=campaigns.distinct().count(),
         ),
     )
+
+
+IMPACT_TREND_WEEKS = 4
+
+
+@dataclass(frozen=True)
+class ImpactTrendPoint:
+    """One week's worth of the caller's own approved-action impact totals."""
+
+    week_start: date
+    co2_kg: Decimal
+    water_liters: Decimal
+    plastic_kg: Decimal
+
+
+def get_impact_trend(
+    user: User, *, weeks: int = IMPACT_TREND_WEEKS
+) -> list[ImpactTrendPoint]:
+    """Return ``user``'s own weekly impact totals for the last ``weeks`` ISO weeks.
+
+    Weeks are Monday-start (``TruncWeek``'s default) and the most recent one
+    is always the current, possibly partial, week. A week with no approved
+    actions still appears, summed to zero -- a trend chart needs one point
+    per week regardless of activity to plot a continuous x-axis, the same
+    reasoning ``get_ecological_profile`` applies by coalescing a ``None`` sum
+    to zero for an all-time total.
+    """
+    today = timezone.localdate()
+    current_week_start = today - timedelta(days=today.weekday())
+    week_starts = [
+        current_week_start - timedelta(weeks=offset)
+        for offset in range(weeks - 1, -1, -1)
+    ]
+
+    rows = (
+        ActionLog.objects.filter(
+            user=user,
+            status=ActionLog.Status.APPROVED,
+            created_at__date__gte=week_starts[0],
+        )
+        .annotate(week=TruncWeek("created_at"))
+        .values("week")
+        .annotate(
+            co2_kg=Sum("co2_kg_factor_snapshot"),
+            water_liters=Sum("water_liters_factor_snapshot"),
+            plastic_kg=Sum("plastic_kg_factor_snapshot"),
+        )
+    )
+    totals_by_week = {row["week"].date(): row for row in rows}
+
+    zero = Decimal("0")
+    return [
+        ImpactTrendPoint(
+            week_start=week_start,
+            co2_kg=totals_by_week.get(week_start, {}).get("co2_kg") or zero,
+            water_liters=totals_by_week.get(week_start, {}).get("water_liters") or zero,
+            plastic_kg=totals_by_week.get(week_start, {}).get("plastic_kg") or zero,
+        )
+        for week_start in week_starts
+    ]

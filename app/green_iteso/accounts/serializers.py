@@ -231,6 +231,15 @@ class ProfileMetricsSerializer(serializers.Serializer):  # pylint: disable=abstr
     achievements = AchievementMetricsSerializer()
 
 
+class ImpactTrendPointSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """One week of the caller's own approved-action impact totals."""
+
+    week_start = serializers.DateField()
+    co2_kg = serializers.DecimalField(max_digits=12, decimal_places=3)
+    water_liters = serializers.DecimalField(max_digits=12, decimal_places=3)
+    plastic_kg = serializers.DecimalField(max_digits=12, decimal_places=3)
+
+
 def _validate_avatar_url(value: str) -> None:
     """Sanity-check a client-supplied avatar URL (T2-21).
 

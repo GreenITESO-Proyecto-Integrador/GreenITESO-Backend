@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "status": "DRAFT",
+  "categories": [
+    {
+      "code": "draft-mobility",
+      "name": "Draft mobility",
+      "description": "Provisional local fixture; requires product and institutional approval.",
+      "icon": "bike"
+    },
+    {
+      "code": "draft-waste",
+      "name": "Draft waste reduction",
+      "description": "Provisional local fixture; requires product and institutional approval.",
+      "icon": "recycle"
+    },
+    {
+      "code": "draft-water",
+      "name": "Draft water care",
+      "description": "Provisional local fixture; requires product and institutional approval.",
+      "icon": "water"
+    }
+  ],
+  "actions": [
+    {
+      "code": "draft-bike-trip",
+      "category_code": "draft-mobility",
+      "name": "Draft bicycle trip",
+      "description": "Synthetic declarative action for local development only.",
+      "points": 1,
+      "daily_limit": 3,
+      "validation_type": "NONE",
+      "co2_kg_factor": "0.100",
+      "water_liters_factor": "0.000",
+      "plastic_kg_factor": "0.000",
+      "is_active": true
+    },
+    {
+      "code": "draft-refill-bottle",
+      "category_code": "draft-water",
+      "name": "Draft bottle refill",
+      "description": "Synthetic declarative action for local development only.",
+      "points": 2,
+      "daily_limit": 4,
+      "validation_type": "NONE",
+      "co2_kg_factor": "0.000",
+      "water_liters_factor": "1.000",
+      "plastic_kg_factor": "0.010",
+      "is_active": true
+    },
+    {
+      "code": "draft-waste-sort-photo",
+      "category_code": "draft-waste",
+      "name": "Draft waste sorting photo",
+      "description": "Synthetic photo action for local development only.",
+      "points": 3,
+      "daily_limit": 1,
+      "validation_type": "PHOTO",
+      "co2_kg_factor": "0.050",
+      "water_liters_factor": "0.000",
+      "plastic_kg_factor": "0.025",
+      "is_active": true
+    }
+  ],
+  "institutional_clans": [
+    {
+      "key": "draft-engineering",
+      "name": "Draft Engineering",
+      "description": "Synthetic institutional clan for local development.",
+      "career": "DRAFT-ENGINEERING",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    },
+    {
+      "key": "draft-business",
+      "name": "Draft Business",
+      "description": "Synthetic institutional clan for local development.",
+      "career": "DRAFT-BUSINESS",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    },
+    {
+      "key": "draft-design",
+      "name": "Draft Design",
+      "description": "Synthetic institutional clan for local development.",
+      "career": "DRAFT-DESIGN",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    }
+  ]
+}

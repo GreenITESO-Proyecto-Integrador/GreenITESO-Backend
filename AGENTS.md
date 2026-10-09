@@ -20,7 +20,10 @@ generales de las skills vendorizadas:
 
 La página 9 del ERD fue confirmada como esquema aprobado el 2026-09-11:
 P3 fija los FKs congelados, P8 reserva `podium_snapshot` y P9 conserva
-`campaign` nullable. Las políticas de servicio de esos puntos y las decisiones
-P10/P11 siguen pendientes; no se deben presentar como decisiones del esquema.
+`campaign` nullable. Las políticas de servicio de esos puntos y P11 siguen
+pendientes. Fernando ratificó P10 el 2026-09-25: día calendario de
+`America/Mexico_City` y todos los registros enviados, incluidos `REJECTED`,
+consumen el límite diario; la regla semanal se difiere. No se debe presentar
+como código fusionado o desplegado hasta verificarlo en la rama objetivo.
 Las implementaciones exploratorias de esas políticas permanecen en borradores
 identificados y no se aplican a ambientes compartidos sin registrar la decisión.

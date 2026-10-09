@@ -1,8 +1,16 @@
 name: Django tests
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -31,8 +39,11 @@ jobs:
       DATABASE_URL_UNPOOLED: postgresql://greeniteso:greeniteso-ci-password@127.0.0.1:5432/greeniteso
       MICROSOFT_AUTH_MODE: mock
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
       - name: Install dependencies
@@ -41,5 +52,7 @@ jobs:
         run: python app/manage.py migrate --no-input
       - name: Check migration state
         run: python app/manage.py makemigrations --check --dry-run
+      - name: Rehearse concurrent migration-leaf conflict
+        run: python scripts/rehearse-migration-conflict.py
       - name: Run tests
         run: pytest

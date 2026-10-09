@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import traceback
+import uuid
 from collections.abc import Callable
 from io import StringIO
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -13,10 +15,81 @@ from django.core.management.base import CommandError
 from django.db import connection, transaction
 
 from green_iteso.accounts.management.commands.db_smoke import (
+    AppGrantMismatchError,
+    _check_app_grants,
     _is_missing_schema,
     _set_bounded_options,
     _set_transaction_bounds,
 )
+
+
+def test_grant_smoke_rejects_a_missing_managed_model_table() -> None:
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (True, False)
+    cursor.fetchall.side_effect = [
+        [("accounts_user", True, True, True, True, False)],
+        [(True,)],
+    ]
+    with patch(
+        "green_iteso.accounts.management.commands.db_smoke._expected_managed_tables",
+        return_value={"accounts_user", "feed_posts"},
+    ):
+        with pytest.raises(AppGrantMismatchError):
+            _check_app_grants(cursor)
+
+
+def test_grant_smoke_rejects_missing_sequences() -> None:
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (True, False)
+    cursor.fetchall.side_effect = [
+        [
+            ("accounts_user", True, True, True, True, False),
+            ("django_migrations", True, False, False, False, False),
+        ],
+        [],
+    ]
+    with patch(
+        "green_iteso.accounts.management.commands.db_smoke._expected_managed_tables",
+        return_value={"accounts_user"},
+    ):
+        with pytest.raises(AppGrantMismatchError):
+            _check_app_grants(cursor)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("ledger_writable", [False, True])
+def test_grant_smoke_requires_read_only_migration_ledger(ledger_writable: bool) -> None:
+    """Exercise the SQL privilege checks with an actual NOLOGIN role."""
+    role = f"smoke_app_{uuid.uuid4().hex}"
+    with connection.cursor() as cursor:
+        cursor.execute(f'CREATE ROLE "{role}" NOLOGIN')
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+            cursor.execute(
+                f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{role}"'
+            )
+            if not ledger_writable:
+                cursor.execute(
+                    f'REVOKE INSERT, UPDATE, DELETE ON TABLE public.django_migrations FROM "{role}"'
+                )
+            cursor.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
+            cursor.execute(f'SET ROLE "{role}"')
+            try:
+                if ledger_writable:
+                    with pytest.raises(AppGrantMismatchError):
+                        _check_app_grants(cursor)
+                else:
+                    table_count, sequence_count = _check_app_grants(cursor)
+            finally:
+                cursor.execute("RESET ROLE")
+        if not ledger_writable:
+            assert table_count >= 23
+            assert sequence_count >= 9
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute(f'DROP OWNED BY "{role}"')
+            cursor.execute(f'DROP ROLE "{role}"')
 
 
 @pytest.mark.django_db(transaction=True)
@@ -56,6 +129,14 @@ def test_db_smoke_emits_no_dml() -> None:
         statement.lstrip().split(maxsplit=1)[0].upper() in {"SELECT", "SET"}
         for statement in statements
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_db_smoke_rejects_privileged_owner_when_app_grants_are_required() -> None:
+    # The disposable test database is owned by the test role. A release app
+    # role must not inherit schema CREATE or table TRUNCATE privileges.
+    with pytest.raises(CommandError, match="GRANT_MISMATCH"):
+        call_command("db_smoke", "--timeout", "2", "--check-grants", stdout=StringIO())
 
 
 @pytest.mark.django_db(transaction=True)

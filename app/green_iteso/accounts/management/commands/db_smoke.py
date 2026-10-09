@@ -13,6 +13,7 @@ from django.db import DatabaseError, OperationalError, connection, transaction
 
 from green_iteso.accounts.models import User
 from green_iteso.actions.models import ActionLog
+from green_iteso.core.database import client_tls_state
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_TIMEOUT_SECONDS = 30.0
@@ -73,18 +74,7 @@ def _is_missing_schema(error: BaseException) -> bool:
 
 def _client_ssl_status() -> str:
     """Report libpq's client-side TLS state, never the proxy's server view."""
-    raw_connection = connection.connection
-    if raw_connection is None:
-        return "desconocido"
-    # psycopg 3 exposes libpq's client TLS state on PGconn.  ``pg_stat_ssl``
-    # describes the server-side leg and is misleading behind a Neon proxy.
-    pgconn = getattr(raw_connection, "pgconn", None)
-    ssl_in_use = getattr(pgconn, "ssl_in_use", None)
-    if ssl_in_use is None:
-        # Keep a compatibility fallback for adapters exposing only ``info``;
-        # the installed psycopg 3 driver takes the PGconn path above.
-        info = getattr(raw_connection, "info", None)
-        ssl_in_use = getattr(info, "ssl_in_use", None)
+    ssl_in_use = client_tls_state(connection.connection)
     if ssl_in_use is True:
         return "activo"
     if ssl_in_use is False:

@@ -135,6 +135,8 @@ def test_rejecting_pending_log_does_not_touch_points(world: AuditWorld) -> None:
 
 @pytest.mark.django_db
 def test_rejected_log_cannot_be_revoked_twice(world: AuditWorld) -> None:
+    world.action.daily_limit = 2
+    world.action.save(update_fields=["daily_limit"])
     log_id = _log_approved_action(world)
     _log_approved_action(world)
     assert _audit(world, log_id, "REJECTED") == 200

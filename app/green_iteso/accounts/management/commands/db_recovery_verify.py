@@ -6,7 +6,7 @@ import hmac
 import json
 import os
 import stat
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -211,7 +211,7 @@ def _snapshot(pre_id: str, post_id: str, marker_key: bytes) -> dict[str, Any]:
     table_counts, table_fingerprints = _table_integrity()
     return {
         "format": BASELINE_VERSION,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "migrations": applied,
         "pending_code_migrations": _pending_code_migrations(applied),
         "tables": table_counts,

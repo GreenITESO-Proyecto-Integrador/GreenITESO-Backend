@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -28,8 +28,8 @@ def test_timezone_contract() -> None:
 
 def test_local_calendar_date_changes_at_mexico_city_midnight() -> None:
     """UTC timestamps on either side of local midnight belong to distinct days."""
-    before_midnight = datetime(2026, 9, 24, 5, 59, 59, tzinfo=timezone.utc)
-    at_midnight = datetime(2026, 9, 24, 6, 0, 0, tzinfo=timezone.utc)
+    before_midnight = datetime(2026, 9, 24, 5, 59, 59, tzinfo=UTC)
+    at_midnight = datetime(2026, 9, 24, 6, 0, 0, tzinfo=UTC)
 
     assert django_timezone.localdate(before_midnight) == date(2026, 9, 23)
     assert django_timezone.localdate(at_midnight) == date(2026, 9, 24)

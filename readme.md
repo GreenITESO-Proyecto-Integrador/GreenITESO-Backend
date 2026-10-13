@@ -22,6 +22,6 @@ También puedes abrir el repositorio en el Dev Container. La guía completa de m
 - Django migrations es la única fuente ejecutable del esquema.
 - CI y cada desarrollador usan una base PostgreSQL aislada; SQLite no es compatible con las pruebas de concurrencia.
 - Neon tiene solamente las ramas cloud `dev`, `staging` y `production`; las ramas de Git no contienen datos.
-- Firebase Authentication es el proveedor acordado; GCS privado es la propuesta P1 y aún requiere integración.
+- Microsoft Entra ID es el proveedor de login institucional @iteso.mx (T2-10; ver [docs/auth-microsoft-entra.md](docs/auth-microsoft-entra.md)). GCS privado es la propuesta P1 y aún requiere integración.
 
 No compartas URLs con contraseñas, tokens, fotos o datos reales en commits, issues o logs.

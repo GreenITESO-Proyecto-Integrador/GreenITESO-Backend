@@ -1,24 +1,54 @@
-.PHONY: start migrate migrate-direct makemigrations-check test lint gunicorn
+.PHONY: start start-asgi migrate migrate-direct load-catalog seed-reference bootstrap-dev seed-demo makemigrations-check test lint gunicorn gunicorn-asgi
 
 ENV_FILE ?= ../.env
 ENV_PATH := $(abspath $(ENV_FILE))
 DJANGO = if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; python manage.py
 
+# --- Development Servers ---
+
+# Standard WSGI development server
 start:
 	@$(DJANGO) runserver 0.0.0.0:8000
 
-gunicorn:
+# Local ASGI development server with auto-reload
+start-asgi:
+	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; uvicorn green_iteso.asgi:application --host 0.0.0.0 --port $${PORT:-8000} --reload
+
+# --- Production Servers ---
+
+# Production ASGI server (Gunicorn process manager + Uvicorn async workers).
+# Pinned to one worker: the channel layer is in-memory, so real-time
+# notifications only reach sockets in the same process. `check --deploy` fails
+# if WEB_CONCURRENCY > 1 without a shared layer. See docs/deployment.md.
+gunicorn-asgi:
 	@$(DJANGO) check --deploy
-	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; gunicorn green_iteso.wsgi:application --bind 0.0.0.0:$${PORT:-8000} --workers $${WEB_CONCURRENCY:-2} --threads $${GUNICORN_THREADS:-2} --timeout $${GUNICORN_TIMEOUT:-60}
+	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; gunicorn green_iteso.asgi:application \
+		-k uvicorn.workers.UvicornWorker \
+		--bind 0.0.0.0:$${PORT:-8000} \
+		--workers $${WEB_CONCURRENCY:-1} \
+		--timeout $${GUNICORN_TIMEOUT:-60}
+
+# Default production alias pointing to the ASGI runner
+gunicorn: gunicorn-asgi
+
+# --- Database & Migrations ---
 
 migrate:
 	@$(DJANGO) migrate
 
 migrate-direct:
-	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; DATABASE_URL="$${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}" DJANGO_CONNECTION_ROLE=direct python manage.py migrate
+	@if [ -z "$$DJANGO_ENV" ]; then set -a; . $(ENV_PATH); set +a; fi; DATABASE_URL="$${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}" DJANGO_CONNECTION_ROLE=direct python manage.py migrate --no-input
+
+load-catalog seed-reference:
+	@$(DJANGO) load_catalog
+
+bootstrap-dev seed-demo:
+	@$(DJANGO) bootstrap_dev
 
 makemigrations-check:
 	@$(DJANGO) makemigrations --check --dry-run
+
+# --- Testing & Quality ---
 
 test:
 	@$(DJANGO) check

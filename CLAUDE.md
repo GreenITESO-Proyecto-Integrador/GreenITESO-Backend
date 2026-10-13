@@ -23,11 +23,11 @@ El esquema lo declaran los modelos y las migraciones de Django. Antes de la prim
 
 No edites ni renombres migraciones aplicadas, no uses `--fake` para ocultar drift y no ejecutes `makemigrations` ni `migrate` desde el arranque de Gunicorn. El job de release aplica una vez las migraciones con la conexión directa antes de cambiar el tráfico.
 
-Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P10/P11 siguen pendientes; el código que explore sus propuestas permanece en borrador y no se aplica a ambientes compartidos.
+Los dueños de dominio son E2 (identidad, perfiles y clanes), E1 (acciones, catálogo y gamificación) y E3 (campañas, feed y notificaciones). Coordina las dependencias cruzadas antes de crear una migración de merge. P3/P8/P9/P11 siguen pendientes en sus políticas de servicio. Fernando ratificó P10 el 2026-09-25: día calendario `America/Mexico_City` y todos los registros enviados (incluidos `REJECTED`) consumen el límite diario; el límite semanal se difiere. No confundir esta decisión con código fusionado o desplegado.
 
 ## Servicios externos
 
-La autenticación acordada de staging/production es Firebase Authentication. GCS privado es la propuesta P1 y su integración sigue pendiente. Neon solo aporta PostgreSQL en `dev`, `staging` y `production`; no se agrega `neon.ts`, Neon Auth, Neon Object Storage ni una rama cloud automática por PR. La aplicación usa una URL pooled y la migración una URL directa, siempre desde secretos del ambiente.
+La autenticación de staging/production es Microsoft Entra ID (login institucional @iteso.mx vía OAuth 2.0/OIDC), implementada en T2-10; Firebase Authentication ya no es el proveedor de login. GCS privado es la propuesta P1 y su integración sigue pendiente. Neon solo aporta PostgreSQL en `dev`, `staging` y `production`; no se agrega `neon.ts`, Neon Auth, Neon Object Storage ni una rama cloud automática por PR. La aplicación usa una URL pooled y la migración una URL directa, siempre desde secretos del ambiente.
 
 ## Calidad
 

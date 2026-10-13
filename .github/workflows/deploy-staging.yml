@@ -1,0 +1,28 @@
+name: Release - preprod
+
+on:
+  pull_request:
+    branches: [preprod]
+    types: [closed]
+
+jobs:
+  release:
+    if: >-
+      vars.CLOUD_DEPLOYMENT_ENABLED == 'true' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'dev' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      github_environment: preprod
+      release_sha: ${{ github.event.pull_request.merge_commit_sha }}
+      release_ref: preprod
+      source_ref: dev
+      source_release_sha: ${{ github.event.pull_request.head.sha }}
+      build: false
+    secrets: inherit

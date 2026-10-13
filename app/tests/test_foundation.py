@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 from django.conf import settings
 from django.db import connection
+from django.utils import timezone as django_timezone
 
 from green_iteso.security import redact_database_url
 from green_iteso.settings.base import database_from_url
@@ -22,6 +24,15 @@ def test_timezone_contract() -> None:
     """Business timestamps use the Mexico City timezone while remaining aware."""
     assert settings.TIME_ZONE == "America/Mexico_City"
     assert settings.USE_TZ is True
+
+
+def test_local_calendar_date_changes_at_mexico_city_midnight() -> None:
+    """UTC timestamps on either side of local midnight belong to distinct days."""
+    before_midnight = datetime(2026, 9, 24, 5, 59, 59, tzinfo=UTC)
+    at_midnight = datetime(2026, 9, 24, 6, 0, 0, tzinfo=UTC)
+
+    assert django_timezone.localdate(before_midnight) == date(2026, 9, 23)
+    assert django_timezone.localdate(at_midnight) == date(2026, 9, 24)
 
 
 def test_database_is_postgresql() -> None:
@@ -93,7 +104,7 @@ def test_deployed_database_roles_are_explicit() -> None:
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db", require_ssl=True
         )
-    with pytest.raises(RuntimeError, match="sslmode=verify-full"):
+    with pytest.raises(RuntimeError, match="verify-full.*channel_binding=require"):
         database_from_url(
             "postgresql://alice:secret@example.test:5432/db?sslmode=require",
             require_ssl=True,
@@ -119,6 +130,23 @@ def test_deployed_database_roles_are_explicit() -> None:
         ),
         "channel_binding": "require",
     }
+
+    neon_default = database_from_url(
+        "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=require&channel_binding=require",
+        require_ssl=True,
+        expected_pooled=False,
+    )
+    assert neon_default["OPTIONS"] == {
+        "sslmode": "require",
+        "channel_binding": "require",
+    }
+
+    with pytest.raises(RuntimeError, match="channel_binding=require"):
+        database_from_url(
+            "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=require",
+            require_ssl=True,
+            expected_pooled=False,
+        )
 
     custom_ca = database_from_url(
         "postgresql://alice:secret@ep-lively-brook-ax4n0pys.c-4.us-east-2.aws.neon.tech:5432/db?sslmode=verify-full&sslrootcert=%2Fetc%2Fgreeniteso-ca.pem",

@@ -29,7 +29,7 @@ makemigrations-check:
 	$(COMPOSE_BIN) exec -T app python app/manage.py makemigrations --check --dry-run
 
 test:
-	$(COMPOSE_BIN) exec -T app pytest app/tests
+	$(COMPOSE_BIN) exec -T app pytest
 
 lint:
 	ruff check app/

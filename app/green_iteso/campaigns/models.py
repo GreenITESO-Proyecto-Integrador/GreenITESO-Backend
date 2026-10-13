@@ -10,6 +10,8 @@ from django.db.models import F, Q
 
 
 class Campaign(models.Model):
+    """A time-bounded campaign that groups missions and participants."""
+
     class Scope(models.TextChoices):
         GLOBAL = "GLOBAL", "Global"
         PRIVATE = "PRIVATE", "Private clan"
@@ -18,6 +20,11 @@ class Campaign(models.Model):
         PROMOTION = "PROMOTION", "Promotion"
         IN_PROGRESS = "IN_PROGRESS", "In progress"
         FINISHED = "FINISHED", "Finished"
+
+    class ApprovalStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=150)
@@ -42,6 +49,20 @@ class Campaign(models.Model):
     end_date = models.DateTimeField()
     # Approved results snapshot; campaign-close behavior belongs to the service.
     podium_snapshot = models.JSONField(null=True, blank=True)
+    approval_status = models.CharField(
+        max_length=10,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.APPROVED,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_campaigns",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -66,6 +87,18 @@ class Campaign(models.Model):
                 condition=Q(status__in=["PROMOTION", "IN_PROGRESS", "FINISHED"]),
                 name="campaign_status_valid",
             ),
+            models.CheckConstraint(
+                condition=Q(approval_status__in=["PENDING", "APPROVED", "REJECTED"]),
+                name="campaign_approval_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(scope="PRIVATE") | Q(approval_status="APPROVED")),
+                name="campaign_private_always_approved",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(approval_status="REJECTED") | ~Q(rejection_reason="")),
+                name="campaign_rejection_has_reason",
+            ),
         ]
         indexes = [
             models.Index(
@@ -78,6 +111,8 @@ class Campaign(models.Model):
 
 
 class Mission(models.Model):
+    """A measurable action objective belonging to a campaign."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(
         Campaign, on_delete=models.PROTECT, related_name="missions"
@@ -96,6 +131,9 @@ class Mission(models.Model):
             models.CheckConstraint(
                 condition=Q(target_count__gt=0), name="mission_target_positive"
             ),
+            models.UniqueConstraint(
+                fields=["campaign", "action"], name="mission_campaign_action_unique"
+            ),
         ]
 
     def __str__(self) -> str:
@@ -103,6 +141,8 @@ class Mission(models.Model):
 
 
 class CampaignParticipant(models.Model):
+    """Records a user's participation in a campaign and when it began."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(
         Campaign, on_delete=models.PROTECT, related_name="participants"
@@ -127,6 +167,8 @@ class CampaignParticipant(models.Model):
 
 
 class UserMissionProgress(models.Model):
+    """Tracks one user's current progress toward one mission."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

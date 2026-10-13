@@ -137,11 +137,17 @@ class InstitutionalAssignmentSerializer(serializers.ModelSerializer):
 
 
 class UserMinimalSerializer(serializers.Serializer):
-    """Read-only view of a user with only the fields needed for a clan membership roster entry."""
-
     id = serializers.UUIDField(read_only=True)
     email = serializers.EmailField(read_only=True)
     nickname = serializers.CharField(read_only=True)
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
 
 
 class PendingMembershipRequestSerializer(serializers.ModelSerializer):
@@ -156,9 +162,15 @@ class PendingMembershipRequestSerializer(serializers.ModelSerializer):
 
 
 class ManageMembershipInputSerializer(serializers.Serializer):
-    """Input payload for accepting or rejecting a pending join request."""
-
     action = serializers.ChoiceField(
         choices=["approve", "reject"],
         help_text="Acción a realizar: 'approve' para aceptar o 'reject' para rechazar.",
     )
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError

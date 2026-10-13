@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+
 from django.db.models import Q, QuerySet
 
 from green_iteso.accounts.models import Clan, ClanMembership, User

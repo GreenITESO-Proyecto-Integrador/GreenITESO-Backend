@@ -340,6 +340,7 @@ def test_join_request_review_serializes_against_a_concurrent_leadership_transfer
     request = ClanMembership.objects.get(user=applicant, clan=clan)
     assert request.status == ClanMembership.Status.PENDING
 
+
 @pytest.mark.django_db
 def test_api_leader_can_list_pending_requests(leader: User) -> None:
     """List pending join requests for a private clan as its leader (T2-40).
@@ -370,7 +371,7 @@ def test_api_non_leader_cannot_list_pending_requests(
     leader: User, member: User
 ) -> None:
     """A non-leader member of a private clan cannot list its pending join requests.
-    
+
     The API endpoint is GET /clans/{clan_id}/requests.
     """
     invite_clan = create_private_clan(

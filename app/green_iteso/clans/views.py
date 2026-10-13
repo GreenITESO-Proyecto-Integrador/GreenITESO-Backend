@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import uuid
 from django.db.models import Prefetch, QuerySet
-from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError

@@ -8,6 +8,9 @@ from collections.abc import Callable
 import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import connection, transaction
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import (
@@ -336,3 +339,97 @@ def test_join_request_review_serializes_against_a_concurrent_leadership_transfer
     assert isinstance(outcome[0], PermissionDenied)
     request = ClanMembership.objects.get(user=applicant, clan=clan)
     assert request.status == ClanMembership.Status.PENDING
+
+@pytest.mark.django_db
+def test_api_leader_can_list_pending_requests(leader: User) -> None:
+    """List pending join requests for a private clan as its leader (T2-40).
+
+    The API endpoint is GET /clans/{clan_id}/requests.
+    """
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    membership = join_clan(clan=invite_clan, user=applicant)
+
+    client = APIClient()
+    client.force_authenticate(user=leader)
+    url = reverse("clan-requests", kwargs={"pk": invite_clan.id})
+
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(response.data) == 1
+    assert response.data[0]["id"] == str(membership.id)
+
+
+@pytest.mark.django_db
+def test_api_non_leader_cannot_list_pending_requests(
+    leader: User, member: User
+) -> None:
+    """A non-leader member of a private clan cannot list its pending join requests.
+    
+    The API endpoint is GET /clans/{clan_id}/requests.
+    """
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    ClanMembership.objects.create(user=member, clan=invite_clan)
+
+    client = APIClient()
+    client.force_authenticate(user=member)
+    url = reverse("clan-requests", kwargs={"pk": invite_clan.id})
+
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.django_db
+def test_api_leader_can_accept_join_request(leader: User) -> None:
+    """Accept a pending join request for a private clan as its leader.
+
+    The API endpoint is POST /clans/{clan_id}/accept-request.
+    """
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    join_clan(clan=invite_clan, user=applicant)
+
+    client = APIClient()
+    client.force_authenticate(user=leader)
+    url = reverse("clan-accept-request", kwargs={"pk": invite_clan.id})
+
+    response = client.post(url, data={"applicant_id": str(applicant.id)})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["status"] == ClanMembership.Status.ACCEPTED
+
+
+@pytest.mark.django_db
+def test_api_leader_can_reject_join_request(leader: User) -> None:
+    """Reject a pending join request for a private clan as its leader.
+
+    The API endpoint is POST /clans/{clan_id}/reject-request.
+    """
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    join_clan(clan=invite_clan, user=applicant)
+
+    client = APIClient()
+    client.force_authenticate(user=leader)
+    url = reverse("clan-reject-request", kwargs={"pk": invite_clan.id})
+
+    response = client.post(url, data={"applicant_id": str(applicant.id)})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["status"] == ClanMembership.Status.REJECTED

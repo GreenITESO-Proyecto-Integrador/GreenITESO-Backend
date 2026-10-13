@@ -134,3 +134,31 @@ class InstitutionalAssignmentSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ["career", "institutional_clan", "onboarding_completed_at"]
         read_only_fields = fields
+
+
+class UserMinimalSerializer(serializers.Serializer):
+    """Read-only view of a user with only the fields needed for a clan membership roster entry."""
+
+    id = serializers.UUIDField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    nickname = serializers.CharField(read_only=True)
+
+
+class PendingMembershipRequestSerializer(serializers.ModelSerializer):
+    """Read-only view of a pending join request, shown to a clan's LEADER (T2-40)."""
+
+    user = UserMinimalSerializer(read_only=True)
+
+    class Meta:
+        model = ClanMembership
+        fields = ["id", "clan_id", "user", "role", "status", "joined_at"]
+        read_only_fields = fields
+
+
+class ManageMembershipInputSerializer(serializers.Serializer):
+    """Input payload for accepting or rejecting a pending join request."""
+
+    action = serializers.ChoiceField(
+        choices=["approve", "reject"],
+        help_text="Acción a realizar: 'approve' para aceptar o 'reject' para rechazar.",
+    )

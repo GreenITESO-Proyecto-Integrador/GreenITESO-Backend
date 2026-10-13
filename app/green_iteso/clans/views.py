@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import uuid
 from django.db.models import Prefetch, QuerySet
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.accounts.services import ensure_profile
+from green_iteso.core.permissions import IsClanLeader
 
-from .selectors import list_active_clans
+from .selectors import get_pending_join_requests, list_active_clans
 from .serializers import (
     ClanDetailSerializer,
     ClanMembershipSerializer,
@@ -21,6 +25,7 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
+    PendingMembershipRequestSerializer,
     TransferLeadershipSerializer,
 )
 from .services import (
@@ -51,9 +56,6 @@ ACCEPTED_MEMBERSHIPS = Prefetch(
         status=ClanMembership.Status.ACCEPTED
     ).select_related("user"),
 )
-"""Roster prefetch used by ``retrieve``: a PENDING/REJECTED row never counts
-as a member, so both ``members`` and ``member_count`` on the detail
-serializer stay correct without an extra query."""
 
 
 class ClanViewSet(
@@ -63,29 +65,21 @@ class ClanViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, create, dissolve, join, leave, and manage clans under
-    /api/v1/clans/."""
+    """List, retrieve, create, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
     def get_serializer_class(self) -> type[ClanSerializer]:
+        """Return the serializer class to use for the current action."""
         if self.action == "retrieve":
             return ClanDetailSerializer
         return ClanSerializer
 
     def get_queryset(self) -> QuerySet[Clan]:
-        # "join" is exempt from the usual visibility filter: a PRIVATE_INVITE
-        # clan's applicant is expected to already know the clan (shared out
-        # of band, e.g. a link from the leader), so the clan not yet showing
-        # up in list_active_clans must not 404 the join attempt.
+        """Return the queryset of clans visible to the current user."""
         if self.action == "join":
             return Clan.objects.all()
 
-        # `search` only applies to `list`: `get_queryset()` also backs
-        # `get_object()` for retrieve and every detail action (destroy,
-        # transfer-leadership, select-active, leave, accept/reject-request),
-        # where filtering by an unrelated query param would 404 a clan that
-        # otherwise exists.
         search = (
             self.request.query_params.get("search", "") if self.action == "list" else ""
         )
@@ -95,6 +89,7 @@ class ClanViewSet(
         return queryset
 
     def perform_create(self, serializer: ClanSerializer) -> None:
+        """Create a new private clan."""
         try:
             serializer.instance = create_private_clan(
                 name=serializer.validated_data["name"],
@@ -112,33 +107,43 @@ class ClanViewSet(
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
         dissolve_clan(clan=instance, actor=self.request.user)
 
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="requests",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def requests(self, request: Request, **kwargs: object) -> Response:
+        """List pending join requests for this clan as its leader (T2-40)."""
+        clan = self.get_object()
+        pending_qs = get_pending_join_requests(clan_id=clan.id)
+        return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)
+
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request: Request, **kwargs: object) -> Response:
-        """Join a PUBLIC clan directly, or file a pending request for a
-        PRIVATE_INVITE one (T2-32).
-        """
+        """Request to join a clan (T2-31)."""
         clan = self.get_object()
         try:
             membership = join_clan(clan=clan, user=request.user)
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(
             ClanMembershipSerializer(membership).data, status=status.HTTP_201_CREATED
         )
 
     @action(detail=True, methods=["post"], url_path="leave")
     def leave(self, request: Request, **kwargs: object) -> Response:
-        """Leave a private clan the caller currently belongs to (T2-33)."""
+        """Leave a clan (T2-33)."""
         clan = self.get_object()
         try:
             leave_clan(clan=clan, user=request.user)
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"], url_path="accept-request")
     def accept_request(self, request: Request, **kwargs: object) -> Response:
-        """Accept a pending join request as the clan's leader (T2-32)."""
+        """Accept a pending join request for this clan as its leader (T2-32)."""
         clan = self.get_object()
         payload = JoinRequestDecisionSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -151,12 +156,12 @@ class ClanViewSet(
                 clan=clan, actor=request.user, applicant=applicant
             )
         except ValueError as exc:
-            raise ValidationError({"applicant_id": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="reject-request")
     def reject_request(self, request: Request, **kwargs: object) -> Response:
-        """Reject a pending join request as the clan's leader (T2-32)."""
+        """Reject a pending join request for this clan as its leader (T2-32)."""
         clan = self.get_object()
         payload = JoinRequestDecisionSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -169,18 +174,12 @@ class ClanViewSet(
                 clan=clan, actor=request.user, applicant=applicant
             )
         except ValueError as exc:
-            raise ValidationError({"applicant_id": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="transfer-leadership")
     def transfer_leadership(self, request: Request, **kwargs: object) -> Response:
-        """Transfer this clan's leadership to another of its members (T2-42).
-
-        Takes ``**kwargs`` rather than a named ``pk`` because the value is
-        never read directly here: ``self.get_object()`` already resolves it
-        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
-        queryset and permissions in the process.
-        """
+        """Transfer leadership of this clan to another member."""
         clan = self.get_object()
         payload = TransferLeadershipSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -193,25 +192,19 @@ class ClanViewSet(
                 clan=clan, actor=request.user, successor=successor
             )
         except ValueError as exc:
-            raise ValidationError({"successor_id": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="select-active")
     def select_active(self, request: Request, **kwargs: object) -> Response:
-        """Set this clan as the caller's active private clan (T2-35).
-
-        Takes ``**kwargs`` rather than a named ``pk`` because the value is
-        never read directly here: ``self.get_object()`` already resolves it
-        from ``self.kwargs`` (set by ``dispatch()``), applying the view's
-        queryset and permissions in the process.
-        """
+        """Select this clan as the user's active clan."""
         clan = self.get_object()
         try:
             membership = select_active_private_clan_service(
                 user=request.user, clan=clan
             )
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc) from exc
         return Response(ClanMembershipSerializer(membership).data)
 
 
@@ -219,12 +212,12 @@ class InstitutionalClanAssignmentView(APIView):
     """Read or declare the caller's institutional clan assignment (T2-30)."""
 
     def get(self, request: Request) -> Response:
-        """Return the caller's current onboarding/institutional clan state."""
+        """Return the caller's current institutional clan assignment, if any."""
         profile = ensure_profile(request.user)
         return Response(InstitutionalAssignmentSerializer(profile).data)
 
     def post(self, request: Request) -> Response:
-        """Declare a career and auto-assign its institutional clan."""
+        """Declare the caller's career and assign them to the corresponding institutional clan."""
         payload = InstitutionalOnboardingSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         try:

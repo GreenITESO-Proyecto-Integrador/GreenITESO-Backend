@@ -84,3 +84,31 @@ class IsClanLeader(BasePermission):
         return ClanMembership.objects.filter(
             user=user, clan=clan, role=ClanRole.LEADER
         ).exists()
+
+
+class IsClanLeader(BasePermission):
+    """Permission check: verifies if the authenticated user is a LEADER of the clan or a global ADMIN."""
+
+    def has_permission(self, request: Request, view: Any) -> bool:
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return True
+
+    def has_object_permission(self, request: Request, view: Any, obj: Any) -> bool:
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        # Los administradores globales del sistema siempre tienen permiso sobre los clanes
+        if getattr(request.user, "role", None) == User.Role.ADMIN:
+            return True
+
+        clan = obj if isinstance(obj, Clan) else getattr(obj, "clan", None)
+        if clan is None:
+            return False
+
+        return ClanMembership.objects.filter(
+            clan=clan,
+            user=request.user,
+            role=ClanMembership.MembershipRole.LEADER,
+            status=ClanMembership.Status.ACCEPTED,
+        ).exists()

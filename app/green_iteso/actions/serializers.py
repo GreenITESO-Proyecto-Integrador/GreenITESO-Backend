@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.core.files.uploadedfile import UploadedFile
+from django.urls import reverse
 from rest_framework import serializers
 
-from .models import ActionCategory, ActionMaster, ExchangeableItem
+from green_iteso.accounts.models import User
+
+from .evidence import evidence_is_readable, validate_evidence_upload
+from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
 
 
 class ActionCategorySerializer(serializers.ModelSerializer):
@@ -43,14 +48,24 @@ class ActionMasterSerializer(serializers.ModelSerializer):
 
 
 class ActionLogSerializer(serializers.Serializer):
-    """Serializer to validate incoming data for action logging."""
+    """Serializer to validate incoming data for action logging.
+
+    The registration form sends the photograph as the multipart field
+    ``evidence``. ``evidence_object_key`` remains for clients that already
+    stored the object elsewhere.
+    """
 
     action_id = serializers.UUIDField()
     idempotency_key = serializers.CharField(max_length=128)
+    evidence = serializers.FileField(required=False, allow_empty_file=False)
     evidence_object_key = serializers.CharField(
         max_length=500, required=False, allow_blank=True
     )
     is_shared_publicly = serializers.BooleanField(required=False, default=False)
+
+    def validate_evidence(self, uploaded: UploadedFile) -> UploadedFile:
+        validate_evidence_upload(uploaded)
+        return uploaded
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""
@@ -59,6 +74,72 @@ class ActionLogSerializer(serializers.Serializer):
     def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""
         raise NotImplementedError
+
+
+class ActionLogListQuerySerializer(serializers.Serializer):
+    """Validate the audit-queue filter. Missing status means the pending queue."""
+
+    status = serializers.ChoiceField(
+        choices=ActionLog.Status.choices,
+        default=ActionLog.Status.PENDING_AUDIT,
+        required=False,
+        error_messages={"invalid_choice": "Estado de auditoría no válido."},
+    )
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        raise NotImplementedError
+
+
+class ActionLogQueueUserSerializer(serializers.ModelSerializer):
+    """Identity an auditor needs to recognize who submitted the log."""
+
+    class Meta:
+        model = User
+        fields = ["id", "email", "nickname"]
+        read_only_fields = fields
+
+
+class ActionLogQueueActionSerializer(serializers.ModelSerializer):
+    """Action fields an auditor needs before opening the evidence."""
+
+    class Meta:
+        model = ActionMaster
+        fields = ["id", "code", "name", "validation_type"]
+        read_only_fields = fields
+
+
+class ActionLogQueueSerializer(serializers.ModelSerializer):
+    """One row of the admin audit queue."""
+
+    user = ActionLogQueueUserSerializer(read_only=True)
+    action = ActionLogQueueActionSerializer(read_only=True)
+    evidence_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ActionLog
+        fields = [
+            "id",
+            "status",
+            "created_at",
+            "points_awarded",
+            "evidence_object_key",
+            "evidence_url",
+            "user",
+            "action",
+        ]
+        read_only_fields = fields
+
+    def get_evidence_url(self, action_log: ActionLog) -> str:
+        """Return the admin-only URL when this log has a stored image."""
+        request = self.context.get("request")
+        if request is None or not evidence_is_readable(action_log.evidence_object_key):
+            return ""
+        return request.build_absolute_uri(
+            reverse("action-log-evidence", kwargs={"log_id": action_log.id})
+        )
 
 
 class ActionLogAuditSerializer(serializers.Serializer):

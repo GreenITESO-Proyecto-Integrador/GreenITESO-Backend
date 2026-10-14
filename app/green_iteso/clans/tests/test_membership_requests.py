@@ -367,6 +367,37 @@ def test_api_leader_can_list_pending_requests(leader: User) -> None:
 
 
 @pytest.mark.django_db
+def test_api_admin_can_list_pending_requests_for_any_private_clan() -> None:
+    """List pending join requests for a private clan as an admin.
+
+    The API endpoint is GET /clans/{clan_id}/requests.
+    """
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    leader = User.objects.create_user(
+        email="leader_clan@iteso.mx", password="local-only"
+    )
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+    membership = join_clan(clan=invite_clan, user=applicant)
+
+    client = APIClient()
+    client.force_authenticate(user=admin)
+    url = reverse("clan-requests", kwargs={"pk": invite_clan.id})
+
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(response.data) == 1
+    assert response.data[0]["id"] == str(membership.id)
+
+
+@pytest.mark.django_db
 def test_api_non_leader_cannot_list_pending_requests(
     leader: User, member: User
 ) -> None:
@@ -434,3 +465,26 @@ def test_api_leader_can_reject_join_request(leader: User) -> None:
 
     assert response.status_code == status.HTTP_200_OK
     assert response.data["status"] == ClanMembership.Status.REJECTED
+
+
+@pytest.mark.django_db
+def test_api_field_keyed_error_response_shape_preserved(leader: User) -> None:
+    """If the request body is missing a required field, the API returns a 400 with a field-keyed error response instead of a 500.
+
+    The API endpoint is POST /clans/{clan_id}/accept-request.
+    """
+    invite_clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    applicant = User.objects.create_user(
+        email="applicant@iteso.mx", password="local-only"
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=leader)
+    url = reverse("clan-accept-request", kwargs={"pk": invite_clan.id})
+
+    response = client.post(url, data={"applicant_id": str(applicant.id)})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "applicant_id" in response.data

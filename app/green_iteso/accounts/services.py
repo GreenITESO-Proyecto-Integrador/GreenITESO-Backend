@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -125,13 +126,49 @@ def _upsert_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
 
 
 def determine_initial_role(identity: ExternalIdentity, email: str) -> str:
-    """Assign STUDENT by default, or STAFF if configured or detected from directory data."""
-    staff_emails = getattr(settings, "STAFF_EMAILS", [])
-    if email.lower() in staff_emails:
+    """Infer the application role from the directory title and exceptions."""
+    staff_emails = {
+        configured_email.strip().lower()
+        for configured_email in getattr(settings, "STAFF_EMAILS", [])
+    }
+    if email.strip().lower() in staff_emails:
         return User.Role.STAFF
-    if identity.job_title and identity.job_title.strip():
+
+    normalized_title = _normalize_job_title(identity.job_title)
+    if normalized_title in {
+        "ALUMNO",
+        "ALUMNA",
+        "ALUMNADO",
+        "ESTUDIANTE",
+        "STUDENT",
+    }:
+        return User.Role.STUDENT
+    if any(
+        marker in normalized_title
+        for marker in (
+            "PROFESOR",
+            "DOCENTE",
+            "TEACHER",
+            "STAFF",
+            "PERSONAL",
+            "ADMINISTRAT",
+            "DIRECTOR",
+            "COORDINADOR",
+            "COORDINADORA",
+            "GERENTE",
+            "MANAGER",
+        )
+    ):
         return User.Role.STAFF
     return User.Role.STUDENT
+
+
+def _normalize_job_title(job_title: str | None) -> str:
+    normalized = unicodedata.normalize("NFKD", job_title or "")
+    without_accents = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return " ".join(without_accents.upper().split())
 
 
 def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
@@ -153,6 +190,14 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
         created = True
     if not user.is_active:
         raise AccountDisabledError()
+
+    # Reconcile the role from directory data on every login. Preserve ADMIN
+    # because it is an application-managed role; Django's is_staff/is_superuser
+    # flags are intentionally not part of this update.
+    if not created and user.role != User.Role.ADMIN:
+        login_role = determine_initial_role(identity, email)
+        if user.role != login_role:
+            user.role = login_role
 
     if not created and user.email != email:
         taken = User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists()

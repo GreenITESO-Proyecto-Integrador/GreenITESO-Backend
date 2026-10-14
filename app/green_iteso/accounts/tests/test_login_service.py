@@ -196,15 +196,26 @@ def test_determine_initial_role_defaults_to_student() -> None:
 
 
 @pytest.mark.django_db
-def test_first_login_assigns_staff_when_job_title_present() -> None:
+@pytest.mark.parametrize(
+    ("job_title", "expected_role"),
+    [
+        ("ALUMNO", User.Role.STUDENT),
+        ("Estudiante", User.Role.STUDENT),
+        ("Profesor de Asignatura", User.Role.STAFF),
+        ("Coordinadora Académica", User.Role.STAFF),
+    ],
+)
+def test_first_login_assigns_role_from_job_title(
+    job_title: str, expected_role: str
+) -> None:
     result = login_with_microsoft(
         id_token="t",
         access_token="a",
-        provider=_StubProvider(_identity(job_title="Profesor de Asignatura")),
+        provider=_StubProvider(_identity(job_title=job_title)),
     )
 
     assert result.created is True
-    assert result.user.role == User.Role.STAFF
+    assert result.user.role == expected_role
 
 
 @pytest.mark.django_db
@@ -257,6 +268,34 @@ def test_subsequent_login_does_not_override_role_assigned_by_admin() -> None:
     )
     assert second.created is False
     assert second.user.role == User.Role.ADMIN
+
+
+@pytest.mark.django_db
+def test_subsequent_login_reconciles_role_from_job_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("green_iteso.accounts.services.settings.STAFF_EMAILS", [])
+    user = User.objects.create_user(
+        email="profesor@iteso.mx",
+        password=None,
+        role=User.Role.STAFF,
+        is_staff=True,
+        is_superuser=True,
+    )
+
+    result = login_with_microsoft(
+        id_token="t",
+        access_token="a",
+        provider=_StubProvider(
+            _identity(email="profesor@iteso.mx", job_title="ALUMNO")
+        ),
+    )
+
+    user.refresh_from_db()
+    assert result.created is False
+    assert user.role == User.Role.STUDENT
+    assert user.is_staff is True
+    assert user.is_superuser is True
 
 
 @pytest.mark.django_db

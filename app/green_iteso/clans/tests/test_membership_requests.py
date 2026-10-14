@@ -469,7 +469,8 @@ def test_api_leader_can_reject_join_request(leader: User) -> None:
 
 @pytest.mark.django_db
 def test_api_field_keyed_error_response_shape_preserved(leader: User) -> None:
-    """If the request body is missing a required field, the API returns a 400 with a field-keyed error response instead of a 500.
+    """If the request body is missing a required field, the API returns a 400
+    with a field-keyed error response instead of a 500.
 
     The API endpoint is POST /clans/{clan_id}/accept-request.
     """

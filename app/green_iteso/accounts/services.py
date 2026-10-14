@@ -193,8 +193,13 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
 
     # Reconcile the role from directory data on every login. Preserve ADMIN
     # because it is an application-managed role; Django's is_staff/is_superuser
-    # flags are intentionally not part of this update.
-    if not created and user.role != User.Role.ADMIN:
+    # flags are intentionally not part of this update. Skip when the directory
+    # was not read (Graph down or no profile): None means "unknown", not "empty",
+    # and must not demote an existing STAFF account to STUDENT.
+    directory_title_known = (
+        identity.directory_profile_available and identity.job_title is not None
+    )
+    if not created and user.role != User.Role.ADMIN and directory_title_known:
         login_role = determine_initial_role(identity, email)
         if user.role != login_role:
             user.role = login_role

@@ -299,6 +299,36 @@ def test_subsequent_login_reconciles_role_from_job_title(
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    "identity_overrides",
+    [
+        {"directory_profile_available": False, "job_title": None},
+        {"job_title": None},
+    ],
+)
+def test_subsequent_login_keeps_role_when_directory_title_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_overrides: dict[str, object],
+) -> None:
+    monkeypatch.setattr("green_iteso.accounts.services.settings.STAFF_EMAILS", [])
+    user = User.objects.create_user(
+        email="profesor@iteso.mx", password=None, role=User.Role.STAFF
+    )
+
+    result = login_with_microsoft(
+        id_token="t",
+        access_token="a",
+        provider=_StubProvider(
+            _identity(email="profesor@iteso.mx", **identity_overrides)
+        ),
+    )
+
+    user.refresh_from_db()
+    assert result.created is False
+    assert user.role == User.Role.STAFF
+
+
+@pytest.mark.django_db
 def test_update_user_role_creates_audit_record() -> None:
     admin = User.objects.create_user(
         email="admin@iteso.mx", password="p", role=User.Role.ADMIN

@@ -582,3 +582,48 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
         is_active_private=False
     )
     return locked
+
+
+@transaction.atomic
+def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
+    """Expel ``target_user`` from ``clan`` (T2-41).
+
+    Only the clan's current LEADER (or a global ADMIN) may expel members.
+    Preserves points history contributed to ``clan.total_points`` (BR-08).
+    A leader cannot expel themselves.
+
+    Raises:
+        PermissionDenied: If ``actor`` is not the clan's leader or an admin.
+        ValueError: If ``target_user`` is ``actor``, or if ``target_user`` is not
+            an accepted member of the clan.
+    """
+    if actor.pk == target_user.pk:
+        raise ValueError("Leaders cannot expel themselves from the clan.")
+
+    locked_clan = Clan.objects.select_for_update().get(pk=clan.pk)
+
+    is_leader = ClanMembership.objects.filter(
+        clan=locked_clan,
+        user=actor,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+    ).exists()
+    is_admin = getattr(actor, "role", None) == User.Role.ADMIN
+
+    if not is_leader and not is_admin:
+        raise PermissionDenied("Only the clan leader can expel members.")
+
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked_clan,
+            user=target_user,
+            status=ClanMembership.Status.ACCEPTED,
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not an accepted member of this clan.") from exc
+
+    if membership.role == ClanMembership.MembershipRole.LEADER:
+        raise ValueError("Cannot expel a clan leader.")
+
+    # Deleting the membership row removes clan access while preserving clan.total_points (BR-08)
+    membership.delete()

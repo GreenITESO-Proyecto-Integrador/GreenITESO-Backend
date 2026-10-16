@@ -5,6 +5,7 @@ from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
 from green_iteso.feed.views import ImageUploadView
 
 

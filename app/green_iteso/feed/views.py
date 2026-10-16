@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 import uuid
+from typing import Any
 
 from django.conf import settings
 from django.db.models import QuerySet
@@ -87,7 +87,9 @@ class ImageUploadView(APIView):
             )
             bucket = client.bucket(bucket_name)
 
-            ext = file_obj.name.split(".")[-1].lower() if "." in file_obj.name else "jpg"
+            ext = (
+                file_obj.name.split(".")[-1].lower() if "." in file_obj.name else "jpg"
+            )
             blob_name = f"uploads/{uuid.uuid4()}.{ext}"
             blob = bucket.blob(blob_name)
 

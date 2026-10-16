@@ -240,6 +240,17 @@ class ActionLogCreateView(views.APIView):
                 )
 
             profile, institutional_clan, private_clan = get_profile_clans(user)
+            if institutional_clan is None:
+                # ActionLog.institutional_clan is NOT NULL; credit is only
+                # possible once onboarding assigned one. Reject before any
+                # evidence is stored instead of failing on the INSERT.
+                return Response(
+                    {
+                        "error": "No institutional clan assigned yet. "
+                        "Ask an administrator to assign one."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             evidence_key = incoming_key
             if uploaded is not None:
                 evidence_key = save_action_evidence(user.id, uploaded)

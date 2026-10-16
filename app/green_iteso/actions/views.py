@@ -166,7 +166,7 @@ class ActionLogCreateView(views.APIView):
                 delete_action_evidence(saved[0])
             raise
 
-    def _create_action_log(  # pylint: disable=too-many-locals
+    def _create_action_log(  # pylint: disable=too-many-locals,too-many-return-statements
         self,
         data: dict[str, Any],
         user: Any,

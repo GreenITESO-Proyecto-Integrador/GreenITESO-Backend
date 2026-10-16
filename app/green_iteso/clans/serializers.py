@@ -134,3 +134,29 @@ class InstitutionalAssignmentSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ["career", "institutional_clan", "onboarding_completed_at"]
         read_only_fields = fields
+
+
+class UserMinimalSerializer(serializers.Serializer):
+    """Minimal representation of a user for join requests (excludes personal email)."""
+
+    id = serializers.UUIDField(read_only=True)
+    nickname = serializers.CharField(read_only=True)
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+
+class PendingMembershipRequestSerializer(serializers.ModelSerializer):
+    """Serializer for pending clan join requests."""
+
+    user = UserMinimalSerializer(read_only=True)
+
+    class Meta:
+        model = ClanMembership
+        fields = ["id", "clan_id", "user", "role", "status", "joined_at"]
+        read_only_fields = fields

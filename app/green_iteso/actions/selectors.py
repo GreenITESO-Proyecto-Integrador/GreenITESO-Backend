@@ -53,3 +53,16 @@ def list_active_exchangeables() -> QuerySet[ExchangeableItem]:
     return ExchangeableItem.objects.filter(is_active=True).order_by(
         "points_cost", "name"
     )
+
+
+def list_action_logs_by_status(status: str) -> QuerySet[ActionLog]:
+    """Return audit logs of one status, oldest first.
+
+    ``id`` breaks ties so the queue order stays stable when timestamps match.
+    The ``(status, created_at)`` index covers this filter and sort.
+    """
+    return (
+        ActionLog.objects.filter(status=status)
+        .select_related("user", "action")
+        .order_by("created_at", "id")
+    )

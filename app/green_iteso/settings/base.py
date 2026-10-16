@@ -277,5 +277,10 @@ TIME_ZONE = "America/Mexico_City"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+# Photographic evidence stays on local disk until a deployed service sets
+# GCS_EVIDENCE_BUCKET. Local development ignores that variable.
+# The directory is gitignored and is not served as public media.
+MEDIA_ROOT = BASE_DIR.parent / "media"
+GCS_EVIDENCE_BUCKET = os.environ.get("GCS_EVIDENCE_BUCKET", "").strip()
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"

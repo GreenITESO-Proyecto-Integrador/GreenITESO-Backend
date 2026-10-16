@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch, QuerySet
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.accounts.services import ensure_profile
+from green_iteso.core.permissions import IsClanLeader
 
-from .selectors import list_active_clans
+from .selectors import get_pending_join_requests, list_active_clans
 from .serializers import (
     ClanDetailSerializer,
     ClanMembershipSerializer,
@@ -21,6 +24,7 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
+    PendingMembershipRequestSerializer,
     TransferLeadershipSerializer,
 )
 from .services import (
@@ -63,8 +67,7 @@ class ClanViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, create, dissolve, join, leave, and manage clans under
-    /api/v1/clans/."""
+    """List, retrieve, create, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
@@ -81,15 +84,23 @@ class ClanViewSet(
         if self.action == "join":
             return Clan.objects.all()
 
-        # `search` only applies to `list`: `get_queryset()` also backs
-        # `get_object()` for retrieve and every detail action (destroy,
-        # transfer-leadership, select-active, leave, accept/reject-request),
-        # where filtering by an unrelated query param would 404 a clan that
-        # otherwise exists.
-        search = (
-            self.request.query_params.get("search", "") if self.action == "list" else ""
-        )
-        queryset = list_active_clans(user=self.request.user, search=search)
+        user = self.request.user
+        # Global ADMIN can reach and view all clans for administrative overrides
+        if getattr(user, "role", None) == User.Role.ADMIN:
+            queryset = Clan.objects.all()
+        else:
+            # `search` only applies to `list`: `get_queryset()` also backs
+            # `get_object()` for retrieve and every detail action (destroy,
+            # transfer-leadership, select-active, leave, accept/reject-request),
+            # where filtering by an unrelated query param would 404 a clan that
+            # otherwise exists.
+            search = (
+                self.request.query_params.get("search", "")
+                if self.action == "list"
+                else ""
+            )
+            queryset = list_active_clans(user=user, search=search)
+
         if self.action == "retrieve":
             return queryset.prefetch_related(ACCEPTED_MEMBERSHIPS)
         return queryset
@@ -112,6 +123,28 @@ class ClanViewSet(
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
         dissolve_clan(clan=instance, actor=self.request.user)
 
+    @extend_schema(
+        summary="Listar solicitudes de ingreso pendientes",
+        description="Retorna todas las solicitudes PENDING de un clan. Acceso restringido al líder o Administrador.",
+        tags=["Clans Administration"],
+        responses={
+            200: PendingMembershipRequestSerializer(many=True),
+            403: None,
+            404: None,
+        },
+    )
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="requests",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def requests(self, request: Request, **kwargs: object) -> Response:
+        """List pending join requests for this clan as its leader or system admin (T2-40)."""
+        clan = self.get_object()
+        pending_qs = get_pending_join_requests(clan_id=clan.id)
+        return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)
+
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request: Request, **kwargs: object) -> Response:
         """Join a PUBLIC clan directly, or file a pending request for a
@@ -121,7 +154,7 @@ class ClanViewSet(
         try:
             membership = join_clan(clan=clan, user=request.user)
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc, field="clan") from exc
         return Response(
             ClanMembershipSerializer(membership).data, status=status.HTTP_201_CREATED
         )
@@ -133,7 +166,7 @@ class ClanViewSet(
         try:
             leave_clan(clan=clan, user=request.user)
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc, field="clan") from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"], url_path="accept-request")
@@ -151,7 +184,7 @@ class ClanViewSet(
                 clan=clan, actor=request.user, applicant=applicant
             )
         except ValueError as exc:
-            raise ValidationError({"applicant_id": str(exc)}) from exc
+            raise _validation_error_from(exc, field="applicant_id") from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="reject-request")
@@ -169,7 +202,7 @@ class ClanViewSet(
                 clan=clan, actor=request.user, applicant=applicant
             )
         except ValueError as exc:
-            raise ValidationError({"applicant_id": str(exc)}) from exc
+            raise _validation_error_from(exc, field="applicant_id") from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="transfer-leadership")
@@ -193,7 +226,7 @@ class ClanViewSet(
                 clan=clan, actor=request.user, successor=successor
             )
         except ValueError as exc:
-            raise ValidationError({"successor_id": str(exc)}) from exc
+            raise _validation_error_from(exc, field="successor_id") from exc
         return Response(ClanMembershipSerializer(membership).data)
 
     @action(detail=True, methods=["post"], url_path="select-active")
@@ -211,7 +244,7 @@ class ClanViewSet(
                 user=request.user, clan=clan
             )
         except ValueError as exc:
-            raise ValidationError({"clan": str(exc)}) from exc
+            raise _validation_error_from(exc, field="clan") from exc
         return Response(ClanMembershipSerializer(membership).data)
 
 

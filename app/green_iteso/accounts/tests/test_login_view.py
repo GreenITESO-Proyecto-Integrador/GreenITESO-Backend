@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Generator
 from datetime import timedelta
 
 import pytest
 from django.core.cache import cache
+from django.test import override_settings
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import AccessToken
@@ -14,6 +17,18 @@ from green_iteso.accounts.models import User
 
 LOGIN_URL = "/api/v1/auth/login/"
 REFRESH_URL = "/api/v1/auth/refresh/"
+
+
+@pytest.fixture(autouse=True)
+def use_mock_identity_provider() -> Generator[None, None, None]:
+    with override_settings(
+        MICROSOFT_AUTH_MODE="mock",
+        MICROSOFT_TENANT_ID="",
+        MICROSOFT_CLIENT_ID="",
+    ):
+        cache.clear()
+        yield
+        cache.clear()
 
 
 @pytest.mark.django_db
@@ -29,6 +44,56 @@ def test_login_with_mock_token_returns_jwt_pair_and_creates_the_user() -> None:
     assert body["user"]["role"] == "STUDENT"
     assert body["access"] and body["refresh"]
     assert User.objects.filter(email="ana@iteso.mx").exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("email", "job_title", "expected_role"),
+    [
+        ("alumno@iteso.mx", "ALUMNO", "STUDENT"),
+        ("estudiante@iteso.mx", "Estudiante", "STUDENT"),
+        ("profesor@iteso.mx", "Profesor de Asignatura", "STAFF"),
+        ("coordinadora@iteso.mx", "Coordinadora Académica", "STAFF"),
+        ("personal@iteso.mx", "Personal Administrativo", "STAFF"),
+    ],
+)
+def test_login_assigns_role_from_microsoft_job_title(
+    email: str, job_title: str, expected_role: str
+) -> None:
+    token = "mock:" + json.dumps(
+        {"email": email, "job_title": job_title},
+        separators=(",", ":"),
+    )
+
+    response = APIClient().post(
+        LOGIN_URL, {"id_token": token, "access_token": ""}, format="json"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["role"] == expected_role
+    assert User.objects.get(email=email).role == expected_role
+
+
+@pytest.mark.django_db
+def test_login_preserves_admin_role_regardless_of_microsoft_job_title() -> None:
+    admin = User.objects.create_user(
+        email="admin@iteso.mx",
+        password=None,
+        role=User.Role.ADMIN,
+    )
+    token = "mock:" + json.dumps(
+        {"email": admin.email, "job_title": "ALUMNO"},
+        separators=(",", ":"),
+    )
+
+    response = APIClient().post(
+        LOGIN_URL, {"id_token": token, "access_token": ""}, format="json"
+    )
+
+    assert response.status_code == 200
+    admin.refresh_from_db()
+    assert response.json()["user"]["role"] == User.Role.ADMIN
+    assert admin.role == User.Role.ADMIN
 
 
 @pytest.mark.django_db

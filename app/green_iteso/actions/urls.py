@@ -9,6 +9,7 @@ from .views import (
     ActionCategoryViewSet,
     ActionLogAuditView,
     ActionLogCreateView,
+    ActionLogEvidenceView,
     ActionMasterViewSet,
     ExchangeableItemViewSet,
 )
@@ -20,6 +21,11 @@ router.register("exchangeables", ExchangeableItemViewSet, basename="exchangeable
 
 urlpatterns = router.urls + [
     path("action-logs/", ActionLogCreateView.as_view(), name="action-log-create"),
+    path(
+        "action-logs/<uuid:log_id>/evidence/",
+        ActionLogEvidenceView.as_view(),
+        name="action-log-evidence",
+    ),
     path(
         "action-logs/<uuid:log_id>/audit/",
         ActionLogAuditView.as_view(),

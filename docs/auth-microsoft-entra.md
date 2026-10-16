@@ -22,8 +22,14 @@ decisión en el issue T2-10 y en `CLAUDE.md`.
    `employeeId` y los IDs de grupo.
 4. BR-01: solo se permite el dominio `@iteso.mx` (exacto, sin subdominios ni
    variantes); otro dominio responde `403 DOMAIN_NOT_ALLOWED`.
-5. El usuario se crea en el primer login (rol `STUDENT` por defecto) o se
-   actualiza si ya existía.
+5. El usuario se crea en el primer login o se actualiza si ya existía. El rol
+   se determina por `STAFF_EMAILS` y por `jobTitle`: `ALUMNO`, `ALUMNA`,
+   `ALUMNADO`, `ESTUDIANTE` y `STUDENT` producen `STUDENT`; títulos que
+   contienen términos como `PROFESOR`, `DOCENTE`, `TEACHER`, `PERSONAL`,
+   `ADMINISTRATIVO`, `DIRECTOR`, `COORDINADOR` o `MANAGER` producen `STAFF`.
+   Los títulos vacíos o desconocidos conservan `STUDENT` como valor seguro.
+   En cada login posterior se vuelve a evaluar el título, salvo las cuentas
+   `ADMIN`. Los flags Django `is_staff`/`is_superuser` no se modifican.
 6. La respuesta trae `{access, refresh, user, created}`; `access`/`refresh`
    son JWT de `djangorestframework-simplejwt` (60 min / 7 días,
    provisional — T2-11 define los valores finales). `refresh` se canjea en
@@ -141,6 +147,44 @@ necesita el grupo para distinguir STAFF de STUDENT, ese es el momento de
 pedirle a IT que apruebe `GroupMember.Read.All`.
 
 ## Desarrollo local sin un registro real
+
+## Inspeccionar los datos reales de una cuenta
+
+El script `scripts/inspect_microsoft_graph.py` consulta exactamente los
+campos que el backend usa para enriquecer el login: `mail`,
+`userPrincipalName`, `jobTitle`, `department` y `employeeId`. Requiere un
+`access_token` delegado para Microsoft Graph obtenido después de iniciar
+sesión con una cuenta ITESO; no acepta el JWT de la aplicación GreenITESO ni
+el `id_token`.
+
+1. Inicia sesión en el frontend con una cuenta `@iteso.mx`.
+2. Abre DevTools (F12) en la misma pestaña, ve a **Application** →
+   **Session Storage** y localiza una entrada de MSAL cuyo valor contenga
+   `"secret"` y `"User.Read"`. Copia únicamente el valor del token de acceso,
+   no el `id_token` ni el token de GreenITESO. Si el caché no es visible,
+   usa la pestaña **Network**, filtra por `graph.microsoft.com` y revisa el
+   header `Authorization` de una llamada a Graph.
+3. En PowerShell, desde `GreenITESO-Backend`, define el token solo para la
+   sesión actual y ejecuta:
+
+```powershell
+$env:GRAPH_ACCESS_TOKEN = "<pega-aqui-el-access-token-de-graph>"
+python .\scripts\inspect_microsoft_graph.py
+Remove-Item Env:\GRAPH_ACCESS_TOKEN
+```
+
+Para consultar también los grupos:
+
+```powershell
+python .\scripts\inspect_microsoft_graph.py --groups
+Remove-Item Env:\GRAPH_ACCESS_TOKEN
+```
+
+La consulta de perfil usa `User.Read`. La consulta de grupos requiere
+`GroupMember.Read.All`; si la cuenta o la aplicación no tienen ese permiso,
+el script mostrará la respuesta HTTP `403` sin ocultarla. El script no imprime
+el token. No lo guardes en `.env`, no lo subas al repositorio y revócalo o
+finaliza la sesión si lo copiaste a un lugar no confiable.
 
 Con `MICROSOFT_AUTH_MODE=mock` (valor por defecto en `.env.example`), el
 backend acepta un `id_token` con el prefijo `mock:`:

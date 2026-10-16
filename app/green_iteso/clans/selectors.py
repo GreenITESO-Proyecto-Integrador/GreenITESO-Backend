@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from django.db.models import Q, QuerySet
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
@@ -28,3 +30,16 @@ def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
     if search:
         queryset = queryset.filter(name__icontains=search)
     return queryset
+
+
+def get_pending_join_requests(*, clan_id: uuid.UUID) -> QuerySet[ClanMembership]:
+    """Retorna las solicitudes de ingreso en estado PENDING para un clan."""
+    return (
+        ClanMembership.objects.filter(
+            clan_id=clan_id,
+            status=ClanMembership.Status.PENDING,
+            clan__deleted_at__isnull=True,
+        )
+        .select_related("user")
+        .order_by("-joined_at")
+    )

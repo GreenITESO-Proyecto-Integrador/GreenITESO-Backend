@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 
-from .roles import ClanRole, GlobalRole
+from .roles import GlobalRole
 
 
 class IsAuthenticated(BasePermission):
@@ -65,22 +65,28 @@ class IsSelfOrAdmin(BasePermission):
 
 
 class IsClanLeader(BasePermission):
-    """Allow a clan's LEADER, or a global ADMIN, to manage that clan.
+    """Permission check: verifies if the authenticated user is a LEADER of the clan or a global ADMIN."""
 
-    ``obj`` must be a ``Clan`` or expose a ``.clan`` attribute. Object-level
-    only (see module docstring): has no effect on actions that don't call
-    ``get_object()``, such as ``list``/``create``.
-    """
-
-    def has_object_permission(self, request: Request, _view: APIView, obj: Any) -> bool:
-        user = request.user
-        if not (user and user.is_authenticated):
+    def has_permission(self, request: Request, view: Any) -> bool:
+        if not request.user or not request.user.is_authenticated:
             return False
-        if user.role == GlobalRole.ADMIN:
+        return True
+
+    def has_object_permission(self, request: Request, view: Any, obj: Any) -> bool:
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        # Los administradores globales del sistema siempre tienen permiso sobre los clanes
+        if getattr(request.user, "role", None) == User.Role.ADMIN:
             return True
+
         clan = obj if isinstance(obj, Clan) else getattr(obj, "clan", None)
         if clan is None:
             return False
+
         return ClanMembership.objects.filter(
-            user=user, clan=clan, role=ClanRole.LEADER
+            clan=clan,
+            user=request.user,
+            role=ClanMembership.MembershipRole.LEADER,
+            status=ClanMembership.Status.ACCEPTED,
         ).exists()

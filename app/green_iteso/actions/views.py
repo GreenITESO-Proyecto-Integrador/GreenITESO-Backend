@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
+from django.core.files.uploadedfile import UploadedFile
 from django.db import transaction
 from django.db.models import F, QuerySet
+from django.http import FileResponse, HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -21,9 +25,20 @@ from green_iteso.gamification.services import check_and_award_badges
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.services import notify
 
+from .evidence import (
+    delete_action_evidence,
+    evidence_content_type,
+    evidence_file_path,
+    evidence_fingerprint,
+    gcs_evidence_enabled,
+    save_action_evidence,
+    signed_evidence_url,
+    stored_evidence_fingerprint,
+)
 from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
 from .selectors import (
     count_user_action_logs_for_local_day,
+    list_action_logs_by_status,
     list_active_action_categories,
     list_active_actions,
     list_active_exchangeables,
@@ -31,6 +46,8 @@ from .selectors import (
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
+    ActionLogListQuerySerializer,
+    ActionLogQueueSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
     ExchangeableItemSerializer,
@@ -111,15 +128,53 @@ class ActionMasterViewSet(viewsets.ModelViewSet):
 
 
 class ActionLogCreateView(views.APIView):
-    """API view to process and store historical action logs atomically."""
+    """Create an action log, or list logs for an administrator to audit."""
+
+    def get_permissions(self) -> list[BasePermission]:
+        """Students submit logs; only administrators can read the audit queue."""
+        if self.request.method == "GET":
+            return [IsAdmin()]
+        return [IsAuthenticated()]
+
+    def get(self, request: Request) -> Response:
+        """List action logs for audit, pending ones when status is omitted."""
+        query = ActionLogListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        queryset = list_action_logs_by_status(query.validated_data["status"])
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        if page is None:
+            return Response(
+                ActionLogQueueSerializer(
+                    queryset, many=True, context={"request": request}
+                ).data
+            )
+        return paginator.get_paginated_response(
+            ActionLogQueueSerializer(page, many=True, context={"request": request}).data
+        )
 
     def post(self, request: Request) -> Response:
         """Handle POST requests to register a user action and update points."""
         serializer = ActionLogSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        user = request.user
+        saved: list[str] = []
+        try:
+            return self._create_action_log(data, request.user, saved)
+        except Exception:
+            if saved:
+                delete_action_evidence(saved[0])
+            raise
 
+    def _create_action_log(  # pylint: disable=too-many-locals,too-many-return-statements
+        self,
+        data: dict[str, Any],
+        user: Any,
+        saved: list[str],
+    ) -> Response:
+        """Persist one action log inside a transaction, including its image."""
+        uploaded: UploadedFile | None = data.get("evidence")
+        incoming_key = data.get("evidence_object_key", "")
         with transaction.atomic():
             # Serialize this user's submissions so concurrent requests cannot
             # both pass the daily count before either inserts its log.
@@ -130,11 +185,13 @@ class ActionLogCreateView(views.APIView):
                 user_id=user.id, idempotency_key=data["idempotency_key"]
             ).first()
             if existing:
-                if existing.action_id != data[
-                    "action_id"
-                ] or existing.evidence_object_key != data.get(
-                    "evidence_object_key", ""
-                ):
+                same_evidence = (
+                    stored_evidence_fingerprint(existing.evidence_object_key)
+                    == evidence_fingerprint(uploaded)
+                    if uploaded is not None
+                    else existing.evidence_object_key == incoming_key
+                )
+                if existing.action_id != data["action_id"] or not same_evidence:
                     return Response(
                         {"error": "Idempotency key was used for a different action."},
                         status=status.HTTP_409_CONFLICT,
@@ -158,6 +215,16 @@ class ActionLogCreateView(views.APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            if (
+                action_def.validation_type == ActionMaster.ValidationType.PHOTO
+                and uploaded is None
+                and not incoming_key
+            ):
+                return Response(
+                    {"evidence": ["Esta acción requiere evidencia fotográfica."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             log_status = (
                 ActionLog.Status.PENDING_AUDIT
                 if action_def.validation_type == ActionMaster.ValidationType.PHOTO
@@ -173,6 +240,21 @@ class ActionLogCreateView(views.APIView):
                 )
 
             profile, institutional_clan, private_clan = get_profile_clans(user)
+            if institutional_clan is None:
+                # ActionLog.institutional_clan is NOT NULL; credit is only
+                # possible once onboarding assigned one. Reject before any
+                # evidence is stored instead of failing on the INSERT.
+                return Response(
+                    {
+                        "error": "No institutional clan assigned yet. "
+                        "Ask an administrator to assign one."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            evidence_key = incoming_key
+            if uploaded is not None:
+                evidence_key = save_action_evidence(user.id, uploaded)
+                saved.append(evidence_key)
 
             action_log = ActionLog.objects.create(
                 user=user,
@@ -185,7 +267,7 @@ class ActionLogCreateView(views.APIView):
                 water_liters_factor_snapshot=action_def.water_liters_factor,
                 plastic_kg_factor_snapshot=action_def.plastic_kg_factor,
                 status=log_status,
-                evidence_object_key=data.get("evidence_object_key", ""),
+                evidence_object_key=evidence_key,
                 is_shared_publicly=data.get("is_shared_publicly", False),
             )
 
@@ -234,6 +316,38 @@ class ActionLogCreateView(views.APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class ActionLogEvidenceView(views.APIView):
+    """Serve a stored evidence image to an administrator."""
+
+    permission_classes = [IsAdmin]
+
+    def get(
+        self, _request: Request, log_id: uuid.UUID
+    ) -> FileResponse | HttpResponseRedirect | Response:
+        try:
+            action_log = ActionLog.objects.get(pk=log_id)
+        except ActionLog.DoesNotExist:
+            return Response(
+                {"error": "Evidence image not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if gcs_evidence_enabled():
+            signed_url = signed_evidence_url(action_log.evidence_object_key)
+            if not signed_url:
+                return Response(
+                    {"error": "Evidence image not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            return HttpResponseRedirect(signed_url)
+        path = evidence_file_path(action_log.evidence_object_key)
+        if path is None:
+            return Response(
+                {"error": "Evidence image not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return FileResponse(path.open("rb"), content_type=evidence_content_type(path))
 
 
 class ActionLogAuditView(views.APIView):

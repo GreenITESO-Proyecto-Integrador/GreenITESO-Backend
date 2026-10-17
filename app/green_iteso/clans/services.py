@@ -589,18 +589,23 @@ def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
     """Expel ``target_user`` from ``clan`` (T2-41).
 
     Only the clan's current LEADER (or a global ADMIN) may expel members.
+    Expulsion is only permitted for private clans; institutional clans cannot
+    have members expelled individually to maintain profile consistency.
     Preserves points history contributed to ``clan.total_points`` (BR-08).
     A leader cannot expel themselves.
 
     Raises:
         PermissionDenied: If ``actor`` is not the clan's leader or an admin.
-        ValueError: If ``target_user`` is ``actor``, or if ``target_user`` is not
-            an accepted member of the clan.
+        ValueError: If ``locked_clan`` is not private, if ``target_user`` is ``actor``,
+            or if ``target_user`` is not an accepted member of the clan.
     """
     if actor.pk == target_user.pk:
         raise ValueError("Leaders cannot expel themselves from the clan.")
 
     locked_clan = Clan.objects.select_for_update().get(pk=clan.pk)
+
+    if locked_clan.type != Clan.ClanType.PRIVATE:
+        raise ValueError("Cannot expel members from an institutional clan.")
 
     is_leader = ClanMembership.objects.filter(
         clan=locked_clan,

@@ -7,7 +7,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import ClanMembership, User
+from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.clans.services import create_private_clan
 
 
@@ -118,3 +118,32 @@ def test_admin_can_kick_member(leader: User) -> None:
     response = client.post(url, data={"user_id": str(target_user.id)})
 
     assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+@pytest.mark.django_db
+def test_cannot_kick_member_from_institutional_clan() -> None:
+    """Test that kicking a member from an institutional clan is not allowed."""
+    admin = User.objects.create_user(
+        email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
+    )
+    inst_clan = Clan.objects.create(
+        name="Ingeniería de Software",
+        type=Clan.ClanType.INSTITUTIONAL,
+        privacy=Clan.Privacy.PUBLIC,
+    )
+    target_user = User.objects.create_user(
+        email="student@iteso.mx", password="local-only"
+    )
+    ClanMembership.objects.create(
+        user=target_user, clan=inst_clan, status=ClanMembership.Status.ACCEPTED
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=admin)
+    url = reverse("clan-kick-member", kwargs={"pk": inst_clan.id})
+
+    response = client.post(url, data={"user_id": str(target_user.id)})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "user_id" in response.data
+    assert ClanMembership.objects.filter(user=target_user, clan=inst_clan).exists()

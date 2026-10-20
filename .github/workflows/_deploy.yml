@@ -28,7 +28,7 @@ on:
         required: false
         type: string
       build:
-        description: "Build and push the immutable commit image (dev only)"
+        description: "Build and push the immutable commit image (dev and production)"
         required: true
         type: boolean
       image_digest:
@@ -84,9 +84,13 @@ jobs:
             exit 1
           fi
 
+      # Production builds its own image from the approved commit while staging
+      # is not deployed to the cloud, so there is no source release to verify.
+      # Restore `inputs.environment != 'dev'` here (and set production's
+      # `build: false`) once preprod is released to Cloud Run again.
       - name: Verify successful source release provenance
         id: provenance
-        if: inputs.environment != 'dev'
+        if: inputs.environment == 'staging'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
@@ -179,6 +183,7 @@ jobs:
           MIGRATION_SERVICE_ACCOUNT: ${{ secrets.MIGRATION_SERVICE_ACCOUNT }}
           CLOUD_RUN_MAX_INSTANCES: ${{ secrets.CLOUD_RUN_MAX_INSTANCES }}
           CLOUD_RUN_CONCURRENCY: ${{ secrets.CLOUD_RUN_CONCURRENCY }}
+          GCS_EVIDENCE_BUCKET: ${{ secrets.GCS_EVIDENCE_BUCKET }}
         run: scripts/release.sh
 
       - name: Record successful release digest

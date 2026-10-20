@@ -6,6 +6,8 @@ from django.http import HttpRequest, HttpResponse
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from green_iteso.feed.views import ImageUploadView
+
 
 def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-argument
     """Return the existing service availability response."""
@@ -32,6 +34,7 @@ api_patterns = [
 urlpatterns = [
     path("", index_view, name="index"),
     path("api/", include(api_patterns)),
+    path("api/uploads/", ImageUploadView.as_view(), name="image-upload"),
 ]
 
 if settings.DEBUG:

@@ -19,6 +19,7 @@ from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .notifications import notify_campaign_invite, notify_mission_completed
 
 CAMPAIGN_TIME_ZONE = ZoneInfo("America/Mexico_City")
+MIN_CAMPAIGN_DURATION = timedelta(days=1)
 
 
 def is_clan_leader(user: Any, clan: Clan | None) -> bool:
@@ -132,6 +133,14 @@ def ensure_start_date_allowed(
     """Reject a ``start_date`` earlier than tomorrow (Mexico City calendar day)."""
     if start_date < earliest_allowed_start(now):
         raise ValidationError({"start_date": "Start date must be tomorrow or later."})
+
+
+def ensure_end_date_allowed(start_date: datetime, end_date: datetime) -> None:
+    """Reject an ``end_date`` less than 24 hours after ``start_date``."""
+    if end_date < start_date + MIN_CAMPAIGN_DURATION:
+        raise ValidationError(
+            {"end_date": "End date must be at least one day after start date."}
+        )
 
 
 def sync_campaign_statuses(now: datetime | None = None) -> int:

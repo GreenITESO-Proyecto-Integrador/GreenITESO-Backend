@@ -18,6 +18,7 @@ from .services import (
     can_manage_campaign_for_user,
     compute_campaign_status,
     create_campaign_with_missions,
+    ensure_end_date_allowed,
     ensure_start_date_allowed,
 )
 
@@ -121,10 +122,8 @@ class CampaignSerializer(serializers.ModelSerializer):
         """Validate campaign dates and scope-specific clan requirements."""
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
         end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
-        if start_date is not None and end_date is not None and start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
+        if start_date is not None and end_date is not None:
+            ensure_end_date_allowed(start_date, end_date)
         if self.instance is None and end_date is not None:
             if end_date <= timezone.now():
                 raise serializers.ValidationError(
@@ -240,10 +239,7 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             )
         start_date = attrs.get("start_date", self.instance.start_date)
         end_date = attrs.get("end_date", self.instance.end_date)
-        if start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
+        ensure_end_date_allowed(start_date, end_date)
         if end_date <= timezone.now():
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}
@@ -311,10 +307,8 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
         """Validate the proposed campaign's dates."""
         start_date = attrs.get("start_date")
         end_date = attrs.get("end_date")
-        if start_date is not None and end_date is not None and start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
+        if start_date is not None and end_date is not None:
+            ensure_end_date_allowed(start_date, end_date)
         if end_date is not None and end_date <= timezone.now():
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}

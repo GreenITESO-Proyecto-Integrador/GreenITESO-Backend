@@ -144,7 +144,6 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "green_iteso.accounts",
     "green_iteso.clans",
-    "green_iteso.connections",
     "green_iteso.actions",
     "green_iteso.campaigns",
     "green_iteso.feed",

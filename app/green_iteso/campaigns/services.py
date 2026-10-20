@@ -35,7 +35,7 @@ def _is_admin_for_institutional_clan(user: Any, clan: Clan | None) -> bool:
 
     Admins may create and manage private campaigns targeted at institutional
     clans, alongside that clan's leader. They still have no access to
-    campaigns targeting non-institutional (private/friend) clans.
+    campaigns targeting non-institutional (private) clans.
     """
     if clan is None or clan.deleted_at is not None:
         return False
@@ -48,7 +48,7 @@ def can_create_campaign(user: Any, scope: str, target_clan: Clan | None) -> bool
     Global campaigns are admin-only. Private campaigns can be created by the
     leader of the target clan, or by an admin when the target clan is
     institutional; admins have no create access to non-institutional
-    (private/friend) clans' campaigns.
+    (private) clans' campaigns.
     """
     if scope == Campaign.Scope.GLOBAL:
         return user.role == GlobalRole.ADMIN

@@ -17,8 +17,9 @@ from django.db.utils import OperationalError
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
-    DEMO_STATUSES,
+    demo_action_log_identity,
     demo_id,
+    expected_demo_action_status,
     get_catalog_actions,
     parse_as_of,
     seed_demo_data,
@@ -88,20 +89,25 @@ def _career_clan_map(
             raise CommandError(
                 "A configured synthetic career clan is missing; refusing reconciliation."
             )
-        expected_description = f"{item['description']} Career key: {item['career']}"
-        if (
-            clan.deleted_at is not None
-            or clan.name != item["name"]
-            or clan.description != expected_description
-            or clan.type != Clan.ClanType.INSTITUTIONAL
-            or clan.privacy != Clan.Privacy.PUBLIC
-            or clan.created_by_id is not None
-        ):
+        if not _career_clan_matches_fixture(item, clan):
             raise CommandError(
                 "A synthetic career clan differs from the pinned fixture; refusing reconciliation."
             )
         result.append((item, clan))
     return result
+
+
+def _career_clan_matches_fixture(item: dict[str, Any], clan: Clan) -> bool:
+    """Compare every mutable career-clan identity field to the fixture."""
+    expected_description = f"{item['description']} Career key: {item['career']}"
+    return (
+        clan.deleted_at is None
+        and clan.name == item["name"]
+        and clan.description == expected_description
+        and clan.type == Clan.ClanType.INSTITUTIONAL
+        and clan.privacy == Clan.Privacy.PUBLIC
+        and clan.created_by_id is None
+    )
 
 
 def _validate_legacy_clan_identities(legacy_clans: dict[Any, Clan]) -> None:
@@ -115,38 +121,22 @@ def _validate_legacy_clan_identities(legacy_clans: dict[Any, Clan]) -> None:
         )
     for index, clan_id in enumerate(expected_ids):
         clan = legacy_clans.get(clan_id)
-        if (
-            clan is None
-            or clan.name != LEGACY_INSTITUTIONAL_CLAN_NAMES[index]
-            or clan.description != DEMO_INSTITUTIONAL_CLAN_DESCRIPTION
-            or clan.type != Clan.ClanType.INSTITUTIONAL
-            or clan.privacy != Clan.Privacy.PUBLIC
-            or clan.deleted_at is not None
-            or clan.created_by_id is not None
-        ):
+        if clan is None or not _legacy_clan_matches_fixture(index, clan):
             raise CommandError(
                 "A legacy demo profile or clan differs from the known synthetic seed; refusing reconciliation."
             )
 
 
-def _expected_demo_log_action(index: int, catalog: CatalogData) -> tuple[Any, str]:
-    actions = get_catalog_actions(catalog)
-    action = actions[index % len(actions)]
-    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-    if status == ActionLog.Status.PENDING_AUDIT:
-        photo_action = next(
-            (
-                candidate
-                for candidate in actions
-                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
-            ),
-            None,
-        )
-        if photo_action is not None:
-            action = photo_action
-        else:
-            status = ActionLog.Status.APPROVED
-    return action, status
+def _legacy_clan_matches_fixture(index: int, clan: Clan) -> bool:
+    """Compare every mutable source-clan identity field to the v1 fixture."""
+    return (
+        clan.name == LEGACY_INSTITUTIONAL_CLAN_NAMES[index]
+        and clan.description == DEMO_INSTITUTIONAL_CLAN_DESCRIPTION
+        and clan.type == Clan.ClanType.INSTITUTIONAL
+        and clan.privacy == Clan.Privacy.PUBLIC
+        and clan.deleted_at is None
+        and clan.created_by_id is None
+    )
 
 
 def _lock_synthetic_users(user_ids: list[Any]) -> list[User]:
@@ -239,45 +229,46 @@ def _validate_demo_logs(
             "The shared-dev demo log set is partial; refusing career reconciliation."
         )
     logs: list[ActionLog] = []
+    actions = get_catalog_actions(catalog)
     for index in range(24):
         log = logs_by_id[demo_id("action-log", str(index))]
         user = users[index % len(users)]
-        expected_action, expected_status = _expected_demo_log_action(index, catalog)
-        expected_institutional = expected_clans[user.pk]
-        expected_private = private_clans[index % len(private_clans)]
-        expected_evidence = (
+        expected_action, expected_status = expected_demo_action_status(index, actions)
+        expected_identity = (
+            f"demo-action-{index:02d}",
+            user.pk,
+            expected_action.pk,
+            expected_clans[user.pk].pk,
+            private_clans[index % len(private_clans)].pk,
+            expected_status,
+            expected_action.points,
+            expected_action.co2_kg_factor,
+            expected_action.water_liters_factor,
+            expected_action.plastic_kg_factor,
+            demo_id("campaign", "active") if index < 12 else None,
             f"demo-only/action-{index:02d}.jpg"
             if expected_action.validation_type == ActionMaster.ValidationType.PHOTO
-            else ""
+            else "",
+            None,
+            expected_status == ActionLog.Status.REJECTED,
+            "Synthetic system-rejected example"
+            if expected_status == ActionLog.Status.REJECTED
+            else "",
         )
-        is_rejected = expected_status == ActionLog.Status.REJECTED
-        if (
-            log.idempotency_key != f"demo-action-{index:02d}"
-            or log.user_id != user.pk
-            or log.action_id != expected_action.pk
-            or log.institutional_clan_id != expected_institutional.pk
-            or log.credited_private_clan_id != expected_private.pk
-            or log.status != expected_status
-            or log.points_awarded != expected_action.points
-            or log.co2_kg_factor_snapshot != expected_action.co2_kg_factor
-            or log.water_liters_factor_snapshot != expected_action.water_liters_factor
-            or log.plastic_kg_factor_snapshot != expected_action.plastic_kg_factor
-            or log.campaign_id
-            != (demo_id("campaign", "active") if index < 12 else None)
-            or log.evidence_object_key != expected_evidence
-            or log.reviewed_by_id is not None
-            or (log.reviewed_at is not None) != is_rejected
-            or log.rejection_reason
-            != ("Synthetic system-rejected example" if is_rejected else "")
-        ):
+        if demo_action_log_identity(log) != expected_identity:
             raise CommandError(
-                "A deterministic shared-dev action log was edited or has an unexpected identity; refusing reconciliation."
+                "A deterministic shared-dev action log was edited or has an unexpected "
+                "identity; refusing reconciliation."
             )
         logs.append(log)
     return logs
 
 
-def reconcile_legacy_demo_careers(catalog: CatalogData) -> bool:
+# Keep the fail-closed checks and first-write boundary together so reviewers can
+# audit the transaction's validation order as one sequence.
+def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    catalog: CatalogData,
+) -> bool:
     """Move only a complete, verified v1 synthetic seed onto the four career clans.
 
     Returns True when the known v1 dataset was reconciled. A clean database and
@@ -400,7 +391,8 @@ def reconcile_legacy_demo_careers(catalog: CatalogData) -> bool:
         expected_new = expected_new_clans[user.pk]
         if ClanMembership.objects.filter(user=user, clan=expected_new).exists():
             raise CommandError(
-                "A demo user already has a career-clan membership outside the known legacy seed; refusing reconciliation."
+                "A demo user already has a career-clan membership outside the known "
+                "legacy seed; refusing reconciliation."
             )
 
     deltas: dict[Any, int] = {}
@@ -513,18 +505,16 @@ def _validate_retained_legacy_clans(
         [demo_id("clan", f"institutional-{number:02d}") for number in range(1, 4)]
     ):
         clan = legacy_clans.get(clan_id)
-        if (
-            clan is None
-            or clan.name != LEGACY_INSTITUTIONAL_CLAN_NAMES[index]
-            or clan.description != DEMO_INSTITUTIONAL_CLAN_DESCRIPTION
-            or clan.type != Clan.ClanType.INSTITUTIONAL
-            or clan.privacy != Clan.Privacy.PUBLIC
-            or clan.deleted_at is not None
-            or clan.created_by_id is not None
-            or ClanMembership.objects.filter(user_id__in=user_ids, clan=clan).exists()
+        has_demo_references = clan is not None and (
+            ClanMembership.objects.filter(user_id__in=user_ids, clan=clan).exists()
             or ActionLog.objects.filter(
                 pk__in=demo_log_ids, institutional_clan=clan
             ).exists()
+        )
+        if (
+            clan is None
+            or not _legacy_clan_matches_fixture(index, clan)
+            or has_demo_references
         ):
             raise CommandError(
                 "A retained legacy demo clan was edited or still has demo references; refusing reconciliation."

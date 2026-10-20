@@ -118,6 +118,40 @@ def test_approved_action_credits_available_points_alongside_total_points() -> No
 
 
 @pytest.mark.django_db
+def test_action_log_without_institutional_clan_is_rejected_not_a_server_error() -> None:
+    """A profile with no institutional clan gets a 409, not an INSERT failure.
+
+    ActionLog.institutional_clan is NOT NULL, so submitting before onboarding
+    assigned a clan used to crash with a 500 and leave nothing in the logs.
+    """
+    user = User.objects.create_user(email="unassigned@iteso.mx", password="local-only")
+    UserProfile.objects.create(user=user, institutional_clan=None)
+    category = ActionCategory.objects.create(code="WASTE", name="Waste")
+    action = ActionMaster.objects.create(
+        code="RECYCLE",
+        category=category,
+        name="Recycle",
+        description="Recycle something",
+        points=10,
+        validation_type=ActionMaster.ValidationType.NONE,
+    )
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    response = client.post(
+        "/api/v1/action-logs/",
+        {"action_id": str(action.id), "idempotency_key": "no-clan-1"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert "institutional clan" in response.data["error"]
+    assert ActionLog.objects.count() == 0
+    user.profile.refresh_from_db()
+    assert user.profile.total_points == 0
+
+
+@pytest.mark.django_db
 def test_pending_audit_can_be_decided_only_once() -> None:
     user = User.objects.create_user(email="pending@iteso.mx", password="local-only")
     admin = User.objects.create_user(

@@ -20,7 +20,7 @@ class PostAuthorSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name"]
+        fields = ["id", "first_name", "last_name"]
         read_only_fields = ["id", "email", "first_name", "last_name"]
 
 

@@ -20,6 +20,8 @@ from rest_framework.views import APIView
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
 
+# pylint: disable=no-member
+
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -86,7 +88,8 @@ class ImageUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
+    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:  # pylint: disable=too-many-return-statements
+        """Process the image upload and store it securely in Google Cloud Storage."""
         bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
         if not bucket_name:
             logger.error("GCS_EVIDENCE_BUCKET is not configured in Django settings.")
@@ -110,12 +113,8 @@ class ImageUploadView(APIView):
 
         detected_mime = detect_image_mime(file_obj)
         if not detected_mime or detected_mime not in MIME_TO_EXT:
-            return Response(
-                {
-                    "error": "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            err_msg = "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         ext = MIME_TO_EXT[detected_mime]
         blob_name = f"uploads/{uuid.uuid4()}.{ext}"
@@ -133,12 +132,10 @@ class ImageUploadView(APIView):
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
-                {
-                    "error": "Error al comunicar con el servicio de almacenamiento en la nube."
-                },
+                {"error": "Error al comunicar con el servicio de almacenamiento en la nube."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("Unexpected error processing image upload.")
             return Response(
                 {"error": "Ocurrió un error inesperado al procesar la imagen."},

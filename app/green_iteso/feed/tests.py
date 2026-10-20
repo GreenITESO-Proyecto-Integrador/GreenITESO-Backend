@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """Unit and integration test suite for the feed app."""
 
 from __future__ import annotations
@@ -289,6 +290,8 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
 
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
+    """Integration tests for the GCS image upload endpoint."""
+
     def setUp(self) -> None:
         self.user = User.objects.create_user(
             email="testupload@iteso.mx",
@@ -298,16 +301,22 @@ class ImageUploadViewTests(APITestCase):
         self.url = "/api/uploads/"
 
     def test_upload_unauthenticated_returns_401(self) -> None:
+        """Ensure unauthenticated users are rejected."""
+
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_upload_missing_file_returns_400(self) -> None:
+        """Ensure requests without an image file are rejected."""
+
         self.client.force_authenticate(user=self.user)
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("error", response.data)
 
     def test_upload_invalid_mime_type_returns_400(self) -> None:
+        """Ensure non-image files are properly rejected."""
+
         self.client.force_authenticate(user=self.user)
         fake_file = SimpleUploadedFile(
             "test.txt",
@@ -318,6 +327,8 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_oversized_file_returns_400(self) -> None:
+        """Ensure files over the 5MB limit are rejected."""
+
         self.client.force_authenticate(user=self.user)
         large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
         oversized_file = SimpleUploadedFile(
@@ -334,6 +345,8 @@ class ImageUploadViewTests(APITestCase):
     def test_upload_gcs_service_failure_returns_500(
         self, mock_storage_client: MagicMock
     ) -> None:
+        """Ensure GCS failures are handled gracefully with a 500 error."""
+
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
@@ -350,6 +363,8 @@ class ImageUploadViewTests(APITestCase):
     def test_upload_success_returns_200_and_url(
         self, mock_storage_client: MagicMock
     ) -> None:
+        """Ensure a successful upload returns a 200 OK and the public URL."""
+
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
@@ -376,6 +391,8 @@ class ImageUploadViewTests(APITestCase):
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:
+        """Ensure a missing GCS bucket configuration returns a 503 error."""
+
         self.client.force_authenticate(user=self.user)
         valid_jpg = SimpleUploadedFile(
             "sample.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF", content_type="image/jpeg"

@@ -79,8 +79,8 @@ def test_completing_a_mission_creates_mission_completed_notification(
 ) -> None:
     now = timezone.now()
     campaign = campaign_factory(
-        start_date=now - timedelta(hours=1),
-        end_date=now + timedelta(days=1),
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=3),
         status=Campaign.Status.IN_PROGRESS,
     )
     Mission.objects.create(campaign=campaign, action=action, target_count=1)

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from django.utils import timezone
+from google.cloud.exceptions import GoogleCloudError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -281,3 +285,100 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
         with self.assertNumQueries(2):
             response = self.client.get(self.base_url)
             self.assertEqual(response.status_code, 200)
+
+
+@override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
+class ImageUploadViewTests(APITestCase):
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(
+            email="testupload@iteso.mx",
+            password="testpassword123!",
+            first_name="Test",
+        )
+        self.url = "/api/uploads/"
+
+    def test_upload_unauthenticated_returns_401(self) -> None:
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_upload_missing_file_returns_400(self) -> None:
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)
+
+    def test_upload_invalid_mime_type_returns_400(self) -> None:
+        self.client.force_authenticate(user=self.user)
+        fake_file = SimpleUploadedFile(
+            "test.txt",
+            b"contenido de texto plano",
+            content_type="text/plain",
+        )
+        response = self.client.post(self.url, {"image": fake_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_oversized_file_returns_400(self) -> None:
+        self.client.force_authenticate(user=self.user)
+        large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
+        oversized_file = SimpleUploadedFile(
+            "large.jpg",
+            large_content,
+            content_type="image/jpeg",
+        )
+        response = self.client.post(
+            self.url, {"image": oversized_file}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("google.cloud.storage.Client")
+    def test_upload_gcs_service_failure_returns_500(
+        self, mock_storage_client: MagicMock
+    ) -> None:
+        self.client.force_authenticate(user=self.user)
+        mock_instance = mock_storage_client.return_value
+        mock_bucket = mock_instance.bucket.return_value
+        mock_blob = mock_bucket.blob.return_value
+        mock_blob.upload_from_file.side_effect = GoogleCloudError("GCS error")
+
+        valid_jpg = SimpleUploadedFile(
+            "sample.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF", content_type="image/jpeg"
+        )
+        response = self.client.post(self.url, {"image": valid_jpg}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @patch("google.cloud.storage.Client")
+    def test_upload_success_returns_200_and_url(
+        self, mock_storage_client: MagicMock
+    ) -> None:
+        self.client.force_authenticate(user=self.user)
+        mock_instance = mock_storage_client.return_value
+        mock_bucket = mock_instance.bucket.return_value
+        mock_blob = mock_bucket.blob.return_value
+
+        valid_png = SimpleUploadedFile(
+            "sample.png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+            content_type="image/png",
+        )
+        response = self.client.post(
+            self.url, {"image": valid_png}, format="multipart"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("url", response.data)
+        self.assertTrue(
+            response.data["url"].startswith(
+                "https://storage.googleapis.com/test-bucket/uploads/"
+            )
+        )
+        self.assertTrue(response.data["url"].endswith(".png"))
+        mock_blob.upload_from_file.assert_called_once()
+
+    @override_settings(GCS_EVIDENCE_BUCKET="")
+    def test_upload_unconfigured_bucket_returns_503(self) -> None:
+        self.client.force_authenticate(user=self.user)
+        valid_jpg = SimpleUploadedFile(
+            "sample.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF", content_type="image/jpeg"
+        )
+        response = self.client.post(self.url, {"image": valid_jpg}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)

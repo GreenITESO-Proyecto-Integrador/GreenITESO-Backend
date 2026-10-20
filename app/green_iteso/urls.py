@@ -34,7 +34,7 @@ api_patterns = [
 urlpatterns = [
     path("", index_view, name="index"),
     path("api/", include(api_patterns)),
-    path("api/uploads/", ImageUploadView.as_view(), name="image-upload-direct"),
+    path("api/uploads/", ImageUploadView.as_view(), name="image-upload"),
 ]
 
 if settings.DEBUG:

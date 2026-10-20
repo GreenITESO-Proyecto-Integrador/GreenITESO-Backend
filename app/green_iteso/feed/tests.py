@@ -353,7 +353,7 @@ class ImageUploadViewTests(APITestCase):
         # Imagen con cabecera PNG válida pero sin los bloques de datos obligatorios
         truncated_png = SimpleUploadedFile(
             "truncated.png",
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", 
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
             content_type="image/png",
         )
         response = self.client.post(self.url, {"image": truncated_png}, format="multipart")

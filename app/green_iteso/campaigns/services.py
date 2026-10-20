@@ -210,6 +210,15 @@ def approve_campaign(admin: Any, campaign_id: UUID) -> Campaign:
             raise ValidationError(
                 "Cannot approve a proposal whose end date has passed."
             )
+        if campaign.start_date < earliest_allowed_start(now):
+            raise ValidationError(
+                {
+                    "start_date": (
+                        "Cannot approve a proposal that starts today or earlier; "
+                        "users need a day to join."
+                    )
+                }
+            )
         campaign.approval_status = Campaign.ApprovalStatus.APPROVED
         campaign.reviewed_by = admin
         campaign.reviewed_at = now

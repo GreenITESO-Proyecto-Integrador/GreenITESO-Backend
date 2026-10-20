@@ -245,6 +245,21 @@ class InvalidClanPrivacyError(ValueError):
     """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
 
 
+def _is_clan_leader(*, clan: Clan, user: User) -> bool:
+    """Return whether ``user`` holds ``clan``'s accepted LEADER membership.
+
+    Callers lock ``clan`` with ``select_for_update`` first, so the answer
+    reflects committed leadership rather than a snapshot a concurrent
+    ``transfer_leadership`` could invalidate.
+    """
+    return ClanMembership.objects.filter(
+        clan=clan,
+        user=user,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+    ).exists()
+
+
 def _is_already_leading_a_clan(user: User) -> bool:
     """Return whether ``user`` currently leads any non-dissolved clan (BR-04).
 
@@ -414,13 +429,7 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
             5-clan cap.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
-    is_leader = ClanMembership.objects.filter(
-        clan=locked,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=locked, user=actor):
         raise PermissionDenied("Only the clan's leader can accept join requests.")
 
     locked_applicant = User.objects.select_for_update().get(pk=applicant.pk)
@@ -462,13 +471,7 @@ def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
         ValueError: If there is no PENDING request from ``applicant``.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
-    is_leader = ClanMembership.objects.filter(
-        clan=locked,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=locked, user=actor):
         raise PermissionDenied("Only the clan's leader can reject join requests.")
 
     try:
@@ -532,13 +535,7 @@ def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
     """
     if clan.type != Clan.ClanType.PRIVATE:
         raise PermissionDenied("Only private clans can be dissolved.")
-    is_leader = ClanMembership.objects.filter(
-        clan=clan,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=clan, user=actor):
         raise PermissionDenied("Only the clan leader can dissolve the clan.")
 
 
@@ -581,4 +578,61 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     ClanMembership.objects.filter(clan=locked, is_active_private=True).update(
         is_active_private=False
     )
+    return locked
+
+
+@transaction.atomic
+def update_clan(  # pylint: disable=too-many-arguments
+    *,
+    clan: Clan,
+    actor: User,
+    name: str | None = None,
+    description: str | None = None,
+    avatar_object_key: str | None = None,
+    privacy: str | None = None,
+) -> Clan:
+    """Edit a private clan's name, description, avatar, or privacy (#164).
+
+    Only the clan's current LEADER may edit it, not even a global ADMIN.
+    ``None`` leaves a field unchanged. Locks the ``clan`` row before checking
+    leadership, for the same reason as ``dissolve_clan``. Switching from
+    PRIVATE_INVITE to PUBLIC leaves PENDING join requests untouched: the
+    leader still accepts or rejects them.
+
+    Raises:
+        PermissionDenied: If the clan is institutional or ``actor`` is not
+            its current LEADER.
+        InvalidClanPrivacyError: If ``privacy`` is not a ``Clan.Privacy`` value.
+        DuplicateClanNameError: If another alive clan already uses ``name``.
+    """
+    locked = Clan.objects.select_for_update().get(pk=clan.pk)
+    if locked.type != Clan.ClanType.PRIVATE:
+        raise PermissionDenied("Only private clans can be edited.")
+    if not _is_clan_leader(clan=locked, user=actor):
+        raise PermissionDenied("Only the clan leader can edit the clan.")
+    if privacy is not None and privacy not in Clan.Privacy.values:
+        raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+
+    changes = {
+        "name": name,
+        "description": description,
+        "avatar_object_key": avatar_object_key,
+        "privacy": privacy,
+    }
+    changed_fields = [
+        field
+        for field, value in changes.items()
+        if value is not None and value != getattr(locked, field)
+    ]
+    for field in changed_fields:
+        setattr(locked, field, changes[field])
+    if not changed_fields:
+        return locked
+
+    try:
+        locked.save(update_fields=changed_fields)
+    except IntegrityError as exc:
+        if "clan_name_unique_when_alive" not in str(exc):
+            raise
+        raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
     return locked

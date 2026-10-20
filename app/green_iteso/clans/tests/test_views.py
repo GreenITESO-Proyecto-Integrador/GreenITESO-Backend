@@ -529,3 +529,97 @@ def test_retrieve_clan_excludes_a_pending_applicant_from_roster_and_count(
     assert body["member_count"] == 1
     member_ids = [member["user_id"] for member in body["members"]]
     assert str(applicant.pk) not in member_ids
+
+
+@pytest.mark.django_db
+def test_edit_clan_requires_authentication(clan: Clan) -> None:
+    response = APIClient().patch(f"/api/v1/clans/{clan.pk}/", {"name": "New"})
+
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_leader_edits_clan_name_and_privacy(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.patch(
+        f"/api/v1/clans/{clan.pk}/",
+        {"name": "Blue Team", "privacy": Clan.Privacy.PRIVATE_INVITE},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Blue Team"
+    assert response.json()["privacy"] == Clan.Privacy.PRIVATE_INVITE
+    clan.refresh_from_db()
+    assert clan.name == "Blue Team"
+    assert clan.privacy == Clan.Privacy.PRIVATE_INVITE
+
+
+@pytest.mark.django_db
+def test_edit_clan_ignores_read_only_fields(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.patch(
+        f"/api/v1/clans/{clan.pk}/",
+        {"type": Clan.ClanType.INSTITUTIONAL, "total_points": 9999},
+    )
+
+    assert response.status_code == 200
+    clan.refresh_from_db()
+    assert clan.type == Clan.ClanType.PRIVATE
+    assert clan.total_points == 0
+
+
+@pytest.mark.django_db
+def test_member_cannot_edit_clan(leader: User, member: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    ClanMembership.objects.create(user=member, clan=clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Hijacked"})
+
+    assert response.status_code == 403
+    clan.refresh_from_db()
+    assert clan.name == "Green Team"
+
+
+@pytest.mark.django_db
+def test_admin_cannot_edit_a_clan_they_do_not_lead(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    admin = User.objects.create_user(email="admin@iteso.mx", role=User.Role.ADMIN)
+    client = APIClient()
+    client.force_authenticate(admin)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Hijacked"})
+
+    assert response.status_code == 403
+    clan.refresh_from_db()
+    assert clan.name == "Green Team"
+
+
+@pytest.mark.django_db
+def test_edit_clan_rejects_a_duplicate_name(leader: User, member: User) -> None:
+    create_private_clan(name="Taken", created_by=member)
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Taken"})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_edit_dissolved_clan_returns_404(leader: User, clan: Clan) -> None:
+    client = APIClient()
+    client.force_authenticate(leader)
+    client.delete(f"/api/v1/clans/{clan.pk}/")
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Revived"})
+
+    assert response.status_code == 404

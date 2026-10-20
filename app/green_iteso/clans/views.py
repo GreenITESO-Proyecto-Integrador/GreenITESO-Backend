@@ -35,6 +35,7 @@ from .services import (
     join_clan,
     leave_clan,
     reject_join_request,
+    update_clan,
 )
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
@@ -64,10 +65,11 @@ class ClanViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, create, dissolve, join, leave, and manage clans under /api/v1/clans/."""
+    """List, retrieve, create, edit, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
@@ -119,13 +121,42 @@ class ClanViewSet(
         except ValueError as exc:
             raise _validation_error_from(exc) from exc
 
+    @extend_schema(
+        summary="Editar clan",
+        description="Edita nombre, descripción, avatar o privacidad de un clan privado. Solo el líder del clan.",
+        responses={200: ClanSerializer, 400: None, 403: None, 404: None},
+    )
+    def update(self, request: Request, *args: object, **kwargs: object) -> Response:
+        return super().update(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Editar clan parcialmente",
+        description="Edita nombre, descripción, avatar o privacidad de un clan privado. Solo el líder del clan.",
+        responses={200: ClanSerializer, 400: None, 403: None, 404: None},
+    )
+    def partial_update(
+        self, request: Request, *args: object, **kwargs: object
+    ) -> Response:
+        return super().partial_update(request, *args, **kwargs)
+
+    def perform_update(self, serializer: ClanSerializer) -> None:
+        """Apply the edit through the leader-only ``update_clan`` service (#164)."""
+        try:
+            serializer.instance = update_clan(
+                clan=serializer.instance,
+                actor=self.request.user,
+                **serializer.validated_data,
+            )
+        except ValueError as exc:
+            raise _validation_error_from(exc) from exc
+
     def perform_destroy(self, instance: Clan) -> None:
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
         dissolve_clan(clan=instance, actor=self.request.user)
 
     @extend_schema(
         summary="Listar solicitudes de ingreso pendientes",
-        description="Retorna todas las solicitudes PENDING de un clan. Acceso restringido al líder o Administrador.",
+        description="Retorna todas las solicitudes PENDING de un clan. Acceso restringido al líder del clan.",
         tags=["Clans Administration"],
         responses={
             200: PendingMembershipRequestSerializer(many=True),
@@ -140,7 +171,7 @@ class ClanViewSet(
         permission_classes=[IsAuthenticated, IsClanLeader],
     )
     def requests(self, request: Request, **kwargs: object) -> Response:
-        """List pending join requests for this clan as its leader or system admin (T2-40)."""
+        """List pending join requests for this clan as its leader (T2-40)."""
         clan = self.get_object()
         pending_qs = get_pending_join_requests(clan_id=clan.id)
         return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)

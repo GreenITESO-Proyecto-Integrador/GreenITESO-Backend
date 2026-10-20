@@ -24,6 +24,7 @@ from green_iteso.clans.services import (
     dissolve_clan,
     select_active_private_clan,
     transfer_leadership,
+    update_clan,
 )
 
 
@@ -748,3 +749,119 @@ class CreatePrivateClanTests(TestCase):
     def test_rejects_invalid_privacy_value(self) -> None:
         with self.assertRaises(InvalidClanPrivacyError):
             create_private_clan(name="Bad", created_by=self.user, privacy="NOT_REAL")
+
+
+@pytest.mark.django_db
+def test_update_clan_lets_the_leader_edit_every_field(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+
+    updated = update_clan(
+        clan=clan,
+        actor=leader,
+        name="Blue Team",
+        description="We bike to campus.",
+        avatar_object_key="clans/blue.png",
+        privacy=Clan.Privacy.PRIVATE_INVITE,
+    )
+
+    clan.refresh_from_db()
+    assert updated.pk == clan.pk
+    assert clan.name == "Blue Team"
+    assert clan.description == "We bike to campus."
+    assert clan.avatar_object_key == "clans/blue.png"
+    assert clan.privacy == Clan.Privacy.PRIVATE_INVITE
+
+
+@pytest.mark.django_db
+def test_update_clan_leaves_omitted_fields_unchanged(leader: User) -> None:
+    clan = create_private_clan(
+        name="Green Team", created_by=leader, description="Original"
+    )
+
+    update_clan(clan=clan, actor=leader, privacy=Clan.Privacy.PRIVATE_INVITE)
+
+    clan.refresh_from_db()
+    assert clan.name == "Green Team"
+    assert clan.description == "Original"
+    assert clan.privacy == Clan.Privacy.PRIVATE_INVITE
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("caller", ["member", "stranger", "admin"])
+def test_update_clan_rejects_anyone_but_the_leader(leader: User, caller: str) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    actor = User.objects.create_user(
+        email=f"{caller}@iteso.mx",
+        role=User.Role.ADMIN if caller == "admin" else User.Role.STUDENT,
+    )
+    if caller == "member":
+        ClanMembership.objects.create(
+            user=actor, clan=clan, status=ClanMembership.Status.ACCEPTED
+        )
+
+    with pytest.raises(PermissionDenied):
+        update_clan(clan=clan, actor=actor, name="Hijacked")
+
+    clan.refresh_from_db()
+    assert clan.name == "Green Team"
+
+
+@pytest.mark.django_db
+def test_update_clan_rejects_an_institutional_clan(leader: User) -> None:
+    clan = Clan.objects.create(
+        name="Ingeniería en Sistemas", type=Clan.ClanType.INSTITUTIONAL
+    )
+    ClanMembership.objects.create(
+        user=leader, clan=clan, role=ClanMembership.MembershipRole.LEADER
+    )
+
+    with pytest.raises(PermissionDenied):
+        update_clan(clan=clan, actor=leader, name="Renamed")
+
+
+@pytest.mark.django_db
+def test_update_clan_rejects_a_name_taken_by_an_alive_clan(
+    leader: User, member: User
+) -> None:
+    create_private_clan(name="Taken", created_by=member)
+    clan = create_private_clan(name="Green Team", created_by=leader)
+
+    with pytest.raises(DuplicateClanNameError):
+        update_clan(clan=clan, actor=leader, name="Taken")
+
+
+@pytest.mark.django_db
+def test_update_clan_reuses_a_dissolved_clans_name(leader: User, member: User) -> None:
+    old = create_private_clan(name="Reusable", created_by=member)
+    dissolve_clan(clan=old, actor=member)
+    clan = create_private_clan(name="Green Team", created_by=leader)
+
+    update_clan(clan=clan, actor=leader, name="Reusable")
+
+    clan.refresh_from_db()
+    assert clan.name == "Reusable"
+
+
+@pytest.mark.django_db
+def test_update_clan_rejects_an_invalid_privacy(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+
+    with pytest.raises(InvalidClanPrivacyError):
+        update_clan(clan=clan, actor=leader, privacy="SECRET")
+
+
+@pytest.mark.django_db
+def test_update_clan_to_public_keeps_pending_requests_pending(
+    leader: User, member: User
+) -> None:
+    clan = create_private_clan(
+        name="Green Team", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    request = ClanMembership.objects.create(
+        user=member, clan=clan, status=ClanMembership.Status.PENDING
+    )
+
+    update_clan(clan=clan, actor=leader, privacy=Clan.Privacy.PUBLIC)
+
+    request.refresh_from_db()
+    assert request.status == ClanMembership.Status.PENDING

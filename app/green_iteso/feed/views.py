@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
 from django.db.models import QuerySet
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
+from PIL import Image, UnidentifiedImageError
 from rest_framework import permissions, status, viewsets
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -116,6 +118,16 @@ class ImageUploadView(APIView):
             err_msg = "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
             return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            file_obj.seek(0)
+            with Image.open(file_obj) as img:
+                img.verify()
+        except (UnidentifiedImageError, Exception):
+            return Response(
+                {"error": "La imagen está truncada o no se puede decodificar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         ext = MIME_TO_EXT[detected_mime]
         blob_name = f"uploads/{uuid.uuid4()}.{ext}"
 
@@ -127,8 +139,12 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            public_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
-            return Response({"url": public_url}, status=status.HTTP_200_OK)
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(hours=1),
+                method="GET",
+            )
+            return Response({"url": signed_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(

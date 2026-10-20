@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -16,6 +17,8 @@ from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .notifications import notify_campaign_invite, notify_mission_completed
+
+CAMPAIGN_TIME_ZONE = ZoneInfo("America/Mexico_City")
 
 
 def is_clan_leader(user: Any, clan: Clan | None) -> bool:
@@ -109,6 +112,26 @@ def compute_campaign_status(
     if now < end_date:
         return Campaign.Status.IN_PROGRESS
     return Campaign.Status.FINISHED
+
+
+def earliest_allowed_start(now: datetime | None = None) -> datetime:
+    """Return the earliest ``start_date`` a campaign may be created or edited with.
+
+    That is midnight at the start of tomorrow in ``America/Mexico_City``, so
+    users always get the rest of today to join before the campaign starts.
+    """
+    local_now = timezone.localtime(now or timezone.now(), CAMPAIGN_TIME_ZONE)
+    return datetime.combine(
+        local_now.date() + timedelta(days=1), time.min, tzinfo=CAMPAIGN_TIME_ZONE
+    )
+
+
+def ensure_start_date_allowed(
+    start_date: datetime, now: datetime | None = None
+) -> None:
+    """Reject a ``start_date`` earlier than tomorrow (Mexico City calendar day)."""
+    if start_date < earliest_allowed_start(now):
+        raise ValidationError({"start_date": "Start date must be tomorrow or later."})
 
 
 def sync_campaign_statuses(now: datetime | None = None) -> int:
@@ -221,6 +244,40 @@ def reject_campaign(admin: Any, campaign_id: UUID, reason: str) -> Campaign:
                 "rejection_reason",
             ]
         )
+    return campaign
+
+
+def start_campaign(campaign_id: UUID) -> Campaign:
+    """Move an approved campaign from PROMOTION to IN_PROGRESS right now.
+
+    Only ``start_date`` changes (to now); the transition is one-way because
+    action logs may already be registered once the campaign is in progress.
+    """
+    with transaction.atomic():
+        campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+        if (
+            campaign.approval_status != Campaign.ApprovalStatus.APPROVED
+            or campaign.status != Campaign.Status.PROMOTION
+        ):
+            raise ValidationError("Only campaigns in promotion can be started.")
+        campaign.start_date = timezone.now()
+        campaign.status = Campaign.Status.IN_PROGRESS
+        campaign.save(update_fields=["start_date", "status"])
+    return campaign
+
+
+def finish_campaign(campaign_id: UUID) -> Campaign:
+    """Finish an IN_PROGRESS campaign right now by moving its end to the present."""
+    with transaction.atomic():
+        campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+        if campaign.status != Campaign.Status.IN_PROGRESS:
+            raise ValidationError("Only campaigns in progress can be finished.")
+        # Keep ``end_date > start_date`` (DB check constraint) in every case.
+        campaign.end_date = max(
+            timezone.now(), campaign.start_date + timedelta(microseconds=1)
+        )
+        campaign.status = Campaign.Status.FINISHED
+        campaign.save(update_fields=["end_date", "status"])
     return campaign
 
 

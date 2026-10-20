@@ -29,7 +29,7 @@ def proposal_payload(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
         "title": "Proposed campaign",
         "description": "A proposal",
-        "start_date": now + timedelta(hours=1),
+        "start_date": now + timedelta(days=2),
         "end_date": now + timedelta(days=7),
         "missions": default_missions(),
     }

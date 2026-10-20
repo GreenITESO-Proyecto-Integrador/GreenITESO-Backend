@@ -220,7 +220,7 @@ class TestCampaignUpdateEndpoint:
         assert response.status_code == 400
         assert "end_date" in response.data
 
-    def test_past_start_recomputes_status_to_in_progress(
+    def test_past_start_gets_400_and_keeps_promotion(
         self, api_client: APIClient, admin_user: User, campaign: Campaign
     ) -> None:
         api_client.force_authenticate(user=admin_user)
@@ -231,7 +231,7 @@ class TestCampaignUpdateEndpoint:
             format="json",
         )
 
-        assert response.status_code == 200
-        assert response.data["status"] == Campaign.Status.IN_PROGRESS
+        assert response.status_code == 400
+        assert "start_date" in response.data
         campaign.refresh_from_db()
-        assert campaign.status == Campaign.Status.IN_PROGRESS
+        assert campaign.status == Campaign.Status.PROMOTION

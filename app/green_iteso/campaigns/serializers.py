@@ -18,6 +18,7 @@ from .services import (
     can_manage_campaign_for_user,
     compute_campaign_status,
     create_campaign_with_missions,
+    ensure_start_date_allowed,
 )
 
 
@@ -129,6 +130,8 @@ class CampaignSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"end_date": "End date must be in the future."}
                 )
+        if self.instance is None and start_date is not None:
+            ensure_start_date_allowed(start_date)
 
         scope = attrs.get("scope", getattr(self.instance, "scope", None))
         target_clan = attrs.get(
@@ -245,6 +248,8 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}
             )
+        if "start_date" in attrs:
+            ensure_start_date_allowed(attrs["start_date"])
         return attrs
 
     def update(self, instance: Campaign, validated_data: dict[str, Any]) -> Campaign:
@@ -314,6 +319,8 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}
             )
+        if start_date is not None:
+            ensure_start_date_allowed(start_date)
         if not attrs.get("missions"):
             raise serializers.ValidationError(
                 {"missions": "A campaign must have at least one mission."}

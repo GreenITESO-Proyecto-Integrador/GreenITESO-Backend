@@ -1,17 +1,28 @@
+# pylint: disable=no-member
 """Unit and integration test suite for the feed app."""
 
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from django.utils import timezone
+from google.cloud.exceptions import GoogleCloudError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
+
+VALID_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 User = get_user_model()
 
@@ -281,3 +292,124 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
         with self.assertNumQueries(2):
             response = self.client.get(self.base_url)
             self.assertEqual(response.status_code, 200)
+
+
+@override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
+class ImageUploadViewTests(APITestCase):
+    """Integration tests for the GCS image upload endpoint."""
+
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(
+            email="testupload@iteso.mx",
+            password="testpassword123!",
+            first_name="Test",
+        )
+        self.url = "/api/uploads/"
+
+    def test_upload_unauthenticated_returns_401(self) -> None:
+        """Ensure unauthenticated users are rejected."""
+
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_upload_missing_file_returns_400(self) -> None:
+        """Ensure requests without an image file are rejected."""
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)
+
+    def test_upload_invalid_mime_type_returns_400(self) -> None:
+        """Ensure non-image files are properly rejected."""
+
+        self.client.force_authenticate(user=self.user)
+        fake_file = SimpleUploadedFile(
+            "test.txt",
+            b"contenido de texto plano",
+            content_type="text/plain",
+        )
+        response = self.client.post(self.url, {"image": fake_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_oversized_file_returns_400(self) -> None:
+        """Ensure files over the 5MB limit are rejected."""
+
+        self.client.force_authenticate(user=self.user)
+        large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
+        oversized_file = SimpleUploadedFile(
+            "large.jpg",
+            large_content,
+            content_type="image/jpeg",
+        )
+        response = self.client.post(
+            self.url, {"image": oversized_file}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_truncated_image_returns_400(self) -> None:
+        """Ensure an image with a valid header but truncated content is rejected by Pillow."""
+        self.client.force_authenticate(user=self.user)
+        # Imagen con cabecera PNG válida pero sin los bloques de datos obligatorios
+        truncated_png = SimpleUploadedFile(
+            "truncated.png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+            content_type="image/png",
+        )
+        response = self.client.post(self.url, {"image": truncated_png}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)
+
+    @patch("google.cloud.storage.Client")
+    def test_upload_gcs_service_failure_returns_500(
+        self, mock_storage_client: MagicMock
+    ) -> None:
+        """Ensure GCS failures are handled gracefully with a 500 error."""
+        self.client.force_authenticate(user=self.user)
+        mock_instance = mock_storage_client.return_value
+        mock_bucket = mock_instance.bucket.return_value
+        mock_blob = mock_bucket.blob.return_value
+        mock_blob.upload_from_file.side_effect = GoogleCloudError("GCS error")
+
+        # Usar la imagen válida para superar el chequeo de Pillow
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @patch("google.cloud.storage.Client")
+    def test_upload_success_returns_200_and_url(
+        self, mock_storage_client: MagicMock
+    ) -> None:
+        """Ensure a successful upload returns a 200 OK and the signed URL."""
+        self.client.force_authenticate(user=self.user)
+        mock_instance = mock_storage_client.return_value
+        mock_bucket = mock_instance.bucket.return_value
+        mock_blob = mock_bucket.blob.return_value
+        # Simular que SDK devuelve una URL con firma
+        mock_blob.generate_signed_url.return_value = (
+            "https://storage.googleapis.com/test-bucket/"
+            "uploads/test.png?X-Goog-Signature=mock"
+        )
+
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("url", response.data)
+        self.assertIn("X-Goog-Signature", response.data["url"])
+        mock_blob.upload_from_file.assert_called_once()
+        mock_blob.generate_signed_url.assert_called_once()
+
+    @override_settings(GCS_EVIDENCE_BUCKET="")
+    def test_upload_unconfigured_bucket_returns_503(self) -> None:
+        """Ensure a missing GCS bucket configuration returns a 503 error."""
+        self.client.force_authenticate(user=self.user)
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)

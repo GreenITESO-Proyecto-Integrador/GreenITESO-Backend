@@ -152,8 +152,37 @@ release paths if the default branch, trigger, or environment policy changes.
 `.github/workflows/deploy-dev.yml` builds and pushes an image tagged with the
 full approved commit SHA. The reusable `.github/workflows/_deploy.yml` resolves
 that tag to an Artifact Registry digest and writes a release record only after
-the service deploy succeeds. Staging and production reuse the recorded digest;
-they do not rebuild the image.
+the service deploy succeeds. Staging reuses the recorded dev digest and does not
+rebuild the image.
+
+### Production-only mode (current)
+
+While only production is deployed to the cloud, preprod has no Cloud Run
+release, so there is no staging release record to reuse. In this mode:
+
+- `deploy-production.yml` runs on its **own** switch, the repository variable
+  `CLOUD_PRODUCTION_DEPLOY_ENABLED`, and passes `build: true`. Production then
+  builds and pushes the image for the merged `prod` commit and releases that
+  digest through the same migrate, smoke, deploy order as any other release.
+  `CLOUD_DEPLOYMENT_ENABLED` is not used by production because it also turns on
+  the dev/preprod cloud releases and switches off their standalone Neon
+  migrations.
+- The "exact staging release evidence" requirement for `preprod` to `prod`
+  promotions is **commented out** in `promote.yml` and in
+  `verify-promotion-source.yml`. The promotion chain check (the PR must come
+  from `preprod`), the code-owner approval and the `test` check still apply.
+  The dev migration and smoke evidence for `dev` to `preprod` is unchanged.
+- The release script lets `production` (and `dev`) build their own image. It
+  rejects a production build that also pins a source digest, and a production
+  release without a build still requires one.
+- `GCS_EVIDENCE_BUCKET` (optional GitHub Environment secret) is passed to the
+  service deploy. `gcloud run deploy --set-env-vars` replaces every variable on
+  the service, so any runtime variable must be listed in `scripts/release.sh`
+  or a release would silently drop it.
+
+To go back to the staging-first flow: uncomment both evidence blocks, restore
+`if: inputs.environment != 'dev'` on the provenance step in `_deploy.yml`, and
+set `build: false` in `deploy-production.yml`.
 
 Successful promotion PR merges pass the merge commit as the target release SHA
 and the PR head as the source-image SHA. The target branch must still point at

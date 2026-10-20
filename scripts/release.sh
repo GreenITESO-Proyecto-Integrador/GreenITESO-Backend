@@ -39,12 +39,18 @@ if [[ "${BUILD_IMAGE:-false}" != true && "${BUILD_IMAGE:-false}" != false ]]; th
   echo "BUILD_IMAGE must be true or false" >&2
   exit 2
 fi
-if [[ "$RELEASE_ENVIRONMENT" != dev && "${BUILD_IMAGE:-false}" == true ]]; then
-  echo "BUILD_IMAGE=true is only allowed for dev releases" >&2
+# Production builds its own image from the approved commit while staging is not
+# deployed to the cloud. Staging still must reuse a recorded source digest.
+if [[ "$RELEASE_ENVIRONMENT" != dev && "$RELEASE_ENVIRONMENT" != production && "${BUILD_IMAGE:-false}" == true ]]; then
+  echo "BUILD_IMAGE=true is only allowed for dev and production releases" >&2
   exit 2
 fi
-if [[ "$RELEASE_ENVIRONMENT" != dev && -z "${EXPECTED_IMAGE_DIGEST:-}" ]]; then
+if [[ "$RELEASE_ENVIRONMENT" != dev && "${BUILD_IMAGE:-false}" != true && -z "${EXPECTED_IMAGE_DIGEST:-}" ]]; then
   echo "EXPECTED_IMAGE_DIGEST is required for ${RELEASE_ENVIRONMENT} releases" >&2
+  exit 2
+fi
+if [[ "$RELEASE_ENVIRONMENT" == production && "${BUILD_IMAGE:-false}" == true && -n "${EXPECTED_IMAGE_DIGEST:-}" ]]; then
+  echo "A production release that builds its own image must not also pin a source digest" >&2
   exit 2
 fi
 if [[ ! "$CLOUD_RUN_MAX_INSTANCES" =~ ^[1-9][0-9]*$ ]] ||
@@ -67,6 +73,11 @@ for variable in RELEASE_ENVIRONMENT DJANGO_ALLOWED_HOSTS MICROSOFT_TENANT_ID MIC
     exit 2
   fi
 done
+
+if [[ -n "${GCS_EVIDENCE_BUCKET:-}" && ! "$GCS_EVIDENCE_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,220}$ ]]; then
+  echo "GCS_EVIDENCE_BUCKET must be a valid Cloud Storage bucket name" >&2
+  exit 2
+fi
 
 IMAGE_REGISTRY="${ARTIFACT_REGISTRY_LOCATION}-docker.pkg.dev/${IMAGE_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
 IMAGE="${IMAGE_REGISTRY}/greeniteso"
@@ -109,6 +120,13 @@ fi
 # gcloud uses comma-separated KEY=VALUE pairs by default. The @ delimiter
 # preserves comma-separated ALLOWED_HOSTS values as one environment value.
 RUNTIME_ENV="^@^DJANGO_ENV=${RELEASE_ENVIRONMENT}@DJANGO_DEPLOYED=true@DJANGO_CONNECTION_ROLE=app@DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS}@MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID}@MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}"
+# --set-env-vars replaces every variable on the service, so anything the
+# service needs at runtime must be listed here or the release would drop it.
+# GCS_EVIDENCE_BUCKET names the private bucket for action-evidence photos; it
+# is optional because dev and staging do not have one.
+if [[ -n "${GCS_EVIDENCE_BUCKET:-}" ]]; then
+  RUNTIME_ENV+="@GCS_EVIDENCE_BUCKET=${GCS_EVIDENCE_BUCKET}"
+fi
 MIGRATION_ENV="^@^DJANGO_ENV=${RELEASE_ENVIRONMENT}@DJANGO_DEPLOYED=true@DJANGO_CONNECTION_ROLE=direct@DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS}"
 RUNTIME_SECRETS="DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest"
 MIGRATION_SECRETS="DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY_SECRET}:latest,DATABASE_URL_UNPOOLED=${DATABASE_URL_UNPOOLED_SECRET}:latest"

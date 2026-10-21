@@ -11,35 +11,47 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
 from green_iteso.accounts.services import ensure_profile
 from green_iteso.core.permissions import IsClanLeader
 
 from .avatars import InvalidClanAvatarError
-from .selectors import get_pending_join_requests, list_active_clans
+from .selectors import (
+    get_pending_join_requests,
+    list_active_clan_invitations,
+    list_active_clans,
+)
 from .serializers import (
     ClanAvatarUploadSerializer,
     ClanDetailSerializer,
+    ClanInvitationCreatedSerializer,
+    ClanInvitationSerializer,
     ClanMembershipSerializer,
     ClanSerializer,
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
     PendingMembershipRequestSerializer,
+    RedeemInvitationSerializer,
     TransferLeadershipSerializer,
 )
 from .services import (
     DuplicateClanNameError,
     InvalidClanPrivacyError,
+    InvalidInvitationCodeError,
     accept_join_request,
     assign_institutional_clan,
+    create_clan_invitation,
     create_private_clan,
     dissolve_clan,
     join_clan,
     leave_clan,
+    redeem_clan_invitation,
     reject_join_request,
+    revoke_clan_invitation,
     set_clan_avatar,
     update_clan,
 )
@@ -98,6 +110,9 @@ class ClanViewSet(
     """List, retrieve, create, edit, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
+    # Declared so ``@action(throttle_scope=...)`` is accepted; only actions
+    # that also list ScopedRateThrottle (redeem-invitation) are throttled.
+    throttle_scope: str | None = None
 
     def get_serializer_class(self) -> type[ClanSerializer]:
         if self.action == "retrieve":
@@ -185,6 +200,115 @@ class ClanViewSet(
         clan = self.get_object()
         pending_qs = get_pending_join_requests(clan_id=clan.id)
         return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)
+
+    @extend_schema(
+        methods=["GET"],
+        summary="Listar códigos de invitación activos",
+        description=(
+            "Códigos sin usar, revocar ni expirar. Nunca incluye el código "
+            "completo. Solo el líder del clan."
+        ),
+        responses={200: ClanInvitationSerializer(many=True), 403: None, 404: None},
+    )
+    @extend_schema(
+        methods=["POST"],
+        summary="Generar código de invitación",
+        description=(
+            "Crea un código de un solo uso que expira en 48 h. El código "
+            "completo solo se devuelve aquí. Solo el líder del clan."
+        ),
+        request=None,
+        responses={
+            201: ClanInvitationCreatedSerializer,
+            400: None,
+            403: None,
+            404: None,
+        },
+    )
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path="invitations",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def invitations(self, request: Request, **kwargs: object) -> Response:
+        """List or create this clan's single-use invite codes as its leader (#165)."""
+        clan = self.get_object()
+        if request.method == "GET":
+            active = list_active_clan_invitations(clan=clan)
+            return Response(ClanInvitationSerializer(active, many=True).data)
+        try:
+            invitation, code = create_clan_invitation(clan=clan, actor=request.user)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except ValueError as exc:
+            raise _validation_error_from(exc) from exc
+        payload = {
+            "id": invitation.id,
+            "code": code,
+            "expires_at": invitation.expires_at,
+        }
+        return Response(
+            ClanInvitationCreatedSerializer(payload).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Revocar código de invitación",
+        description="Invalida un código de invitación del clan. Solo el líder del clan.",
+        responses={204: None, 403: None, 404: None},
+    )
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"invitations/(?P<invitation_id>[0-9a-fA-F-]{36})",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def revoke_invitation(
+        self, request: Request, invitation_id: str, **kwargs: object
+    ) -> Response:
+        """Revoke one of this clan's invite codes as its leader (#165)."""
+        clan = self.get_object()
+        try:
+            revoke_clan_invitation(
+                clan=clan, actor=request.user, invitation_id=invitation_id
+            )
+        except (Clan.DoesNotExist, ClanInvitation.DoesNotExist) as exc:
+            raise NotFound() from exc
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
+        summary="Unirse a un clan con código de invitación",
+        description=(
+            "Canjea un código de un solo uso y une al usuario al clan como "
+            "miembro aceptado (respeta el límite de 5 clanes privados). "
+            "Limitado a 10 intentos por minuto."
+        ),
+        request=RedeemInvitationSerializer,
+        responses={201: ClanMembershipSerializer, 400: None, 429: None},
+    )
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="redeem-invitation",
+        throttle_classes=[ScopedRateThrottle],
+        throttle_scope="clan_invite_redeem",
+    )
+    def redeem_invitation(self, request: Request) -> Response:
+        """Join a clan with a single-use invite code (#165)."""
+        payload = RedeemInvitationSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            membership = redeem_clan_invitation(
+                code=payload.validated_data["code"], user=request.user
+            )
+        except InvalidInvitationCodeError as exc:
+            raise _validation_error_from(exc, field="code") from exc
+        except ValueError as exc:
+            raise _validation_error_from(exc) from exc
+        return Response(
+            ClanMembershipSerializer(membership).data, status=status.HTTP_201_CREATED
+        )
 
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request: Request, **kwargs: object) -> Response:

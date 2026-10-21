@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.accounts.models import (
+    Clan,
+    ClanInvitation,
+    ClanMembership,
+    User,
+    UserProfile,
+)
 from green_iteso.accounts.services import ensure_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
+from .invite_codes import (
+    CODE_LENGTH,
+    INVITATION_TTL,
+    MAX_ACTIVE_INVITATIONS_PER_CLAN,
+    code_hint,
+    generate_code,
+    hash_code,
+    normalize_code,
+)
+from .selectors import list_active_clan_invitations
 
 
 class DuplicateClanLeaderError(Exception):
@@ -693,3 +711,165 @@ def set_clan_avatar(*, clan: Clan, actor: User, uploaded: UploadedFile | None) -
         clan_id = locked.pk
         transaction.on_commit(lambda: delete_clan_avatar(clan_id, previous_key))
     return locked
+
+
+class InvitationLimitExceededError(ValueError):
+    """Raised when a clan already has the maximum number of active invite codes."""
+
+
+class InvalidInvitationCodeError(ValueError):
+    """Raised for any code that can't be redeemed (#165).
+
+    Deliberately one error for unknown, expired, used, and revoked codes, so
+    the response never tells a guesser which codes exist.
+    """
+
+
+class AlreadyClanMemberError(ValueError):
+    """Raised when the redeemer already belongs to the invitation's clan."""
+
+
+INVITATION_CODE_UNIQUE_CONSTRAINT = "clan_invitation_code_hash_unique"
+_MAX_CODE_ATTEMPTS = 5
+
+
+@transaction.atomic
+def create_clan_invitation(*, clan: Clan, actor: User) -> tuple[ClanInvitation, str]:
+    """Create a single-use invite code for a private clan; return it once (#165).
+
+    Only the clan's current LEADER may create codes. The plain code is
+    returned to the caller and never stored: the row keeps its HMAC and the
+    last four characters. A hash collision (about 1 in a trillion per code)
+    is retried with a fresh code.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+        InvitationLimitExceededError: If the clan already has
+            ``MAX_ACTIVE_INVITATIONS_PER_CLAN`` active codes.
+    """
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
+    if list_active_clan_invitations(clan=locked).count() >= (
+        MAX_ACTIVE_INVITATIONS_PER_CLAN
+    ):
+        raise InvitationLimitExceededError(
+            f"A clan can have at most {MAX_ACTIVE_INVITATIONS_PER_CLAN} active "
+            "invitation codes. Revoke one first."
+        )
+
+    for _ in range(_MAX_CODE_ATTEMPTS):
+        code = generate_code()
+        try:
+            with transaction.atomic():
+                invitation = ClanInvitation.objects.create(
+                    clan=locked,
+                    created_by=actor,
+                    code_hash=hash_code(code),
+                    code_hint=code_hint(code),
+                    expires_at=timezone.now() + INVITATION_TTL,
+                )
+        except IntegrityError as exc:
+            if _violated_constraint(exc) != INVITATION_CODE_UNIQUE_CONSTRAINT:
+                raise
+            continue
+        return invitation, code
+    raise RuntimeError("Could not generate a unique invitation code.")
+
+
+@transaction.atomic
+def revoke_clan_invitation(*, clan: Clan, actor: User, invitation_id: str) -> None:
+    """Revoke one of ``clan``'s invite codes as its LEADER (#165).
+
+    Idempotent: revoking an already revoked or redeemed code is a no-op.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        ClanInvitation.DoesNotExist: If the code doesn't belong to ``clan``.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+    """
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
+    invitation = ClanInvitation.objects.select_for_update().get(
+        pk=invitation_id, clan=locked
+    )
+    if invitation.revoked_at is None and invitation.redeemed_at is None:
+        invitation.revoked_at = timezone.now()
+        invitation.save(update_fields=["revoked_at"])
+
+
+def _invalid_code() -> InvalidInvitationCodeError:
+    return InvalidInvitationCodeError("Invalid or expired invitation code.")
+
+
+def _is_redeemable(invitation: ClanInvitation, clan: Clan, now: datetime) -> bool:
+    """Return whether a locked invitation and its locked clan accept a redemption."""
+    clan_is_open = clan.deleted_at is None and clan.type == Clan.ClanType.PRIVATE
+    unused = invitation.redeemed_at is None and invitation.revoked_at is None
+    return clan_is_open and unused and invitation.expires_at > now
+
+
+@transaction.atomic
+def redeem_clan_invitation(*, code: str, user: User) -> ClanMembership:
+    """Join a private clan with a single-use invite code (#165).
+
+    The code is the leader's pre-approval, so the membership is ACCEPTED on
+    the spot, still subject to BR-04's 5-private-clan cap. Locks the clan row
+    first, then the invitation, then the user: the same order as
+    ``accept_join_request``, so the two can't deadlock. A PENDING or REJECTED
+    row for the pair is reused, as in ``join_clan``. The code is only
+    consumed when the join succeeds.
+
+    Raises:
+        InvalidInvitationCodeError: If the code is unknown, expired, used,
+            revoked, or its clan was dissolved.
+        AlreadyClanMemberError: If ``user`` already belongs to the clan.
+        PrivateClanLimitExceededError: If joining would exceed BR-04's cap.
+    """
+    normalized = normalize_code(code)
+    if len(normalized) != CODE_LENGTH:
+        raise _invalid_code()
+    code_hash = hash_code(normalized)
+    clan_id = (
+        ClanInvitation.objects.filter(code_hash=code_hash)
+        .values_list("clan_id", flat=True)
+        .first()
+    )
+    if clan_id is None:
+        raise _invalid_code()
+
+    locked_clan = Clan.all_objects.select_for_update().get(pk=clan_id)
+    invitation = (
+        ClanInvitation.objects.select_for_update().filter(code_hash=code_hash).first()
+    )
+    now = timezone.now()
+    if invitation is None or not _is_redeemable(invitation, locked_clan, now):
+        raise _invalid_code()
+
+    locked_user = User.objects.select_for_update().get(pk=user.pk)
+    membership = ClanMembership.objects.filter(
+        user=locked_user, clan=locked_clan
+    ).first()
+    if membership is not None and membership.status == ClanMembership.Status.ACCEPTED:
+        raise AlreadyClanMemberError("You are already a member of this clan.")
+    if (
+        _count_private_clan_memberships(locked_user)
+        >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
+    ):
+        raise PrivateClanLimitExceededError(
+            "User already belongs to "
+            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
+        )
+
+    if membership is None:
+        membership = ClanMembership.objects.create(
+            user=locked_user, clan=locked_clan, status=ClanMembership.Status.ACCEPTED
+        )
+    else:
+        membership.status = ClanMembership.Status.ACCEPTED
+        membership.save(update_fields=["status"])
+
+    invitation.redeemed_by = locked_user
+    invitation.redeemed_at = now
+    invitation.save(update_fields=["redeemed_by", "redeemed_at"])
+    return membership

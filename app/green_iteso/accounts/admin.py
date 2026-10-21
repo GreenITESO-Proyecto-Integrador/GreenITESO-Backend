@@ -6,7 +6,14 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 
-from .models import Clan, ClanMembership, User, UserProfile, UserRoleAudit
+from .models import (
+    Clan,
+    ClanInvitation,
+    ClanMembership,
+    User,
+    UserProfile,
+    UserRoleAudit,
+)
 
 
 @admin.register(User)
@@ -163,6 +170,41 @@ class ClanMembershipAdmin(admin.ModelAdmin):
                         f"({existing_leader.user})."
                     )
             super().save_model(request, obj, form, change)
+
+
+@admin.register(ClanInvitation)
+class ClanInvitationAdmin(admin.ModelAdmin):
+    """Read-only audit view of clan invite codes; the code hash is never shown."""
+
+    list_display = (
+        "clan",
+        "code_hint",
+        "created_by",
+        "expires_at",
+        "redeemed_by",
+        "redeemed_at",
+        "revoked_at",
+    )
+    search_fields = ("clan__name", "code_hint")
+    exclude = ("code_hash",)
+    readonly_fields = (
+        "clan",
+        "code_hint",
+        "created_by",
+        "expires_at",
+        "created_at",
+        "redeemed_by",
+        "redeemed_at",
+        "revoked_at",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: ClanInvitation | None = None
+    ) -> bool:
+        return False
 
 
 @admin.register(UserRoleAudit)

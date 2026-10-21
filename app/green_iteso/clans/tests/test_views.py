@@ -612,6 +612,50 @@ def test_edit_clan_rejects_a_duplicate_name(leader: User, member: User) -> None:
     response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Taken"})
 
     assert response.status_code == 400
+    assert "name" in response.json()
+
+
+@pytest.mark.django_db
+def test_edit_clan_rejects_an_invalid_privacy_on_the_privacy_field(
+    leader: User,
+) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"privacy": "SECRET"})
+
+    assert response.status_code == 400
+    assert "privacy" in response.json()
+
+
+@pytest.mark.django_db
+def test_edit_institutional_clan_is_forbidden(member: User) -> None:
+    clan = Clan.objects.create(name="Arquitectura", type=Clan.ClanType.INSTITUTIONAL)
+    ClanMembership.objects.create(user=member, clan=clan)
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Renamed"})
+
+    assert response.status_code == 403
+    clan.refresh_from_db()
+    assert clan.name == "Arquitectura"
+
+
+@pytest.mark.django_db
+def test_non_member_editing_an_invite_only_clan_gets_404(
+    leader: User, member: User
+) -> None:
+    clan = create_private_clan(
+        name="Secret Clan", created_by=leader, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    client = APIClient()
+    client.force_authenticate(member)
+
+    response = client.patch(f"/api/v1/clans/{clan.pk}/", {"name": "Hijacked"})
+
+    assert response.status_code == 404
 
 
 @pytest.mark.django_db

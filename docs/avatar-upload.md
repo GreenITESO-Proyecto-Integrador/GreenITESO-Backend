@@ -77,3 +77,22 @@ credenciales del bucket `greeniteso-<ambiente>-objects` (ver arriba),
 ninguno de los cuales existe todavía en este repositorio. Es trabajo de una
 historia futura, una vez que `GreenITESO-Infra` aplique el módulo
 `storage` y la cuenta de GCP exista.
+
+## Avatar de clan (#164)
+
+A diferencia del avatar de usuario, el avatar de un clan **sí** pasa por este
+backend: el cliente nunca elige la llave del objeto.
+
+- `POST /api/v1/clans/{id}/avatar/` (multipart, campo `avatar`) — solo el
+  líder del clan. Valida la firma del archivo (JPG, PNG o WEBP), que el
+  `Content-Type` declarado coincida y el límite de 5 MB, y genera la llave
+  `clan-avatars/<clan_id>/<uuid>.<ext>`.
+- `DELETE /api/v1/clans/{id}/avatar/` — quita el avatar.
+- `avatar_object_key` es de solo lectura en `POST /clans/` y
+  `PATCH /clans/{id}/`; un valor enviado por el cliente se ignora.
+
+El almacenamiento sigue a `actions.evidence`: en desarrollo local va a
+`MEDIA_ROOT`, y un servicio desplegado con `GCS_EVIDENCE_BUCKET` escribe en
+ese bucket privado compartido. Al reemplazar o quitar el avatar, el archivo
+anterior se borra después del commit. Servir la imagen (URL firmada de
+lectura) queda pendiente.

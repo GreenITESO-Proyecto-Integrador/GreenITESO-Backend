@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied
+from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.accounts.services import ensure_profile
+
+from .avatars import delete_clan_avatar, save_clan_avatar
 
 
 class DuplicateClanLeaderError(Exception):
@@ -245,6 +248,15 @@ class InvalidClanPrivacyError(ValueError):
     """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
 
 
+CLAN_NAME_UNIQUE_CONSTRAINT = "clan_name_unique_when_alive"
+
+
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """Return the constraint PostgreSQL reported, rather than parsing the message."""
+    diag = getattr(exc.__cause__, "diag", None)
+    return getattr(diag, "constraint_name", None)
+
+
 def _is_clan_leader(*, clan: Clan, user: User) -> bool:
     """Return whether ``user`` holds ``clan``'s accepted LEADER membership.
 
@@ -300,7 +312,6 @@ def create_private_clan(
     name: str,
     created_by: User,
     description: str = "",
-    avatar_object_key: str = "",
     privacy: str = Clan.Privacy.PUBLIC,
 ) -> Clan:
     """Create a private clan and grant its creator the LEADER membership (T2-31).
@@ -337,12 +348,11 @@ def create_private_clan(
             name=name,
             type=Clan.ClanType.PRIVATE,
             description=description,
-            avatar_object_key=avatar_object_key,
             privacy=privacy,
             created_by=locked_user,
         )
     except IntegrityError as exc:
-        if "clan_name_unique_when_alive" not in str(exc):
+        if _violated_constraint(exc) != CLAN_NAME_UNIQUE_CONSTRAINT:
             raise
         raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
 
@@ -581,58 +591,105 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     return locked
 
 
+def _lock_clan_for_leader_edit(*, clan: Clan, actor: User) -> Clan:
+    """Lock ``clan`` and require ``actor`` to be its current LEADER (#164).
+
+    Locks through ``all_objects`` so a clan dissolved after the view fetched
+    it surfaces as ``Clan.DoesNotExist`` (a 404) instead of an unhandled
+    error. Leadership is checked before the clan type so a non-leader gets
+    the same answer for institutional and private clans.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+    """
+    locked = Clan.all_objects.select_for_update().get(pk=clan.pk)
+    if locked.deleted_at is not None:
+        raise Clan.DoesNotExist("This clan was dissolved.")
+    if not _is_clan_leader(clan=locked, user=actor):
+        raise PermissionDenied("Only the clan leader can edit the clan.")
+    if locked.type != Clan.ClanType.PRIVATE:
+        raise PermissionDenied("Only private clans can be edited.")
+    return locked
+
+
 @transaction.atomic
-def update_clan(  # pylint: disable=too-many-arguments
+def update_clan(
     *,
     clan: Clan,
     actor: User,
     name: str | None = None,
     description: str | None = None,
-    avatar_object_key: str | None = None,
     privacy: str | None = None,
 ) -> Clan:
-    """Edit a private clan's name, description, avatar, or privacy (#164).
+    """Edit a private clan's name, description, or privacy (#164).
 
     Only the clan's current LEADER may edit it, not even a global ADMIN.
-    ``None`` leaves a field unchanged. Locks the ``clan`` row before checking
-    leadership, for the same reason as ``dissolve_clan``. Switching from
-    PRIVATE_INVITE to PUBLIC leaves PENDING join requests untouched: the
-    leader still accepts or rejects them.
+    ``None`` leaves a field unchanged. The avatar is changed through
+    ``set_clan_avatar`` instead, so the client never picks an object key.
+    Switching from PRIVATE_INVITE to PUBLIC leaves PENDING join requests
+    untouched: the leader still accepts or rejects them.
 
     Raises:
-        PermissionDenied: If the clan is institutional or ``actor`` is not
-            its current LEADER.
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            the clan is institutional.
         InvalidClanPrivacyError: If ``privacy`` is not a ``Clan.Privacy`` value.
         DuplicateClanNameError: If another alive clan already uses ``name``.
     """
-    locked = Clan.objects.select_for_update().get(pk=clan.pk)
-    if locked.type != Clan.ClanType.PRIVATE:
-        raise PermissionDenied("Only private clans can be edited.")
-    if not _is_clan_leader(clan=locked, user=actor):
-        raise PermissionDenied("Only the clan leader can edit the clan.")
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
     if privacy is not None and privacy not in Clan.Privacy.values:
         raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
 
-    changes = {
-        "name": name,
-        "description": description,
-        "avatar_object_key": avatar_object_key,
-        "privacy": privacy,
-    }
+    changes = {"name": name, "description": description, "privacy": privacy}
     changed_fields = [
         field
         for field, value in changes.items()
         if value is not None and value != getattr(locked, field)
     ]
-    for field in changed_fields:
-        setattr(locked, field, changes[field])
     if not changed_fields:
         return locked
+    for field in changed_fields:
+        setattr(locked, field, changes[field])
 
     try:
         locked.save(update_fields=changed_fields)
     except IntegrityError as exc:
-        if "clan_name_unique_when_alive" not in str(exc):
+        if _violated_constraint(exc) != CLAN_NAME_UNIQUE_CONSTRAINT:
             raise
         raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
+    return locked
+
+
+@transaction.atomic
+def set_clan_avatar(*, clan: Clan, actor: User, uploaded: UploadedFile | None) -> Clan:
+    """Replace, or with ``uploaded=None`` remove, a private clan's avatar (#164).
+
+    Authorizes before touching storage, so a non-leader's upload is never
+    written. The new key is generated by ``avatars.save_clan_avatar`` and is
+    scoped to this clan. The previous image is deleted only once the change
+    commits, so a rolled-back request never loses the current avatar.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            the clan is institutional.
+        InvalidClanAvatarError: If the upload is not a JPG/PNG/WEBP of at
+            most 5 MB.
+    """
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
+    previous_key = locked.avatar_object_key
+    new_key = save_clan_avatar(locked.pk, uploaded) if uploaded is not None else ""
+
+    try:
+        locked.avatar_object_key = new_key
+        locked.save(update_fields=["avatar_object_key"])
+    except Exception:
+        if new_key:
+            delete_clan_avatar(locked.pk, new_key)
+        raise
+    if previous_key and previous_key != new_key:
+        clan_id = locked.pk
+        transaction.on_commit(lambda: delete_clan_avatar(clan_id, previous_key))
     return locked

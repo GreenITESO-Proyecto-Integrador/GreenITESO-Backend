@@ -707,13 +707,12 @@ class CreatePrivateClanTests(TestCase):
             name="Los Ocultos",
             created_by=self.user,
             description="secret squad",
-            avatar_object_key="avatars/x.png",
             privacy=Clan.Privacy.PRIVATE_INVITE,
         )
 
         self.assertEqual(clan.privacy, Clan.Privacy.PRIVATE_INVITE)
         self.assertEqual(clan.description, "secret squad")
-        self.assertEqual(clan.avatar_object_key, "avatars/x.png")
+        self.assertEqual(clan.avatar_object_key, "")
 
     def test_duplicate_name_raises(self) -> None:
         create_private_clan(name="Duplicado", created_by=self.user)
@@ -760,7 +759,6 @@ def test_update_clan_lets_the_leader_edit_every_field(leader: User) -> None:
         actor=leader,
         name="Blue Team",
         description="We bike to campus.",
-        avatar_object_key="clans/blue.png",
         privacy=Clan.Privacy.PRIVATE_INVITE,
     )
 
@@ -768,7 +766,6 @@ def test_update_clan_lets_the_leader_edit_every_field(leader: User) -> None:
     assert updated.pk == clan.pk
     assert clan.name == "Blue Team"
     assert clan.description == "We bike to campus."
-    assert clan.avatar_object_key == "clans/blue.png"
     assert clan.privacy == Clan.Privacy.PRIVATE_INVITE
 
 
@@ -815,8 +812,36 @@ def test_update_clan_rejects_an_institutional_clan(leader: User) -> None:
         user=leader, clan=clan, role=ClanMembership.MembershipRole.LEADER
     )
 
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="Only private clans"):
         update_clan(clan=clan, actor=leader, name="Renamed")
+
+
+@pytest.mark.django_db
+def test_update_clan_gives_non_leaders_the_same_answer_for_any_clan_type(
+    leader: User, member: User
+) -> None:
+    """A non-leader can't tell an institutional clan from a private one."""
+    private = create_private_clan(name="Green Team", created_by=leader)
+    institutional = Clan.objects.create(
+        name="Arquitectura", type=Clan.ClanType.INSTITUTIONAL
+    )
+
+    for target in (private, institutional):
+        with pytest.raises(PermissionDenied, match="Only the clan leader"):
+            update_clan(clan=target, actor=member, name="Renamed")
+
+
+@pytest.mark.django_db
+def test_update_clan_on_a_clan_dissolved_after_lookup_raises_does_not_exist(
+    leader: User,
+) -> None:
+    """A PATCH racing a dissolve must surface as a 404, not an unhandled 500."""
+    clan = create_private_clan(name="Green Team", created_by=leader)
+    stale = Clan.objects.get(pk=clan.pk)
+    dissolve_clan(clan=clan, actor=leader)
+
+    with pytest.raises(Clan.DoesNotExist):
+        update_clan(clan=stale, actor=leader, name="Revived")
 
 
 @pytest.mark.django_db

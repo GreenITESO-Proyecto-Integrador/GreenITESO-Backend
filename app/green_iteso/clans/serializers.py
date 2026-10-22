@@ -10,7 +10,11 @@ from green_iteso.accounts.models import Clan, ClanMembership, UserProfile
 
 
 class ClanSerializer(serializers.ModelSerializer):
-    """Representation of a clan; creation delegates to clans.services.create_private_clan."""
+    """Representation of a clan; creation delegates to clans.services.create_private_clan.
+
+    ``avatar_object_key`` is read-only: it is only ever set by the
+    ``/clans/{id}/avatar/`` upload, which generates the key server-side.
+    """
 
     class Meta:
         model = Clan
@@ -24,7 +28,23 @@ class ClanSerializer(serializers.ModelSerializer):
             "total_points",
             "created_at",
         ]
-        read_only_fields = ["id", "type", "total_points", "created_at"]
+        read_only_fields = [
+            "id",
+            "avatar_object_key",
+            "type",
+            "total_points",
+            "created_at",
+        ]
+
+
+class ClanAvatarUploadSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Multipart input for POST /clans/{id}/avatar/ (#164).
+
+    Only checks that a file was sent; ``clans.avatars`` validates the image
+    itself (signature, type, and size).
+    """
+
+    avatar = serializers.FileField()
 
 
 class TransferLeadershipSerializer(serializers.Serializer):

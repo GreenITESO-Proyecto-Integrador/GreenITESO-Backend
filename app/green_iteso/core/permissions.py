@@ -65,7 +65,7 @@ class IsSelfOrAdmin(BasePermission):
 
 
 class IsClanLeader(BasePermission):
-    """Permission check: verifies if the authenticated user is a LEADER of the clan or a global ADMIN."""
+    """Allow only the clan's accepted LEADER; a global ADMIN gets no bypass (#164)."""
 
     def has_permission(self, request: Request, view: Any) -> bool:
         if not request.user or not request.user.is_authenticated:
@@ -75,10 +75,6 @@ class IsClanLeader(BasePermission):
     def has_object_permission(self, request: Request, view: Any, obj: Any) -> bool:
         if not request.user or not request.user.is_authenticated:
             return False
-
-        # Los administradores globales del sistema siempre tienen permiso sobre los clanes
-        if getattr(request.user, "role", None) == User.Role.ADMIN:
-            return True
 
         clan = obj if isinstance(obj, Clan) else getattr(obj, "clan", None)
         if clan is None:

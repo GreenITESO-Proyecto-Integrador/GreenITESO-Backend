@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch, QuerySet
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -16,8 +17,10 @@ from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.accounts.services import ensure_profile
 from green_iteso.core.permissions import IsClanLeader
 
+from .avatars import InvalidClanAvatarError
 from .selectors import get_pending_join_requests, list_active_clans
 from .serializers import (
+    ClanAvatarUploadSerializer,
     ClanDetailSerializer,
     ClanMembershipSerializer,
     ClanSerializer,
@@ -28,6 +31,8 @@ from .serializers import (
     TransferLeadershipSerializer,
 )
 from .services import (
+    DuplicateClanNameError,
+    InvalidClanPrivacyError,
     accept_join_request,
     assign_institutional_clan,
     create_private_clan,
@@ -35,6 +40,8 @@ from .services import (
     join_clan,
     leave_clan,
     reject_join_request,
+    set_clan_avatar,
+    update_clan,
 )
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
@@ -60,14 +67,35 @@ as a member, so both ``members`` and ``member_count`` on the detail
 serializer stay correct without an extra query."""
 
 
+def _clan_edit_error(exc: ValueError) -> ValidationError:
+    """Attach a clan-edit error to the field the client should highlight."""
+    if isinstance(exc, DuplicateClanNameError):
+        return _validation_error_from(exc, field="name")
+    if isinstance(exc, InvalidClanPrivacyError):
+        return _validation_error_from(exc, field="privacy")
+    return _validation_error_from(exc)
+
+
+_clan_edit_schema = extend_schema(
+    summary="Editar clan",
+    description=(
+        "Edita nombre, descripción o privacidad de un clan privado. Solo el "
+        "líder del clan. El avatar se cambia con /clans/{id}/avatar/."
+    ),
+    responses={200: ClanSerializer, 400: None, 403: None, 404: None},
+)
+
+
+@extend_schema_view(update=_clan_edit_schema, partial_update=_clan_edit_schema)
 class ClanViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """List, retrieve, create, dissolve, join, leave, and manage clans under /api/v1/clans/."""
+    """List, retrieve, create, edit, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
 
@@ -110,14 +138,27 @@ class ClanViewSet(
             serializer.instance = create_private_clan(
                 name=serializer.validated_data["name"],
                 description=serializer.validated_data.get("description", ""),
-                avatar_object_key=serializer.validated_data.get(
-                    "avatar_object_key", ""
-                ),
                 privacy=serializer.validated_data.get("privacy", Clan.Privacy.PUBLIC),
                 created_by=self.request.user,
             )
         except ValueError as exc:
             raise _validation_error_from(exc) from exc
+
+    def perform_update(self, serializer: ClanSerializer) -> None:
+        """Apply the edit through the leader-only ``update_clan`` service (#164)."""
+        data = serializer.validated_data
+        try:
+            serializer.instance = update_clan(
+                clan=serializer.instance,
+                actor=self.request.user,
+                name=data.get("name"),
+                description=data.get("description"),
+                privacy=data.get("privacy"),
+            )
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except ValueError as exc:
+            raise _clan_edit_error(exc) from exc
 
     def perform_destroy(self, instance: Clan) -> None:
         """Dissolve the clan with a soft delete instead of removing the row (BR-09)."""
@@ -125,7 +166,7 @@ class ClanViewSet(
 
     @extend_schema(
         summary="Listar solicitudes de ingreso pendientes",
-        description="Retorna todas las solicitudes PENDING de un clan. Acceso restringido al líder o Administrador.",
+        description="Retorna todas las solicitudes PENDING de un clan. Acceso restringido al líder del clan.",
         tags=["Clans Administration"],
         responses={
             200: PendingMembershipRequestSerializer(many=True),
@@ -140,7 +181,7 @@ class ClanViewSet(
         permission_classes=[IsAuthenticated, IsClanLeader],
     )
     def requests(self, request: Request, **kwargs: object) -> Response:
-        """List pending join requests for this clan as its leader or system admin (T2-40)."""
+        """List pending join requests for this clan as its leader (T2-40)."""
         clan = self.get_object()
         pending_qs = get_pending_join_requests(clan_id=clan.id)
         return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)
@@ -228,6 +269,42 @@ class ClanViewSet(
         except ValueError as exc:
             raise _validation_error_from(exc, field="successor_id") from exc
         return Response(ClanMembershipSerializer(membership).data)
+
+    @extend_schema(
+        methods=["POST"],
+        summary="Subir avatar del clan",
+        description="Reemplaza el avatar con una imagen JPG, PNG o WEBP de hasta 5 MB. Solo el líder del clan.",
+        request={"multipart/form-data": ClanAvatarUploadSerializer},
+        responses={200: ClanSerializer, 400: None, 403: None, 404: None},
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        summary="Quitar avatar del clan",
+        description="Quita el avatar del clan. Solo el líder del clan.",
+        request=None,
+        responses={200: ClanSerializer, 403: None, 404: None},
+    )
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path="avatar",
+        parser_classes=[MultiPartParser],
+    )
+    def avatar(self, request: Request, **kwargs: object) -> Response:
+        """Upload or remove this clan's avatar as its leader (#164)."""
+        clan = self.get_object()
+        uploaded = None
+        if request.method == "POST":
+            payload = ClanAvatarUploadSerializer(data=request.data)
+            payload.is_valid(raise_exception=True)
+            uploaded = payload.validated_data["avatar"]
+        try:
+            updated = set_clan_avatar(clan=clan, actor=request.user, uploaded=uploaded)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except InvalidClanAvatarError as exc:
+            raise _validation_error_from(exc, field="avatar") from exc
+        return Response(ClanSerializer(updated).data)
 
     @action(detail=True, methods=["post"], url_path="select-active")
     def select_active(self, request: Request, **kwargs: object) -> Response:

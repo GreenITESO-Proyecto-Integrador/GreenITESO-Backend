@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch, QuerySet
 from drf_spectacular.utils import extend_schema, extend_schema_view
@@ -484,11 +483,9 @@ class ClanViewSet(
             raise ValidationError({"user_id": "User not found."}) from exc
 
         try:
-            kick_member_service(
-                clan=clan, actor=request.user, target_user=target_user
-            )
-        except PermissionDenied as exc:
-            raise PermissionDenied(str(exc)) from exc
+            kick_member_service(clan=clan, actor=request.user, target_user=target_user)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
         except ValueError as exc:
             raise _validation_error_from(exc, field="user_id") from exc
 

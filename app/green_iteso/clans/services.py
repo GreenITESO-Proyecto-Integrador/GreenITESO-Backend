@@ -932,26 +932,26 @@ def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
 
     Only the clan's current LEADER may expel members.
     Expulsion is only permitted for private clans; institutional clans cannot
-    have members expelled individually to maintain profile consistency.
+    have members expelled individually.
     Preserves points history contributed to ``clan.total_points`` (BR-08).
     A leader cannot expel themselves.
 
     Raises:
-        PermissionDenied: If ``actor`` is not the clan's current LEADER.
-        ValueError: If ``locked_clan`` is not private, if ``target_user`` is ``actor``,
-            or if ``target_user`` is not an accepted member of the clan.
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            if the clan is institutional.
+        ValueError: If ``target_user`` is ``actor``, or if ``target_user``
+            is not an accepted member of the clan.
     """
+    locked_clan = _lock_clan_for_leader(
+        clan=clan,
+        actor=actor,
+        not_leader="Only the clan leader can expel members.",
+        not_private="Only private clans allow expelling members.",
+    )
+
     if actor.pk == target_user.pk:
         raise ValueError("Leaders cannot expel themselves from the clan.")
-
-    locked_clan = Clan.objects.select_for_update().get(pk=clan.pk)
-
-    if locked_clan.type != Clan.ClanType.PRIVATE:
-        raise ValueError("Cannot expel members from an institutional clan.")
-
-    # PR #195 & Reviews: Restricción estricta únicamente para el líder del clan
-    if not _is_clan_leader(clan=locked_clan, user=actor):
-        raise PermissionDenied("Only the clan leader can expel members.")
 
     try:
         membership = ClanMembership.objects.get(
@@ -965,5 +965,4 @@ def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
     if membership.role == ClanMembership.MembershipRole.LEADER:
         raise ValueError("Cannot expel a clan leader.")
 
-    # Borra la membresía manteniendo los puntos históricos acumulados (BR-08)
     membership.delete()

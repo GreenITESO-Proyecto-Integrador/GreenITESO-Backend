@@ -23,6 +23,7 @@ def _user(email: str, **fields: str) -> User:
         ({"nickname": "Bici", "first_name": "Ana", "last_name": "López"}, "Bici"),
         ({"first_name": "Ana", "last_name": "López"}, "Ana López"),
         ({}, "Usuario GreenITESO"),
+        ({"nickname": "   ", "first_name": "Ana", "last_name": "López"}, "Ana López"),
     ],
 )
 @pytest.mark.django_db
@@ -62,3 +63,4 @@ def test_roster_shows_member_names() -> None:
 
     assert response.status_code == 200
     assert response.json()["members"][0]["display_name"] == "Leo Ríos"
+    assert "lead@iteso.mx" not in response.content.decode()

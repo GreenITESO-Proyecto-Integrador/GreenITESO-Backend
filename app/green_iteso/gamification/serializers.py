@@ -8,8 +8,6 @@ from green_iteso.accounts.models import Clan, UserProfile
 
 from .models import Badge
 
-ANONYMOUS_DISPLAY_NAME = "Usuario GreenITESO"
-
 
 class UserRankingSerializer(serializers.ModelSerializer):
     """One row of the user points ranking; never exposes the email."""
@@ -25,8 +23,7 @@ class UserRankingSerializer(serializers.ModelSerializer):
 
     def get_display_name(self, profile: UserProfile) -> str:
         """Return the nickname, else the full name, else a generic label."""
-        user = profile.user
-        return user.nickname or user.get_full_name() or ANONYMOUS_DISPLAY_NAME
+        return profile.user.public_display_name
 
 
 class ClanRankingSerializer(serializers.ModelSerializer):

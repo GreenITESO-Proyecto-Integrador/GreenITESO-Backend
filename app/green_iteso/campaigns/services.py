@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -13,12 +12,12 @@ from rest_framework.exceptions import ValidationError
 
 from green_iteso.accounts.models import Clan, ClanMembership
 from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
+from green_iteso.actions.selectors import local_day_utc_bounds
 from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .notifications import notify_campaign_invite, notify_mission_completed
 
-CAMPAIGN_TIME_ZONE = ZoneInfo("America/Mexico_City")
 MIN_CAMPAIGN_DURATION = timedelta(days=1)
 
 
@@ -121,10 +120,7 @@ def earliest_allowed_start(now: datetime | None = None) -> datetime:
     That is midnight at the start of tomorrow in ``America/Mexico_City``, so
     users always get the rest of today to join before the campaign starts.
     """
-    local_now = timezone.localtime(now or timezone.now(), CAMPAIGN_TIME_ZONE)
-    return datetime.combine(
-        local_now.date() + timedelta(days=1), time.min, tzinfo=CAMPAIGN_TIME_ZONE
-    )
+    return local_day_utc_bounds(now)[1]
 
 
 def ensure_start_date_allowed(
@@ -270,6 +266,8 @@ def start_campaign(campaign_id: UUID) -> Campaign:
 
     Only ``start_date`` changes (to now); the transition is one-way because
     action logs may already be registered once the campaign is in progress.
+    This is the one way to start a campaign today: it deliberately skips the
+    "tomorrow or later" rule, and it closes enrollment as soon as it runs.
     """
     with transaction.atomic():
         campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
@@ -285,10 +283,17 @@ def start_campaign(campaign_id: UUID) -> Campaign:
 
 
 def finish_campaign(campaign_id: UUID) -> Campaign:
-    """Finish an IN_PROGRESS campaign right now by moving its end to the present."""
+    """Finish an IN_PROGRESS campaign right now by moving its end to the present.
+
+    Deliberately exempt from the 24-hour minimum duration: the campaign may
+    end sooner than a day after it started.
+    """
     with transaction.atomic():
         campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
-        if campaign.status != Campaign.Status.IN_PROGRESS:
+        if (
+            campaign.approval_status != Campaign.ApprovalStatus.APPROVED
+            or campaign.status != Campaign.Status.IN_PROGRESS
+        ):
             raise ValidationError("Only campaigns in progress can be finished.")
         # Keep ``end_date > start_date`` (DB check constraint) in every case.
         campaign.end_date = max(

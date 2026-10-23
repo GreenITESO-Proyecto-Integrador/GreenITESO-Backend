@@ -237,6 +237,17 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {field: "This field cannot be edited." for field in unknown}
             )
+        # Only re-validate dates the client actually changes, so a campaign
+        # that predates these rules can still have its title or description
+        # edited, even when the client resends the stored dates.
+        start_changed = (
+            "start_date" in attrs and attrs["start_date"] != self.instance.start_date
+        )
+        end_changed = (
+            "end_date" in attrs and attrs["end_date"] != self.instance.end_date
+        )
+        if not (start_changed or end_changed):
+            return attrs
         start_date = attrs.get("start_date", self.instance.start_date)
         end_date = attrs.get("end_date", self.instance.end_date)
         ensure_end_date_allowed(start_date, end_date)
@@ -244,7 +255,7 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "End date must be in the future."}
             )
-        if "start_date" in attrs:
+        if start_changed:
             ensure_start_date_allowed(attrs["start_date"])
         return attrs
 

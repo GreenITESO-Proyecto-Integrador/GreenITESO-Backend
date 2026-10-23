@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from django.db import IntegrityError
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, User
@@ -16,12 +18,15 @@ from green_iteso.actions.models import ActionMaster
 from green_iteso.campaigns.models import Campaign
 from green_iteso.campaigns.services import (
     approve_campaign,
+    earliest_allowed_start,
     reject_campaign,
     sync_campaign_statuses,
 )
 from green_iteso.campaigns.tests.helpers import campaign_data, default_missions
 
 DAY = timedelta(days=1)
+# 09:00 in Mexico City (UTC-6), so "tomorrow 00:00" is 2030-01-11 06:00 UTC.
+APPROVAL_NOW = datetime(2030, 1, 10, 15, 0, tzinfo=UTC)
 
 
 def proposal_payload(**overrides: object) -> dict[str, object]:
@@ -235,6 +240,48 @@ class TestApproveProposal:
         )
 
         assert response.status_code == 400
+
+    def test_approve_starting_just_before_tomorrow_midnight_returns_400(
+        self, admin_user: User, campaign_factory: Callable
+    ) -> None:
+        limit = earliest_allowed_start(APPROVAL_NOW)
+        proposal = campaign_factory(
+            approval_status=Campaign.ApprovalStatus.PENDING,
+            start_date=limit - timedelta(microseconds=1),
+            end_date=limit + 2 * DAY,
+        )
+
+        with (
+            patch(
+                "green_iteso.campaigns.services.timezone.now", return_value=APPROVAL_NOW
+            ),
+            pytest.raises(ValidationError) as error,
+        ):
+            approve_campaign(admin_user, proposal.pk)
+
+        assert "start_date" in error.value.detail
+        proposal.refresh_from_db()
+        assert proposal.approval_status == Campaign.ApprovalStatus.PENDING
+
+    def test_approve_starting_at_tomorrow_midnight_mexico_city_succeeds(
+        self, admin_user: User, campaign_factory: Callable
+    ) -> None:
+        limit = earliest_allowed_start(APPROVAL_NOW)
+        proposal = campaign_factory(
+            approval_status=Campaign.ApprovalStatus.PENDING,
+            start_date=limit,
+            end_date=limit + 2 * DAY,
+        )
+
+        with patch(
+            "green_iteso.campaigns.services.timezone.now", return_value=APPROVAL_NOW
+        ):
+            approved = approve_campaign(admin_user, proposal.pk)
+
+        assert approved.approval_status == Campaign.ApprovalStatus.APPROVED
+        assert approved.status == Campaign.Status.PROMOTION
+        # 2030-01-11 00:00 in Mexico City (UTC-6).
+        assert limit == datetime(2030, 1, 11, 6, 0, tzinfo=UTC)
 
     def test_approve_by_non_admin_returns_403(
         self, api_client: APIClient, user: User, campaign_factory: Callable

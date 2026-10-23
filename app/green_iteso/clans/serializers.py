@@ -125,7 +125,15 @@ class InstitutionalOnboardingSerializer(serializers.Serializer):
     """Input payload for declaring a career during onboarding (T2-30)."""
 
     career = serializers.CharField(max_length=150, allow_blank=False)
-    nickname = serializers.CharField(max_length=50, allow_blank=True, required=False)
+    nickname = serializers.CharField(
+        max_length=50,
+        allow_blank=True,
+        required=False,
+        help_text=(
+            "Only fills an empty nickname. If the user already has one it is "
+            "kept and returned unchanged in the response."
+        ),
+    )
     visibility = serializers.ChoiceField(
         choices=UserProfile.Visibility.choices, required=False
     )

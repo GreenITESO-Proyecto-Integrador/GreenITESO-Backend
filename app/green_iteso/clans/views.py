@@ -466,6 +466,15 @@ class InstitutionalClanAssignmentView(APIView):
         profile = ensure_profile(request.user)
         return Response(InstitutionalAssignmentSerializer(profile).data)
 
+    @extend_schema(
+        request=InstitutionalOnboardingSerializer,
+        responses=InstitutionalAssignmentSerializer,
+        description=(
+            "Declare the career and join its institutional clan. Optional "
+            "nickname and visibility are saved in the same transaction; an "
+            "existing nickname is never replaced, so read it from the response."
+        ),
+    )
     def post(self, request: Request) -> Response:
         """Declare a career and auto-assign its institutional clan.
 

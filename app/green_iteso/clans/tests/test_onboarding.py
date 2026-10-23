@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from django.db import IntegrityError
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
@@ -99,6 +100,8 @@ def test_onboarding_rejects_an_unknown_visibility() -> None:
 
 @pytest.mark.django_db
 def test_complete_onboarding_rolls_back_the_nickname_when_the_career_fails() -> None:
+    # The nickname is written before the clan assignment, so this only passes
+    # if both run in one transaction.
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
     Clan.objects.create(name="Ocupado", type=Clan.ClanType.PRIVATE)
 
@@ -107,3 +110,17 @@ def test_complete_onboarding_rolls_back_the_nickname_when_the_career_fails() -> 
 
     caller.refresh_from_db()
     assert caller.nickname == ""
+
+
+@pytest.mark.django_db
+def test_complete_onboarding_rolls_back_when_the_profile_save_fails() -> None:
+    caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    with pytest.raises(IntegrityError):
+        complete_onboarding(
+            user=caller, career="Arquitectura", nickname="Ana", visibility="HIDDEN"
+        )
+
+    caller.refresh_from_db()
+    assert caller.nickname == ""
+    assert not ClanMembership.objects.filter(user=caller).exists()

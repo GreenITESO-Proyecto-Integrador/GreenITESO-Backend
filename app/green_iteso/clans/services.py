@@ -17,7 +17,7 @@ from green_iteso.accounts.models import (
     User,
     UserProfile,
 )
-from green_iteso.accounts.services import ensure_profile, update_profile
+from green_iteso.accounts.services import ensure_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
 from .invite_codes import (
@@ -209,13 +209,16 @@ def _get_or_create_institutional_clan(career: str) -> Clan:
 
 
 @transaction.atomic
-def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
+def assign_institutional_clan(
+    *, user: User, career: str, visibility: str | None = None
+) -> UserProfile:
     """Declare ``career`` and auto-assign its institutional clan (FR T2-30).
 
     Re-running with the same career is idempotent; re-running with a
     different career reassigns the profile and removes the stale membership
     in the previous institutional clan, so the user always ends up a member
-    of exactly one institutional clan.
+    of exactly one institutional clan. ``visibility``, when given, is saved
+    in the same profile update (onboarding, #163).
     """
     career = career.strip()
     if not career:
@@ -229,9 +232,11 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
     profile.institutional_clan = clan
     if profile.onboarding_completed_at is None:
         profile.onboarding_completed_at = timezone.now()
-    profile.save(
-        update_fields=["career", "institutional_clan", "onboarding_completed_at"]
-    )
+    update_fields = ["career", "institutional_clan", "onboarding_completed_at"]
+    if visibility is not None:
+        profile.visibility = visibility
+        update_fields.append("visibility")
+    profile.save(update_fields=update_fields)
 
     if previous_clan is not None and previous_clan.pk != clan.pk:
         ClanMembership.objects.filter(
@@ -259,11 +264,12 @@ def complete_onboarding(
     """Run the first-login onboarding in one transaction (#163).
 
     Assigns the institutional clan exactly like ``assign_institutional_clan``
-    and optionally sets the profile visibility. ``nickname`` only fills an
-    empty nickname: this is the free first choice, and changing an existing
-    one belongs to the nickname-change flow (#175), not to onboarding.
+    and optionally sets the profile visibility in that same profile update.
+    ``nickname`` only fills an empty nickname: this is the free first choice,
+    and changing an existing one belongs to the nickname-change flow (#175),
+    not to onboarding. If the clan assignment fails, the nickname is rolled
+    back with it.
     """
-    profile = assign_institutional_clan(user=user, career=career)
     if nickname is not None:
         nickname = nickname.strip()
         locked_user = User.objects.select_for_update().get(pk=user.pk)
@@ -271,9 +277,7 @@ def complete_onboarding(
             locked_user.nickname = nickname
             locked_user.save(update_fields=["nickname"])
             user.nickname = nickname
-    if visibility is not None:
-        profile = update_profile(user=user, visibility=visibility)
-    return profile
+    return assign_institutional_clan(user=user, career=career, visibility=visibility)
 
 
 MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER = 5

@@ -16,7 +16,7 @@ from green_iteso.campaigns.notifications import notify_campaign_invite
 from green_iteso.campaigns.services import apply_action_log_to_missions
 from green_iteso.campaigns.tests.helpers import campaign_data
 from green_iteso.notifications.models import Notification
-from green_iteso.notifications.services import notify
+from green_iteso.notifications.services import BULK_CREATE_BATCH_SIZE, notify_many
 
 
 @pytest.mark.django_db
@@ -46,7 +46,7 @@ def test_private_campaign_invite_only_reaches_accepted_members(
 
 
 @pytest.mark.django_db
-def test_campaign_invite_goes_through_notify(
+def test_campaign_invite_goes_through_notify_many(
     user: User, other_user: User, clan: Clan
 ) -> None:
     ClanMembership.objects.create(user=user, clan=clan)
@@ -56,16 +56,14 @@ def test_campaign_invite_goes_through_notify(
     )
 
     with patch(
-        "green_iteso.campaigns.notifications.notify",
-        wraps=notify,
+        "green_iteso.campaigns.notifications.notify_many",
+        wraps=notify_many,
     ) as spy:
         notify_campaign_invite(campaign)
 
-    spy.assert_called_once_with(
-        other_user,
-        Notification.NotificationType.CAMPAIGN_INVITE,
-        campaign_name=campaign.title,
-    )
+    spy.assert_called_once()
+    assert spy.call_args.args[1] == Notification.NotificationType.CAMPAIGN_INVITE
+    assert spy.call_args.kwargs == {"campaign_name": campaign.title}
     notification = Notification.objects.get(user=other_user)
     assert (
         notification.notification_type == Notification.NotificationType.CAMPAIGN_INVITE
@@ -108,3 +106,36 @@ def test_completing_a_mission_creates_mission_completed_notification(
     )
     assert action.name in notification.message
     assert campaign.title in notification.message
+
+
+@pytest.mark.django_db
+def test_global_campaign_invite_reaches_active_users_across_batches(
+    user: User,
+) -> None:
+    audience = BULK_CREATE_BATCH_SIZE + 1
+    User.objects.bulk_create(
+        [User(email=f"active{index}@example.test") for index in range(audience)]
+    )
+    User.objects.bulk_create([User(email="inactive@example.test", is_active=False)])
+    campaign = Campaign.objects.create(
+        **campaign_data(creator=user, scope=Campaign.Scope.GLOBAL)
+    )
+
+    sent = notify_campaign_invite(campaign)
+
+    assert sent == audience
+    assert Notification.objects.count() == audience
+    assert not Notification.objects.filter(user=user).exists()
+    assert not Notification.objects.filter(user__email="inactive@example.test").exists()
+
+
+@pytest.mark.django_db
+def test_campaign_invite_without_recipients_sends_nothing(user: User) -> None:
+    campaign = Campaign.objects.create(**campaign_data(creator=user))
+
+    with patch("green_iteso.notifications.services.push_notifications") as push:
+        sent = notify_campaign_invite(campaign)
+
+    assert sent == 0
+    assert not Notification.objects.exists()
+    push.assert_not_called()

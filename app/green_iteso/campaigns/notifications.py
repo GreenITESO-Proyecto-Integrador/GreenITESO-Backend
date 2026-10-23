@@ -14,7 +14,7 @@ from django.contrib.auth import get_user_model
 
 from green_iteso.accounts.models import ClanMembership
 from green_iteso.notifications.models import Notification
-from green_iteso.notifications.services import notify
+from green_iteso.notifications.services import notify, notify_many
 
 from .models import Campaign
 
@@ -45,19 +45,17 @@ def notify_campaign_invite(campaign: Campaign) -> int:
     Precondition: the campaign is approved and in PROMOTION, the only status
     in which users can still join.
 
-    Sends one ``notify()`` per recipient (one INSERT and one on-commit push
-    each), so the cost grows linearly with the audience; a global campaign
-    reaches every active user.
+    Goes through ``notify_many``: rows are inserted in batches and pushed from
+    a single on-commit callback, so a global campaign stays cheap even though
+    it reaches every active user.
     """
-    count = 0
-    for recipient in _campaign_invite_recipients(campaign).iterator():
-        notify(
-            recipient,
+    return len(
+        notify_many(
+            _campaign_invite_recipients(campaign).iterator(),
             Notification.NotificationType.CAMPAIGN_INVITE,
             campaign_name=campaign.title,
         )
-        count += 1
-    return count
+    )
 
 
 def notify_mission_completed(user: Any, mission: Mission) -> Notification:

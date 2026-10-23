@@ -356,7 +356,9 @@ class ImageUploadViewTests(APITestCase):
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
             content_type="image/png",
         )
-        response = self.client.post(self.url, {"image": truncated_png}, format="multipart")
+        response = self.client.post(
+            self.url, {"image": truncated_png}, format="multipart"
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("error", response.data)
 

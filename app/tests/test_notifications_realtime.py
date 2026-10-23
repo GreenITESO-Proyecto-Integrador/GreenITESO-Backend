@@ -10,6 +10,8 @@ import pytest
 from channels.db import database_sync_to_async
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
+from django.db import connection, transaction
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
@@ -19,7 +21,12 @@ from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.notifications.consumers import CLOSE_UNAUTHORIZED
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.routing import websocket_urlpatterns
-from green_iteso.notifications.services import notify
+from green_iteso.notifications.services import (
+    BULK_CREATE_BATCH_SIZE,
+    notify,
+    notify_many,
+    user_group_name,
+)
 from green_iteso.notifications.templates import (
     NOTIFICATION_TEMPLATES,
     render_notification,
@@ -164,6 +171,215 @@ def test_failed_push_does_not_break_the_caller(
             user, NotificationType.SYSTEM, title="Hola", message="Mundo"
         )
     assert Notification.objects.filter(pk=notification.pk).exists()
+
+
+@pytest.mark.django_db
+def test_notify_many_creates_one_row_per_user(
+    user: User,
+    other_user: User,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        created = notify_many(
+            [user, other_user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert len(created) == 2
+    assert set(Notification.objects.values_list("user_id", flat=True)) == {
+        user.pk,
+        other_user.pk,
+    }
+    for notification in Notification.objects.all():
+        assert (notification.title, notification.message) == ("Hola", "Mundo")
+        assert notification.notification_type == NotificationType.SYSTEM
+        assert notification.is_read is False
+
+
+@pytest.mark.django_db
+def test_notify_many_schedules_a_single_push_callback(
+    user: User,
+    other_user: User,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    with django_capture_on_commit_callbacks(execute=False) as callbacks:
+        notify_many(
+            [user, other_user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert len(callbacks) == 1
+
+
+@pytest.mark.django_db
+def test_notify_many_pushes_to_every_user(
+    user: User,
+    other_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    sent_to: list[str] = []
+
+    class RecordingLayer:
+        async def group_send(self, group: str, event: dict[str, Any]) -> None:
+            sent_to.append(group)
+
+    monkeypatch.setattr(
+        "green_iteso.notifications.services.get_channel_layer",
+        lambda: RecordingLayer(),
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        notify_many(
+            [user, other_user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert sorted(sent_to) == sorted(
+        [user_group_name(user.pk), user_group_name(other_user.pk)]
+    )
+
+
+@pytest.mark.django_db
+def test_notify_many_sends_nothing_when_the_transaction_rolls_back(
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    pushed: list[object] = []
+    monkeypatch.setattr(
+        "green_iteso.notifications.services.push_notification", pushed.append
+    )
+    with django_capture_on_commit_callbacks(execute=False):
+        notify_many([user], NotificationType.SYSTEM, title="Hola", message="Mundo")
+    assert pushed == []
+
+
+@pytest.mark.django_db
+def test_notify_many_with_no_users_does_nothing(
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    with django_capture_on_commit_callbacks(execute=False) as callbacks:
+        created = notify_many(
+            [], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert created == []
+    assert callbacks == []
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_notify_many_failed_push_does_not_break_the_caller(
+    user: User,
+    other_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    class BrokenLayer:
+        async def group_send(self, *args: object, **kwargs: object) -> None:
+            raise ConnectionError("layer down")
+
+    monkeypatch.setattr(
+        "green_iteso.notifications.services.get_channel_layer", lambda: BrokenLayer()
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        notify_many(
+            [user, other_user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert Notification.objects.count() == 2
+
+
+@pytest.mark.django_db
+def test_notify_many_with_missing_context_creates_nothing(user: User) -> None:
+    with pytest.raises(ValueError, match="badge_name"):
+        notify_many([user], NotificationType.BADGE_EARNED)
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_notify_many_inserts_in_batches(
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    users = [
+        User(email=f"bulk{index}@iteso.mx")
+        for index in range(BULK_CREATE_BATCH_SIZE + 1)
+    ]
+    User.objects.bulk_create(users)
+    with django_capture_on_commit_callbacks(execute=False):
+        with CaptureQueriesContext(connection) as queries:
+            notify_many(users, NotificationType.SYSTEM, title="Hola", message="Mundo")
+    inserts = [q for q in queries.captured_queries if q["sql"].startswith("INSERT")]
+    assert len(inserts) == 2
+    assert Notification.objects.count() == BULK_CREATE_BATCH_SIZE + 1
+
+
+@pytest.mark.django_db
+def test_notify_many_rollback_discards_rows_and_push(
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    pushed: list[object] = []
+    monkeypatch.setattr(
+        "green_iteso.notifications.services.push_notification", pushed.append
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        with pytest.raises(RuntimeError):
+            with transaction.atomic():
+                notify_many(
+                    [user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+                )
+                raise RuntimeError("business change failed")
+    assert not Notification.objects.exists()
+    assert pushed == []
+
+
+@pytest.mark.django_db
+def test_notify_many_is_all_or_nothing_when_a_later_batch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    users = [
+        User(email=f"atomic{index}@iteso.mx")
+        for index in range(BULK_CREATE_BATCH_SIZE + 1)
+    ]
+    User.objects.bulk_create(users)
+    original = Notification.objects.bulk_create
+    calls = {"count": 0}
+
+    def failing_second_batch(objs: list[Notification], **kwargs: Any) -> Any:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("second batch failed")
+        return original(objs, **kwargs)
+
+    monkeypatch.setattr(Notification.objects, "bulk_create", failing_second_batch)
+    with pytest.raises(RuntimeError):
+        notify_many(users, NotificationType.SYSTEM, title="Hola", message="Mundo")
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_notify_many_accepts_a_generator(
+    user: User,
+    other_user: User,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        created = notify_many(
+            (candidate for candidate in (user, other_user)),
+            NotificationType.SYSTEM,
+            title="Hola",
+            message="Mundo",
+        )
+    assert len(created) == 2
+    assert Notification.objects.count() == 2
+
+
+@pytest.mark.django_db
+def test_notify_many_returns_notifications_with_ids_and_timestamps(
+    user: User,
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        (created,) = notify_many(
+            [user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+        )
+    assert created.pk is not None
+    assert created.created_at is not None
+    assert Notification.objects.filter(pk=created.pk).exists()
 
 
 # --- WebSocket ---------------------------------------------------------------
@@ -401,3 +617,25 @@ async def test_rejecting_an_audit_notifies_the_user_live(
         == "Tu evidencia fue rechazada. Motivo: Foto borrosa"
     )
     await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_notify_many_reaches_only_the_targeted_sockets(
+    user: User, other_user: User
+) -> None:
+    bystander = await database_sync_to_async(User.objects.create_user)(
+        email="bystander@iteso.mx", password="local-password"
+    )
+    first, second = await _authenticated(user), await _authenticated(other_user)
+    outsider = await _authenticated(bystander)
+    await database_sync_to_async(notify_many)(
+        [user, other_user], NotificationType.SYSTEM, title="Hola", message="Mundo"
+    )
+    for socket in (first, second):
+        event = await socket.receive_json_from()
+        assert event["type"] == "notification.created"
+        assert event["notification"]["title"] == "Hola"
+    assert await outsider.receive_nothing(timeout=0.2)
+    for socket in (first, second, outsider):
+        await socket.disconnect()

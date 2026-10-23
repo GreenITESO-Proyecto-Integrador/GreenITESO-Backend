@@ -60,12 +60,12 @@ def get_profile_clans(user: User) -> ProfileClans:
 
 def get_user_by_id(user_id: uuid.UUID) -> User:
     """Return the account identified by ``user_id``."""
-    return User.objects.get(pk=user_id)
+    return User.objects.select_related("profile").get(pk=user_id)
 
 
 def list_users() -> QuerySet[User]:
     """Return all accounts, ordered for a stable admin directory listing."""
-    return User.objects.order_by("email")
+    return User.objects.select_related("profile").order_by("email")
 
 
 @dataclass(frozen=True)

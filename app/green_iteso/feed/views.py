@@ -67,7 +67,7 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
 
     def get_queryset(self) -> QuerySet[Post]:
         return (
-            Post.objects.select_related("author", "badge_user__badge")
+            Post.objects.select_related("author__profile", "badge_user__badge")
             .all()
             .order_by("-created_at")
         )

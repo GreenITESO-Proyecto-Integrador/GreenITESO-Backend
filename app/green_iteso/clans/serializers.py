@@ -6,6 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
+from green_iteso.accounts.avatars import user_avatar_url
 from green_iteso.accounts.models import (
     Clan,
     ClanInvitation,
@@ -145,10 +146,15 @@ class ClanMemberSerializer(serializers.Serializer):
 
     user_id = serializers.UUIDField(source="user.id", read_only=True)
     nickname = serializers.CharField(source="user.nickname", read_only=True)
+    avatar_url = serializers.SerializerMethodField()
     role = serializers.ChoiceField(
         choices=ClanMembership.MembershipRole.choices, read_only=True
     )
     joined_at = serializers.DateTimeField(read_only=True)
+
+    def get_avatar_url(self, membership: ClanMembership) -> str:
+        """The member's profile photo URL (#170), or "" when there is none."""
+        return user_avatar_url(membership.user, self.context.get("request"))
 
     def create(self, validated_data: dict) -> ClanMembership:
         """Stub required by abstract base class definition."""

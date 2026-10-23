@@ -131,6 +131,18 @@ def ensure_start_date_allowed(
         raise ValidationError({"start_date": "Start date must be tomorrow or later."})
 
 
+def date_changed(new: datetime, stored: datetime) -> bool:
+    """Return whether ``new`` differs from ``stored`` at millisecond precision.
+
+    Clients such as JavaScript truncate datetimes to milliseconds while the
+    database keeps microseconds, so resending an unchanged date must not count
+    as an edit.
+    """
+    return new.replace(microsecond=new.microsecond // 1000 * 1000) != stored.replace(
+        microsecond=stored.microsecond // 1000 * 1000
+    )
+
+
 def ensure_end_date_allowed(start_date: datetime, end_date: datetime) -> None:
     """Reject an ``end_date`` less than 24 hours after ``start_date``."""
     if end_date < start_date + MIN_CAMPAIGN_DURATION:

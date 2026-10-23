@@ -299,3 +299,28 @@ class TestCampaignUpdateEndpoint:
 
         assert response.status_code == 400
         assert "end_date" in response.data
+
+    def test_resending_dates_truncated_to_milliseconds_is_not_a_change(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stored_start = (now + timedelta(hours=1)).replace(microsecond=123456)
+        stored_end = (now + timedelta(hours=5)).replace(microsecond=654321)
+        legacy = campaign_factory(start_date=stored_start, end_date=stored_end)
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(legacy),
+            {
+                "title": "Truncated dates",
+                "start_date": stored_start.replace(microsecond=123000).isoformat(),
+                "end_date": stored_end.replace(microsecond=654000).isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        legacy.refresh_from_db()
+        assert legacy.title == "Truncated dates"
+        assert legacy.start_date == stored_start
+        assert legacy.end_date == stored_end

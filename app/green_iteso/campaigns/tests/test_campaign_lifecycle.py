@@ -177,7 +177,7 @@ class TestLifecycleEndpoints:
         assert response.status_code == 201
         assert response.data["status"] == Campaign.Status.PROMOTION
 
-    def test_post_past_start_is_in_progress(
+    def test_post_past_start_returns_400(
         self, api_client: APIClient, admin_user: User
     ) -> None:
         now = timezone.now()
@@ -193,8 +193,8 @@ class TestLifecycleEndpoints:
             format="json",
         )
 
-        assert response.status_code == 201
-        assert response.data["status"] == Campaign.Status.IN_PROGRESS
+        assert response.status_code == 400
+        assert "start_date" in response.data
 
     def test_post_past_end_returns_400(
         self, api_client: APIClient, admin_user: User

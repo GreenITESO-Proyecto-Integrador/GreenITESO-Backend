@@ -73,13 +73,21 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   y E3 también, no solo los dos ajustados en este PR
   (`accounts/tests/test_views.py`, `clans/tests/test_views.py`). Si algún
   otro test o cliente asume 403 ante la ausencia de token, va a romper.
-- **El throttle de `/auth/login/` (`10/min`) no limita lo que parece.**
-  `DEFAULT_THROTTLE_RATES`/`ScopedRateThrottle` usa el cache por defecto de
-  Django, `LocMemCache`, que es **por proceso**. Con N workers de Gunicorn el
-  límite real es `10×N` peticiones/min, no 10, y el conteo es por IP, así que
-  una red con NAT (un campus, por ejemplo) comparte esa cuota entre todos sus
-  usuarios. Cerrar esto bien requiere un backend de cache compartido (Redis)
-  entre workers; queda fuera de esta historia.
+- **Throttles de `/auth/login/`, `/auth/refresh/` y `/auth/logout/` (#186).**
+  El límite es por persona, no solo por IP, así un campus detrás de NAT no
+  comparte una sola cuota (`core/throttling.py`). Refresh/logout verifican la
+  firma del refresh token (local, SimpleJWT) y usan su `user_id`; si la firma
+  no es válida, la llave es la IP. Login no puede verificar el ID token de
+  Microsoft ahí, así que usa el par (IP, `oid`): un `oid` forjado solo gasta la
+  cubeta de quien lo manda. Encima hay un techo por IP (`auth_ip`, `300/min`)
+  que no cuenta peticiones ya rechazadas por el límite por persona.
+  **Requisito de despliegue:** `DJANGO_NUM_PROXIES` debe coincidir con la cadena
+  real de proxies que agregan a `X-Forwarded-For` (frontend nginx → Cloud Run →
+  backend). Sin ella DRF usa el header completo y el techo se evade; el app
+  desplegado emite un `RuntimeWarning` al arrancar si falta. No se fuerza porque
+  el job de migraciones también corre desplegado. El cache es `LocMemCache` por
+  proceso (`MAX_ENTRIES` 10000); el límite real es N workers × el configurado
+  hasta que haya un cache compartido (Redis).
 
 ## Registro de la aplicación en Entra ID
 

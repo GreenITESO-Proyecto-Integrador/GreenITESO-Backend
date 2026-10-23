@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -159,12 +160,44 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
+    # Login/refresh/logout limits are per account or user, not per IP, so a
+    # campus behind NAT does not share one quota; auth_ip is the per-IP
+    # flood ceiling on top (core/throttling.py, #186).
     "DEFAULT_THROTTLE_RATES": {
         "auth_login": "10/min",
         "auth_refresh": "30/min",
         "auth_logout": "30/min",
+        "auth_ip": "300/min",
         "clan_invite_redeem": "10/min",
     },
+}
+
+# Number of proxies in front of the app that append to X-Forwarded-For, so
+# DRF throttles read the real client IP. Unset keeps DRF's default, which
+# trusts the whole header; measure the deployed chain before setting it.
+# It is a deploy prerequisite for the web app, not enforced here, because the
+# migration job also runs deployed and never serves requests.
+_num_proxies = os.environ.get("DJANGO_NUM_PROXIES", "").strip()
+if _num_proxies:
+    if not _num_proxies.isdecimal():
+        raise RuntimeError("DJANGO_NUM_PROXIES must be a non-negative integer.")
+    REST_FRAMEWORK["NUM_PROXIES"] = int(_num_proxies)
+elif DEPLOYED and CONNECTION_ROLE == "app":
+    warnings.warn(
+        "DJANGO_NUM_PROXIES is not set: the per-IP auth ceiling can be bypassed "
+        "by changing X-Forwarded-For.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
+
+# Throttle counters live in this cache. LocMemCache is per process; the larger
+# MAX_ENTRIES keeps many distinct auth buckets from evicting each other until a
+# shared cache (Redis) replaces it.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "OPTIONS": {"MAX_ENTRIES": 10000},
+    }
 }
 
 SIMPLE_JWT = {

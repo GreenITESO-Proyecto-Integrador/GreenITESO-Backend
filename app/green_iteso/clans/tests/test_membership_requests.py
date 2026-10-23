@@ -367,8 +367,8 @@ def test_api_leader_can_list_pending_requests(leader: User) -> None:
 
 
 @pytest.mark.django_db
-def test_api_admin_can_list_pending_requests_for_any_private_clan() -> None:
-    """List pending join requests for a private clan as an admin.
+def test_api_admin_cannot_list_pending_requests_of_a_clan_they_do_not_lead() -> None:
+    """Clan management is strictly leader-only: a global ADMIN gets 403 (#164).
 
     The API endpoint is GET /clans/{clan_id}/requests.
     """
@@ -384,7 +384,7 @@ def test_api_admin_can_list_pending_requests_for_any_private_clan() -> None:
     applicant = User.objects.create_user(
         email="applicant@iteso.mx", password="local-only"
     )
-    membership = join_clan(clan=invite_clan, user=applicant)
+    join_clan(clan=invite_clan, user=applicant)
 
     client = APIClient()
     client.force_authenticate(user=admin)
@@ -392,9 +392,7 @@ def test_api_admin_can_list_pending_requests_for_any_private_clan() -> None:
 
     response = client.get(url)
 
-    assert response.status_code == status.HTTP_200_OK
-    assert len(response.data) == 1
-    assert response.data[0]["id"] == str(membership.id)
+    assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 @pytest.mark.django_db

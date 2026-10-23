@@ -144,7 +144,6 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "green_iteso.accounts",
     "green_iteso.clans",
-    "green_iteso.connections",
     "green_iteso.actions",
     "green_iteso.campaigns",
     "green_iteso.feed",
@@ -164,6 +163,7 @@ REST_FRAMEWORK = {
         "auth_login": "10/min",
         "auth_refresh": "30/min",
         "auth_logout": "30/min",
+        "clan_invite_redeem": "10/min",
     },
 }
 

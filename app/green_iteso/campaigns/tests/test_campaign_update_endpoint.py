@@ -220,7 +220,7 @@ class TestCampaignUpdateEndpoint:
         assert response.status_code == 400
         assert "end_date" in response.data
 
-    def test_past_start_recomputes_status_to_in_progress(
+    def test_past_start_gets_400_and_keeps_promotion(
         self, api_client: APIClient, admin_user: User, campaign: Campaign
     ) -> None:
         api_client.force_authenticate(user=admin_user)
@@ -231,7 +231,71 @@ class TestCampaignUpdateEndpoint:
             format="json",
         )
 
-        assert response.status_code == 200
-        assert response.data["status"] == Campaign.Status.IN_PROGRESS
+        assert response.status_code == 400
+        assert "start_date" in response.data
         campaign.refresh_from_db()
-        assert campaign.status == Campaign.Status.IN_PROGRESS
+        assert campaign.status == Campaign.Status.PROMOTION
+
+    def test_resending_unchanged_dates_does_not_revalidate_them(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stale = campaign_factory(
+            start_date=now + timedelta(hours=1), end_date=now + timedelta(hours=5)
+        )
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(stale),
+            {
+                "title": "Same dates",
+                "start_date": stale.start_date.isoformat(),
+                "end_date": stale.end_date.isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        stale.refresh_from_db()
+        assert stale.title == "Same dates"
+
+    def test_title_edit_on_short_legacy_campaign_is_allowed(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        legacy = campaign_factory(
+            start_date=now + timedelta(hours=1), end_date=now + timedelta(hours=5)
+        )
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(_url(legacy), {"title": "Edited"}, format="json")
+
+        assert response.status_code == 200, response.data
+
+    def test_changed_start_is_still_validated(
+        self, api_client: APIClient, admin_user: User, campaign: Campaign
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {"start_date": (timezone.now() + timedelta(hours=1)).isoformat()},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "start_date" in response.data
+
+    def test_changed_end_less_than_a_day_after_start_gets_400(
+        self, api_client: APIClient, admin_user: User, campaign: Campaign
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {"end_date": (campaign.start_date + timedelta(hours=12)).isoformat()},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "end_date" in response.data

@@ -13,8 +13,8 @@ from django.utils import timezone
 
 from green_iteso.accounts.models import (
     Clan,
+    ClanInvitation,
     ClanMembership,
-    Friendship,
     User,
     UserProfile,
 )
@@ -36,7 +36,7 @@ DOMAIN_TABLES = {
     Clan: "accounts_clan",
     UserProfile: "accounts_user_profile",
     ClanMembership: "accounts_clan_membership",
-    Friendship: "accounts_friendship",
+    ClanInvitation: "accounts_clan_invitation",
     ActionCategory: "actions_action_category",
     ActionMaster: "actions_action_master",
     ActionLog: "actions_action_log",
@@ -322,56 +322,41 @@ def test_profile_visibility_check_is_a_database_constraint() -> None:
 
 
 @pytest.mark.django_db
+def test_clan_invitation_code_hash_is_unique_at_db_level() -> None:
+    clan = Clan.objects.create(name="Invite Clan", type=Clan.ClanType.PRIVATE)
+    expires_at = timezone.now()
+    ClanInvitation.objects.create(
+        clan=clan, code_hash="a" * 64, code_hint="AAAA", expires_at=expires_at
+    )
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            ClanInvitation.objects.create(
+                clan=clan, code_hash="a" * 64, code_hint="AAAA", expires_at=expires_at
+            )
+
+
+@pytest.mark.django_db
+def test_clan_invitation_redeemer_requires_a_redemption_time() -> None:
+    clan = Clan.objects.create(name="Invite Clan", type=Clan.ClanType.PRIVATE)
+    redeemer = User.objects.create_user(email="redeemer@iteso.mx")
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            ClanInvitation.objects.create(
+                clan=clan,
+                code_hash="b" * 64,
+                code_hint="BBBB",
+                expires_at=timezone.now(),
+                redeemed_by=redeemer,
+            )
+
+
+@pytest.mark.django_db
 def test_profile_available_points_check_is_a_database_constraint() -> None:
     user = User.objects.create_user(email="available-points@iteso.mx")
     profile = UserProfile.objects.create(user=user)
     with pytest.raises(IntegrityError):
         with transaction.atomic():
             UserProfile.objects.filter(pk=profile.pk).update(available_points=-1)
-
-
-@pytest.mark.django_db
-def test_friendship_status_check_is_a_database_constraint() -> None:
-    requester = User.objects.create_user(email="req@iteso.mx")
-    addressee = User.objects.create_user(email="addr@iteso.mx")
-    low, high = sorted([requester.pk, addressee.pk])
-    friendship = Friendship.objects.create(
-        requester=requester, addressee=addressee, low_user=low, high_user=high
-    )
-    with pytest.raises(IntegrityError):
-        with transaction.atomic():
-            Friendship.objects.filter(pk=friendship.pk).update(status="BOGUS")
-
-
-@pytest.mark.django_db
-def test_friendship_pair_is_unique_regardless_of_direction_at_db_level() -> None:
-    requester = User.objects.create_user(email="req@iteso.mx")
-    addressee = User.objects.create_user(email="addr@iteso.mx")
-    low, high = sorted([requester.pk, addressee.pk])
-    Friendship.objects.create(
-        requester=requester, addressee=addressee, low_user=low, high_user=high
-    )
-    with pytest.raises(IntegrityError):
-        with transaction.atomic():
-            # Same unordered pair, reversed requester/addressee: the service
-            # layer (connections.services) never does this, but the
-            # unique-pair constraint must reject it even at the raw DB level.
-            Friendship.objects.create(
-                requester=addressee,
-                addressee=requester,
-                low_user=low,
-                high_user=high,
-            )
-
-
-@pytest.mark.django_db
-def test_friendship_rejects_self_at_db_level() -> None:
-    user = User.objects.create_user(email="solo@iteso.mx")
-    with pytest.raises(IntegrityError):
-        with transaction.atomic():
-            Friendship.objects.create(
-                requester=user, addressee=user, low_user=user.pk, high_user=user.pk
-            )
 
 
 @pytest.mark.django_db
@@ -451,7 +436,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0015_clanmembership_status"),
+        ("accounts", "0017_clan_invitation"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -598,45 +583,86 @@ def test_accounts_0009_migration_preserves_existing_rows_and_adds_profile_fields
 
 
 @pytest.mark.django_db(transaction=True)
-def test_accounts_0010_migration_preserves_existing_rows_and_adds_friendship_table() -> (
-    None
-):
+def test_accounts_0016_migration_drops_the_friendship_table_and_keeps_users() -> None:
     """Upgrade test CLAUDE.md requires for every PR that changes models.
 
-    0010_friendship only adds a new table, so existing User/UserProfile rows
-    from 0009 must survive untouched, and the new table must be usable
-    immediately after the upgrade.
+    Friendships are no longer a feature (#178), so 0016 drops the table along
+    with any rows in it; existing users must survive untouched.
     """
-    old_target = [("accounts", "0009_profile_editing_fields")]
-    new_target = [("accounts", "0010_friendship")]
+    old_target = [("accounts", "0015_clanmembership_status")]
+    new_target = [("accounts", "0016_delete_friendship")]
 
     executor = MigrationExecutor(connection)
     executor.migrate(old_target)
     old_apps = executor.loader.project_state(old_target).apps
     old_user_model = old_apps.get_model("accounts", "User")
+    old_friendship_model = old_apps.get_model("accounts", "Friendship")
 
     ana = old_user_model.objects.create(email="ana@iteso.mx", first_name="Ana")
     beto = old_user_model.objects.create(email="beto@iteso.mx", first_name="Beto")
+    pair = sorted([ana.pk, beto.pk])
+    old_friendship_model.objects.create(
+        requester_id=ana.pk,
+        addressee_id=beto.pk,
+        low_user=pair[0],
+        high_user=pair[1],
+    )
 
     try:
         forward_executor = MigrationExecutor(connection)
         forward_executor.migrate(new_target)
         new_apps = forward_executor.loader.project_state(new_target).apps
         new_user_model = new_apps.get_model("accounts", "User")
-        new_friendship_model = new_apps.get_model("accounts", "Friendship")
 
         migrated_ana = new_user_model.objects.get(pk=ana.pk)
         assert migrated_ana.email == "ana@iteso.mx"
         assert migrated_ana.first_name == "Ana"
+        assert new_user_model.objects.filter(pk=beto.pk).exists()
+        assert "accounts_friendship" not in connection.introspection.table_names()
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
 
-        pair = sorted([ana.pk, beto.pk])
-        friendship = new_friendship_model.objects.create(
-            requester_id=ana.pk,
-            addressee_id=beto.pk,
-            low_user=pair[0],
-            high_user=pair[1],
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0017_migration_adds_clan_invitations_and_keeps_clans() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0017 only adds the clan invitation table (#165), so existing clans and
+    memberships from 0016 must survive and accept invitations right away.
+    """
+    old_target = [("accounts", "0016_delete_friendship")]
+    new_target = [("accounts", "0017_clan_invitation")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_clan_model = old_apps.get_model("accounts", "Clan")
+    old_membership_model = old_apps.get_model("accounts", "ClanMembership")
+
+    leader = old_user_model.objects.create(email="lead@iteso.mx")
+    clan = old_clan_model.objects.create(name="Pre-invite Clan", type="PRIVATE")
+    old_membership_model.objects.create(user=leader, clan=clan, role="LEADER")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_clan_model = new_apps.get_model("accounts", "Clan")
+        new_membership_model = new_apps.get_model("accounts", "ClanMembership")
+        new_invitation_model = new_apps.get_model("accounts", "ClanInvitation")
+
+        assert new_clan_model.objects.get(pk=clan.pk).name == "Pre-invite Clan"
+        assert new_membership_model.objects.filter(clan_id=clan.pk).count() == 1
+        invitation = new_invitation_model.objects.create(
+            clan_id=clan.pk,
+            created_by_id=leader.pk,
+            code_hash="c" * 64,
+            code_hint="CCCC",
+            expires_at=timezone.now(),
         )
-        assert friendship.status == "PENDING"
+        assert invitation.redeemed_at is None
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

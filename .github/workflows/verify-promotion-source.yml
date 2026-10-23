@@ -63,13 +63,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/verify-dev-migration-evidence.py
 
-      - name: Require exact staging release evidence before prod promotion
-        if: github.base_ref == 'prod'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_ENVIRONMENT: production
-          RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
-          SOURCE_REF: preprod
-          SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
-        run: scripts/verify-source-release.sh
+      # DISABLED while only production is deployed to the cloud: preprod has no
+      # Cloud Run release, so no staging release record can exist. Uncomment to
+      # require exact staging release evidence before a prod promotion again
+      # (and restore the matching block in promote.yml).
+      # - name: Require exact staging release evidence before prod promotion
+      #   if: github.base_ref == 'prod'
+      #   env:
+      #     GH_TOKEN: ${{ github.token }}
+      #     GITHUB_REPOSITORY: ${{ github.repository }}
+      #     RELEASE_ENVIRONMENT: production
+      #     RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+      #     SOURCE_REF: preprod
+      #     SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+      #   run: scripts/verify-source-release.sh

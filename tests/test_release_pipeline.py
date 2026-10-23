@@ -227,6 +227,148 @@ def test_non_dev_build_is_rejected_before_gcloud(tmp_path: Path) -> None:
     assert not log.exists()
 
 
+def _fake_building_commands(tmp_path: Path) -> Path:
+    """Like ``_fake_commands`` but the freshly pushed commit tag resolves."""
+    log = _fake_commands(tmp_path)
+    gcloud = tmp_path / "bin" / "gcloud"
+    gcloud.write_text(
+        "#!/bin/sh\n"
+        f'echo gcloud "$@" >> {log}\n'
+        'case "$*" in\n'
+        f"  *'artifacts docker images describe'*) echo 'sha256:{'d' * 64}' ;;\n"
+        "  *'run jobs describe'*) echo 'NOT_FOUND' >&2; exit 1 ;;\n"
+        "esac\n"
+    )
+    gcloud.chmod(0o755)
+    return log
+
+
+def _production_build_env(tmp_path: Path) -> dict[str, str]:
+    env = _base_env(tmp_path)
+    env.update(
+        {
+            "RELEASE_ENVIRONMENT": "production",
+            "BUILD_IMAGE": "true",
+            "MIGRATION_JOB_NAME": "greeniteso-migrate-production",
+        }
+    )
+    env.pop("EXPECTED_IMAGE_DIGEST")
+    return env
+
+
+def _run_script(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
+    )
+
+
+def test_production_builds_its_own_image_then_migrates_then_deploys(
+    tmp_path: Path,
+) -> None:
+    env = _production_build_env(tmp_path)
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode == 0, result.stderr
+    rendered = log.read_text()
+    digest = "sha256:" + "d" * 64
+    assert (
+        rendered.index("docker build")
+        < rendered.index("docker push")
+        < rendered.index("run jobs execute greeniteso-migrate-production")
+        < rendered.index("run jobs execute greeniteso-migrate-production-smoke")
+        < rendered.index("run deploy")
+    )
+    assert ":sha-" + "a" * 40 in rendered
+    deploy = next(line for line in rendered.splitlines() if "run deploy" in line)
+    assert f"@{digest}" in deploy
+    assert "DJANGO_ENV=production" in deploy
+    record = (tmp_path / "release-record.txt").read_text()
+    assert "environment=production" in record
+    assert f"image_digest={digest}" in record
+
+
+def test_production_build_cannot_also_pin_a_source_digest(tmp_path: Path) -> None:
+    env = _production_build_env(tmp_path)
+    env["EXPECTED_IMAGE_DIGEST"] = "sha256:" + "a" * 64
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode != 0
+    assert "must not also pin a source digest" in result.stderr
+    assert not log.exists()
+
+
+def test_production_without_build_still_requires_a_source_digest(
+    tmp_path: Path,
+) -> None:
+    env = _production_build_env(tmp_path)
+    env["BUILD_IMAGE"] = "false"
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode != 0
+    assert "EXPECTED_IMAGE_DIGEST is required for production" in result.stderr
+    assert not log.exists()
+
+
+def test_evidence_bucket_survives_the_service_deploy(tmp_path: Path) -> None:
+    """``--set-env-vars`` replaces the service's variables, so the bucket must ride along."""
+    env = _production_build_env(tmp_path)
+    env["GCS_EVIDENCE_BUCKET"] = "greeniteso-production-objects"
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode == 0, result.stderr
+    lines = log.read_text().splitlines()
+    deploy = next(line for line in lines if "run deploy" in line)
+    assert "GCS_EVIDENCE_BUCKET=greeniteso-production-objects" in deploy
+    # The app-role smoke job runs with the service's runtime environment, so it
+    # sees the bucket too; the direct-credential migration job never does.
+    migration = next(
+        line
+        for line in lines
+        if "run jobs create greeniteso-migrate-production " in line
+        or "run jobs deploy greeniteso-migrate-production " in line
+    )
+    assert "GCS_EVIDENCE_BUCKET" not in migration
+
+
+def test_evidence_bucket_is_optional_and_validated(tmp_path: Path) -> None:
+    env = _production_build_env(tmp_path)
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode == 0, result.stderr
+    assert "GCS_EVIDENCE_BUCKET" not in log.read_text()
+
+    bad_dir = tmp_path / "bad"
+    bad_dir.mkdir()
+    bad_env = _production_build_env(bad_dir)
+    bad_env["GCS_EVIDENCE_BUCKET"] = "Not A Bucket@name"
+    bad_log = _fake_building_commands(bad_dir)
+    bad = _run_script(bad_env)
+    assert bad.returncode != 0
+    assert "GCS_EVIDENCE_BUCKET must be a valid Cloud Storage bucket name" in bad.stderr
+    assert not bad_log.exists()
+
+
+def test_production_release_builds_and_skips_staging_provenance() -> None:
+    production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
+    staging = (ROOT / ".github/workflows/deploy-staging.yml").read_text()
+    reusable = WORKFLOW.read_text()
+    assert "build: true" in production
+    assert "build: false" in staging
+    provenance = reusable.split(
+        "- name: Verify successful source release provenance", 1
+    )[1]
+    assert (
+        provenance.split("env:", 1)[0]
+        .strip()
+        .endswith("if: inputs.environment == 'staging'")
+    )
+    assert "GCS_EVIDENCE_BUCKET: ${{ secrets.GCS_EVIDENCE_BUCKET }}" in reusable
+    required_list = reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[
+        0
+    ]
+    assert "GCS_EVIDENCE_BUCKET" not in required_list
+
+
 def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -682,14 +824,31 @@ def test_promotion_source_guard_matches_dev_preprod_prod_chain() -> None:
     assert "- prod" in workflow
     assert "- main" not in workflow
     assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
-    assert "Require exact staging release evidence before prod promotion" in workflow
-    assert "if: github.base_ref == 'prod'" in workflow
-    assert "SOURCE_RELEASE_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
-    assert "run: scripts/verify-source-release.sh" in workflow
+    # The staging-release evidence for prod promotions is deliberately commented
+    # out while only production is deployed to the cloud. It must stay as a
+    # comment (easy to restore), not as an executable step.
+    assert (
+        "# - name: Require exact staging release evidence before prod promotion"
+        in workflow
+    )
+    assert "DISABLED while only production is deployed" in workflow
+    assert not any(
+        line.strip().startswith(
+            ("- name: Require exact staging", "run: scripts/verify-source")
+        )
+        for line in workflow.splitlines()
+    )
+    # The dev evidence requirement for preprod promotions is still enforced.
+    assert "Require exact dev migration and app-role smoke evidence" in workflow
+    assert "run: python3 scripts/verify-dev-migration-evidence.py" in workflow
     promote = (ROOT / ".github/workflows/promote.yml").read_text()
-    assert "RELEASE_ENVIRONMENT=production" in promote
-    assert "SOURCE_REF=preprod" in promote
-    assert "scripts/verify-source-release.sh" in promote
+    assert "# SOURCE_REF=preprod" in promote
+    assert "# RELEASE_ENVIRONMENT=production" in promote
+    assert not any(
+        line.strip().startswith("scripts/verify-source-release.sh")
+        for line in promote.splitlines()
+    )
+    assert "scripts/verify-dev-migration-evidence.py" in promote
 
 
 def test_promotion_source_guard_enforces_protected_prod_shell_chain() -> None:
@@ -1031,11 +1190,21 @@ def test_preprod_git_branch_targets_preprod_environment_and_staging_database() -
 
 
 def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
-    for filename in ("deploy-dev.yml", "deploy-staging.yml", "deploy-production.yml"):
+    for filename, switch in (
+        ("deploy-dev.yml", "CLOUD_DEPLOYMENT_ENABLED"),
+        ("deploy-staging.yml", "CLOUD_DEPLOYMENT_ENABLED"),
+        # Production deploys alone, so it must not depend on the switch that
+        # also turns on dev/preprod cloud releases and disables their Neon jobs.
+        ("deploy-production.yml", "CLOUD_PRODUCTION_DEPLOY_ENABLED"),
+    ):
         caller = (ROOT / ".github" / "workflows" / filename).read_text()
-        assert "vars.CLOUD_DEPLOYMENT_ENABLED == 'true'" in caller
+        assert f"vars.{switch} == 'true'" in caller
         assert "uses: ./.github/workflows/_deploy.yml" in caller
         assert "secrets: inherit" in caller
+    production_caller = (
+        ROOT / ".github" / "workflows" / "deploy-production.yml"
+    ).read_text()
+    assert "vars.CLOUD_DEPLOYMENT_ENABLED" not in production_caller
 
     for filename in ("deploy-staging.yml", "deploy-production.yml"):
         caller = (ROOT / ".github" / "workflows" / filename).read_text()

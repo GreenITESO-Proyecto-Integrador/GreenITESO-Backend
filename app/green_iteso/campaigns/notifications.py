@@ -19,27 +19,23 @@ from green_iteso.notifications.services import notify
 from .models import Campaign
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from .models import Mission
 
 
-def _campaign_invite_recipient_ids(campaign: Campaign) -> list[Any]:
-    """Return the ids of the users invited to ``campaign``, minus its creator.
+def _campaign_invite_recipients(campaign: Campaign) -> QuerySet[Any]:
+    """Return the users invited to ``campaign``, minus its creator.
 
     Global campaigns reach every active user. Private campaigns reach the
     members of the target clan, the same users ``CampaignJoinView`` lets join.
     """
+    users = get_user_model().objects.exclude(pk=campaign.creator_id)
     if campaign.scope == Campaign.Scope.GLOBAL:
-        recipients = get_user_model().objects.filter(is_active=True)
-        id_field = "id"
-    else:
-        recipients = ClanMembership.objects.filter(
-            clan=campaign.target_clan, status=ClanMembership.Status.ACCEPTED
-        )
-        id_field = "user_id"
-    return list(
-        recipients.exclude(**{id_field: campaign.creator_id}).values_list(
-            id_field, flat=True
-        )
+        return users.filter(is_active=True)
+    return users.filter(
+        clan_memberships__clan=campaign.target_clan,
+        clan_memberships__status=ClanMembership.Status.ACCEPTED,
     )
 
 
@@ -53,11 +49,8 @@ def notify_campaign_invite(campaign: Campaign) -> int:
     each), so the cost grows linearly with the audience; a global campaign
     reaches every active user.
     """
-    recipients = get_user_model().objects.filter(
-        pk__in=_campaign_invite_recipient_ids(campaign)
-    )
     count = 0
-    for recipient in recipients:
+    for recipient in _campaign_invite_recipients(campaign).iterator():
         notify(
             recipient,
             Notification.NotificationType.CAMPAIGN_INVITE,

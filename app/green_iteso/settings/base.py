@@ -167,6 +167,7 @@ REST_FRAMEWORK = {
         "auth_refresh": "30/min",
         "auth_logout": "30/min",
         "auth_ip": "300/min",
+        "clan_invite_redeem": "10/min",
     },
 }
 

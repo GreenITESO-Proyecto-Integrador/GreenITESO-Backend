@@ -193,11 +193,12 @@ class UserProfile(models.Model):
     bio = models.CharField(max_length=500, blank=True)
     preferences = models.JSONField(default=dict, blank=True)
     unlocked_cosmetics = models.JSONField(default=list, blank=True)
-    # The object itself lives in Cloud Storage (T2-21); only its URL is
-    # persisted here, never the binary. The GCS bucket/account is not
-    # provisioned yet (see docs/avatar-upload.md), so this is populated by
-    # whatever the client uploaded the file to in the meantime.
+    # A profile photo is either an external https link the user pasted
+    # (``avatar_url``, T2-21) or a file uploaded through
+    # /profile/me/avatar/ and stored privately under ``avatar_object_key``
+    # (#170). Setting one clears the other; see docs/avatar-upload.md.
     avatar_url = models.URLField(max_length=500, blank=True)
+    avatar_object_key = models.CharField(max_length=500, blank=True)
 
     class Meta:
         db_table = "accounts_user_profile"

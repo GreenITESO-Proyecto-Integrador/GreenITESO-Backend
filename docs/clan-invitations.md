@@ -28,7 +28,10 @@ solo crea una solicitud `PENDING`.
 - **Máximo 20 códigos activos por clan.** Hay que revocar uno para generar más.
 - **Solo el líder del clan** genera, lista y revoca códigos (#164). Un admin
   global no puede.
-- **Solo clanes privados.** Los institucionales se asignan por carrera.
+- **Solo clanes privados con privacidad `PRIVATE_INVITE`.** Los institucionales
+  se asignan por carrera, y a un clan `PUBLIC` cualquiera puede unirse directo,
+  así que crear un código ahí responde 400. Los códigos que ya existían siguen
+  funcionando si el clan cambia a `PUBLIC`, y el líder puede listarlos y revocarlos.
 - Canjear un código **une directamente** al clan: el código es la aprobación
   previa del líder. Se respeta el límite de **5 clanes privados** (BR-04).
 - Si ya existía una solicitud `PENDING` o `REJECTED` para ese clan, esa fila
@@ -38,6 +41,10 @@ solo crea una solicitud `PENDING`.
 - Un código desconocido, expirado, usado, revocado o de un clan disuelto
   recibe siempre el mismo `400 {"code": ["Invalid or expired invitation code."]}`,
   para no revelar qué códigos existen.
+- Todos los errores del canje (código inválido, ya eres miembro, límite de
+  BR-04) llegan en el mismo campo: `{"code": ["…"]}`.
+- Un `invitation_id` que no es un UUID válido en `DELETE …/invitations/{id}/`
+  responde 404.
 
 ## Formato y almacenamiento
 
@@ -58,9 +65,19 @@ solo crea una solicitud `PENDING`.
 ## Límite de intentos
 
 `POST /clans/redeem-invitation/` está limitado a **10 intentos por minuto por
-usuario** (`ScopedRateThrottle`, scope `clan_invite_redeem`). Hoy no hay
-`CACHES` configurado, así que el contador vive en memoria de cada proceso: es
-una segunda capa detrás de la entropía del código, no la única defensa.
+usuario y por proceso** (`ClanInviteRedeemThrottle`, rate
+`clan_invite_redeem`). Hoy no hay `CACHES` configurado, así que el contador
+vive en la memoria de cada proceso: con varios workers el límite real es 10 ×
+`WEB_CONCURRENCY`. Es una segunda capa detrás de la entropía del código, no la
+única defensa.
+
+## Retención
+
+Los códigos expirados, usados o revocados se conservan **30 días** para
+auditoría (`INVITATION_RETENTION`). Cada vez que un clan genera un código nuevo
+se borran los de ese clan que expiraron hace más de 30 días, así que la tabla
+queda acotada por clan sin necesidad de un job periódico. En el admin de Django
+las invitaciones son de solo lectura: no se pueden crear, editar ni borrar.
 
 ## Pendiente
 

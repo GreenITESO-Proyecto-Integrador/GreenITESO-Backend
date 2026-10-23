@@ -5,17 +5,20 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from datetime import timedelta
 
 import pytest
+from django.contrib.admin.sites import site as admin_site
 from django.core.exceptions import PermissionDenied
+from django.test import RequestFactory
 from django.utils import timezone
 from rest_framework.test import APIClient
-from rest_framework.throttling import ScopedRateThrottle
 
 from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
 from green_iteso.clans.invite_codes import (
     CODE_ALPHABET,
+    INVITATION_RETENTION,
     MAX_ACTIVE_INVITATIONS_PER_CLAN,
     generate_code,
     hash_code,
@@ -25,6 +28,7 @@ from green_iteso.clans.services import (
     AlreadyClanMemberError,
     InvalidInvitationCodeError,
     InvitationLimitExceededError,
+    InvitationsNotNeededError,
     PrivateClanLimitExceededError,
     create_clan_invitation,
     create_private_clan,
@@ -32,6 +36,7 @@ from green_iteso.clans.services import (
     redeem_clan_invitation,
     revoke_clan_invitation,
 )
+from green_iteso.clans.throttles import ClanInviteRedeemThrottle
 
 
 @pytest.fixture
@@ -350,7 +355,7 @@ def test_redeem_is_throttled(member: User, monkeypatch: pytest.MonkeyPatch) -> N
     # DRF reads DEFAULT_THROTTLE_RATES into a class attribute at import time,
     # as in accounts/tests/test_login_view.py.
     monkeypatch.setattr(
-        ScopedRateThrottle,
+        ClanInviteRedeemThrottle,
         "THROTTLE_RATES",
         {"clan_invite_redeem": "2/min"},
         raising=False,
@@ -394,3 +399,151 @@ def test_concurrent_redemptions_of_one_code_admit_exactly_one_user(
     ).count()
     assert joined == 1
     assert sum(1 for outcome in outcomes if outcome is not None) == 1
+
+
+# --- Review fixes (#204) ----------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_api_revoke_with_a_malformed_id_returns_404(
+    leader: User, invite_clan: Clan
+) -> None:
+    create_clan_invitation(clan=invite_clan, actor=leader)
+    client = _client(leader)
+
+    dashes = client.delete(f"{_invitations_url(invite_clan)}{'-' * 36}/")
+    not_hex = client.delete(
+        f"{_invitations_url(invite_clan)}{'z' * 8}-0000-0000-0000-{'0' * 12}/"
+    )
+
+    assert dashes.status_code == 404
+    assert not_hex.status_code == 404
+    assert list_active_count(invite_clan) == 1
+
+
+def list_active_count(clan: Clan) -> int:
+    return ClanInvitation.objects.filter(clan=clan, revoked_at__isnull=True).count()
+
+
+@pytest.mark.django_db
+def test_codes_are_only_created_for_invite_only_clans(leader: User) -> None:
+    public_clan = create_private_clan(name="Open Clan", created_by=leader)
+
+    with pytest.raises(InvitationsNotNeededError):
+        create_clan_invitation(clan=public_clan, actor=leader)
+    response = _client(leader).post(_invitations_url(public_clan))
+
+    assert response.status_code == 400
+    assert not ClanInvitation.objects.filter(clan=public_clan).exists()
+
+
+@pytest.mark.django_db
+def test_codes_issued_before_a_clan_turned_public_can_still_be_listed_and_revoked(
+    leader: User, invite_clan: Clan
+) -> None:
+    invitation, _ = create_clan_invitation(clan=invite_clan, actor=leader)
+    Clan.objects.filter(pk=invite_clan.pk).update(privacy=Clan.Privacy.PUBLIC)
+    client = _client(leader)
+
+    listed = client.get(_invitations_url(invite_clan))
+    revoked = client.delete(f"{_invitations_url(invite_clan)}{invitation.pk}/")
+
+    assert [row["id"] for row in listed.json()] == [str(invitation.pk)]
+    assert revoked.status_code == 204
+
+
+@pytest.mark.django_db
+def test_invitation_errors_name_invitations_not_clan_editing(
+    member: User, invite_clan: Clan
+) -> None:
+    ClanMembership.objects.create(user=member, clan=invite_clan)
+
+    with pytest.raises(PermissionDenied, match="manage invitation codes"):
+        create_clan_invitation(clan=invite_clan, actor=member)
+    with pytest.raises(PermissionDenied, match="manage invitation codes"):
+        revoke_clan_invitation(
+            clan=invite_clan, actor=member, invitation_id=str(uuid.uuid4())
+        )
+
+
+@pytest.mark.django_db
+def test_redeem_treats_a_clan_deleted_mid_request_as_an_invalid_code(
+    leader: User, member: User, invite_clan: Clan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, code = create_clan_invitation(clan=invite_clan, actor=leader)
+    # The clan id is read before the clan row is locked; simulate the clan
+    # disappearing in between.
+    monkeypatch.setattr(
+        "green_iteso.clans.services._invitation_clan_id", lambda _hash: uuid.uuid4()
+    )
+
+    with pytest.raises(InvalidInvitationCodeError):
+        redeem_clan_invitation(code=code, user=member)
+    response = _client(member).post(REDEEM_URL, {"code": code})
+
+    assert response.status_code == 400
+    assert response.json() == {"code": ["Invalid or expired invitation code."]}
+
+
+@pytest.mark.django_db
+def test_every_redeem_error_is_reported_under_the_code_field(
+    leader: User, member: User, invite_clan: Clan
+) -> None:
+    ClanMembership.objects.create(user=member, clan=invite_clan)
+    _, member_code = create_clan_invitation(clan=invite_clan, actor=leader)
+    capped = User.objects.create_user(email="capped@iteso.mx")
+    for index in range(5):
+        owner = User.objects.create_user(email=f"cap-owner{index}@iteso.mx")
+        clan = create_private_clan(name=f"Cap Clan {index}", created_by=owner)
+        ClanMembership.objects.create(user=capped, clan=clan)
+    _, capped_code = create_clan_invitation(clan=invite_clan, actor=leader)
+
+    already = _client(member).post(REDEEM_URL, {"code": member_code})
+    over_cap = _client(capped).post(REDEEM_URL, {"code": capped_code})
+
+    assert already.status_code == 400
+    assert over_cap.status_code == 400
+    assert list(already.json()) == ["code"]
+    assert list(over_cap.json()) == ["code"]
+
+
+@pytest.mark.django_db
+def test_creating_a_code_purges_this_clans_long_expired_codes(
+    leader: User, invite_clan: Clan
+) -> None:
+    now = timezone.now()
+    old, _ = create_clan_invitation(clan=invite_clan, actor=leader)
+    recent, _ = create_clan_invitation(clan=invite_clan, actor=leader)
+    ClanInvitation.objects.filter(pk=old.pk).update(
+        expires_at=now - INVITATION_RETENTION - timedelta(minutes=1)
+    )
+    ClanInvitation.objects.filter(pk=recent.pk).update(
+        expires_at=now - INVITATION_RETENTION + timedelta(days=1)
+    )
+    other_owner = User.objects.create_user(email="other-owner@iteso.mx")
+    other_clan = create_private_clan(
+        name="Other Secret", created_by=other_owner, privacy=Clan.Privacy.PRIVATE_INVITE
+    )
+    other_old, _ = create_clan_invitation(clan=other_clan, actor=other_owner)
+    ClanInvitation.objects.filter(pk=other_old.pk).update(
+        expires_at=now - INVITATION_RETENTION - timedelta(days=1)
+    )
+
+    create_clan_invitation(clan=invite_clan, actor=leader)
+
+    assert not ClanInvitation.objects.filter(pk=old.pk).exists()
+    assert ClanInvitation.objects.filter(pk=recent.pk).exists()
+    assert ClanInvitation.objects.filter(pk=other_old.pk).exists()
+
+
+@pytest.mark.django_db
+def test_invitation_admin_is_read_only(leader: User, invite_clan: Clan) -> None:
+    invitation, _ = create_clan_invitation(clan=invite_clan, actor=leader)
+    admin = User.objects.create_superuser(email="root@iteso.mx", password="local-only")
+    request = RequestFactory().get("/admin/")
+    request.user = admin
+    model_admin = admin_site._registry[ClanInvitation]  # pylint: disable=protected-access
+
+    assert not model_admin.has_add_permission(request)
+    assert not model_admin.has_change_permission(request, invitation)
+    assert not model_admin.has_delete_permission(request, invitation)

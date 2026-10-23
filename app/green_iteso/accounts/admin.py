@@ -206,6 +206,11 @@ class ClanInvitationAdmin(admin.ModelAdmin):
     ) -> bool:
         return False
 
+    def has_delete_permission(
+        self, request: HttpRequest, obj: ClanInvitation | None = None
+    ) -> bool:
+        return False
+
 
 @admin.register(UserRoleAudit)
 class UserRoleAuditAdmin(admin.ModelAdmin):

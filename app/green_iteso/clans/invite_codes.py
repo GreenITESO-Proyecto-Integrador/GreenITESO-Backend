@@ -18,6 +18,9 @@ from django.utils.crypto import salted_hmac
 CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_LENGTH = 8
 INVITATION_TTL = timedelta(hours=48)
+# Expired, used, and revoked codes are kept this long for auditing, then
+# purged the next time their clan creates a code.
+INVITATION_RETENTION = timedelta(days=30)
 MAX_ACTIVE_INVITATIONS_PER_CLAN = 20
 
 _HMAC_SALT = "green_iteso.clans.invite_code"

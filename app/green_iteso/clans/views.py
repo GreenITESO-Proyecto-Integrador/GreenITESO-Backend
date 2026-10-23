@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch, QuerySet
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import mixins, status, viewsets
@@ -11,7 +12,6 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
@@ -41,7 +41,6 @@ from .serializers import (
 from .services import (
     DuplicateClanNameError,
     InvalidClanPrivacyError,
-    InvalidInvitationCodeError,
     accept_join_request,
     assign_institutional_clan,
     create_clan_invitation,
@@ -57,6 +56,7 @@ from .services import (
 )
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
+from .throttles import ClanInviteRedeemThrottle
 
 
 def _validation_error_from(
@@ -110,9 +110,6 @@ class ClanViewSet(
     """List, retrieve, create, edit, dissolve, join, leave, and manage clans under /api/v1/clans/."""
 
     serializer_class = ClanSerializer
-    # Declared so ``@action(throttle_scope=...)`` is accepted; only actions
-    # that also list ScopedRateThrottle (redeem-invitation) are throttled.
-    throttle_scope: str | None = None
 
     def get_serializer_class(self) -> type[ClanSerializer]:
         if self.action == "retrieve":
@@ -261,7 +258,12 @@ class ClanViewSet(
     @action(
         detail=True,
         methods=["delete"],
-        url_path=r"invitations/(?P<invitation_id>[0-9a-fA-F-]{36})",
+        # A strict UUID, so a malformed id is a 404 from the router instead of
+        # a ValidationError from the UUID primary-key lookup.
+        url_path=(
+            r"invitations/(?P<invitation_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+        ),
         permission_classes=[IsAuthenticated, IsClanLeader],
     )
     def revoke_invitation(
@@ -273,7 +275,11 @@ class ClanViewSet(
             revoke_clan_invitation(
                 clan=clan, actor=request.user, invitation_id=invitation_id
             )
-        except (Clan.DoesNotExist, ClanInvitation.DoesNotExist) as exc:
+        except (
+            Clan.DoesNotExist,
+            ClanInvitation.DoesNotExist,
+            DjangoValidationError,
+        ) as exc:
             raise NotFound() from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -282,7 +288,8 @@ class ClanViewSet(
         description=(
             "Canjea un código de un solo uso y une al usuario al clan como "
             "miembro aceptado (respeta el límite de 5 clanes privados). "
-            "Limitado a 10 intentos por minuto."
+            "Todos los errores se devuelven en el campo `code`. Limitado a 10 "
+            "intentos por minuto por usuario y por proceso del servidor."
         ),
         request=RedeemInvitationSerializer,
         responses={201: ClanMembershipSerializer, 400: None, 429: None},
@@ -291,8 +298,7 @@ class ClanViewSet(
         detail=False,
         methods=["post"],
         url_path="redeem-invitation",
-        throttle_classes=[ScopedRateThrottle],
-        throttle_scope="clan_invite_redeem",
+        throttle_classes=[ClanInviteRedeemThrottle],
     )
     def redeem_invitation(self, request: Request) -> Response:
         """Join a clan with a single-use invite code (#165)."""
@@ -302,10 +308,11 @@ class ClanViewSet(
             membership = redeem_clan_invitation(
                 code=payload.validated_data["code"], user=request.user
             )
-        except InvalidInvitationCodeError as exc:
-            raise _validation_error_from(exc, field="code") from exc
         except ValueError as exc:
-            raise _validation_error_from(exc) from exc
+            # One shape for every refusal (unknown code, already a member,
+            # BR-04 cap), matching the serializer's own field errors, so
+            # clients read ``{"code": [message]}`` in every case.
+            raise ValidationError({"code": [str(exc)]}) from exc
         return Response(
             ClanMembershipSerializer(membership).data, status=status.HTTP_201_CREATED
         )

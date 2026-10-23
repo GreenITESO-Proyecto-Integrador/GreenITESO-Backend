@@ -8,7 +8,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
-from green_iteso.accounts.services import ensure_profile
+from green_iteso.accounts.services import ensure_profile, update_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
 
@@ -225,6 +225,34 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
         clan=clan,
         defaults={"role": ClanMembership.MembershipRole.MEMBER},
     )
+    return profile
+
+
+@transaction.atomic
+def complete_onboarding(
+    *,
+    user: User,
+    career: str,
+    nickname: str | None = None,
+    visibility: str | None = None,
+) -> UserProfile:
+    """Run the first-login onboarding in one transaction (#163).
+
+    Assigns the institutional clan exactly like ``assign_institutional_clan``
+    and optionally sets the profile visibility. ``nickname`` only fills an
+    empty nickname: this is the free first choice, and changing an existing
+    one belongs to the nickname-change flow (#175), not to onboarding.
+    """
+    profile = assign_institutional_clan(user=user, career=career)
+    if nickname is not None:
+        nickname = nickname.strip()
+        locked_user = User.objects.select_for_update().get(pk=user.pk)
+        if nickname and not locked_user.nickname:
+            locked_user.nickname = nickname
+            locked_user.save(update_fields=["nickname"])
+            user.nickname = nickname
+    if visibility is not None:
+        profile = update_profile(user=user, visibility=visibility)
     return profile
 
 

@@ -18,13 +18,18 @@ from green_iteso.accounts.services import ensure_profile
 from green_iteso.core.permissions import IsClanLeader
 
 from .avatars import InvalidClanAvatarError
-from .selectors import get_pending_join_requests, list_active_clans
+from .selectors import (
+    get_pending_join_requests,
+    list_active_clans,
+    list_institutional_careers,
+)
 from .serializers import (
     ClanAvatarUploadSerializer,
     ClanDetailSerializer,
     ClanMembershipSerializer,
     ClanSerializer,
     InstitutionalAssignmentSerializer,
+    InstitutionalCareersSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
     PendingMembershipRequestSerializer,
@@ -34,7 +39,7 @@ from .services import (
     DuplicateClanNameError,
     InvalidClanPrivacyError,
     accept_join_request,
-    assign_institutional_clan,
+    complete_onboarding,
     create_private_clan,
     dissolve_clan,
     join_clan,
@@ -334,16 +339,37 @@ class InstitutionalClanAssignmentView(APIView):
         return Response(InstitutionalAssignmentSerializer(profile).data)
 
     def post(self, request: Request) -> Response:
-        """Declare a career and auto-assign its institutional clan."""
+        """Declare a career and auto-assign its institutional clan.
+
+        Also accepts the optional first-login ``nickname`` and ``visibility``
+        so the onboarding modal completes in one transaction (#163).
+        """
         payload = InstitutionalOnboardingSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        data = payload.validated_data
         try:
-            profile = assign_institutional_clan(
-                user=request.user, career=payload.validated_data["career"]
+            profile = complete_onboarding(
+                user=request.user,
+                career=data["career"],
+                nickname=data.get("nickname"),
+                visibility=data.get("visibility"),
             )
         except ValueError as exc:
             raise _validation_error_from(exc, field="career") from exc
         return Response(
             InstitutionalAssignmentSerializer(profile).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class InstitutionalCareersView(APIView):
+    """List the careers offered in the onboarding picker (#163)."""
+
+    @extend_schema(responses=InstitutionalCareersSerializer)
+    def get(self, _request: Request) -> Response:
+        """Return the names of the alive institutional clans, sorted."""
+        return Response(
+            InstitutionalCareersSerializer(
+                {"careers": list_institutional_careers()}
+            ).data
         )

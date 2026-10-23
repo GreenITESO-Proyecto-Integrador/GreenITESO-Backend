@@ -74,16 +74,20 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   (`accounts/tests/test_views.py`, `clans/tests/test_views.py`). Si algún
   otro test o cliente asume 403 ante la ausencia de token, va a romper.
 - **Throttles de `/auth/login/`, `/auth/refresh/` y `/auth/logout/` (#186).**
-  El límite es por cuenta, no por IP: login usa el `oid` del ID token y
-  refresh/logout el `user_id` del refresh token, leídos sin verificar firma
-  solo para elegir la cubeta (`core/throttling.py`). Así un campus detrás de
-  NAT no comparte una sola cuota. Encima hay un techo por IP (`auth_ip`,
-  `300/min`) contra floods. Ese techo solo es confiable si `DJANGO_NUM_PROXIES`
-  coincide con la cadena real de proxies que agregan a `X-Forwarded-For`
-  (frontend nginx → Cloud Run → backend); sin esa variable DRF usa el header
-  completo y un cliente puede cambiarlo. Mídelo en el despliegue antes de
-  fijarlo. El cache sigue siendo `LocMemCache`, por proceso: con N workers el
-  límite real es N veces el configurado.
+  El límite es por persona, no solo por IP, así un campus detrás de NAT no
+  comparte una sola cuota (`core/throttling.py`). Refresh/logout verifican la
+  firma del refresh token (local, SimpleJWT) y usan su `user_id`; si la firma
+  no es válida, la llave es la IP. Login no puede verificar el ID token de
+  Microsoft ahí, así que usa el par (IP, `oid`): un `oid` forjado solo gasta la
+  cubeta de quien lo manda. Encima hay un techo por IP (`auth_ip`, `300/min`)
+  que no cuenta peticiones ya rechazadas por el límite por persona.
+  **Requisito de despliegue:** `DJANGO_NUM_PROXIES` debe coincidir con la cadena
+  real de proxies que agregan a `X-Forwarded-For` (frontend nginx → Cloud Run →
+  backend). Sin ella DRF usa el header completo y el techo se evade; el app
+  desplegado emite un `RuntimeWarning` al arrancar si falta. No se fuerza porque
+  el job de migraciones también corre desplegado. El cache es `LocMemCache` por
+  proceso (`MAX_ENTRIES` 10000); el límite real es N workers × el configurado
+  hasta que haya un cache compartido (Redis).
 
 ## Registro de la aplicación en Entra ID
 

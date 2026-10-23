@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -174,11 +175,30 @@ REST_FRAMEWORK = {
 # Number of proxies in front of the app that append to X-Forwarded-For, so
 # DRF throttles read the real client IP. Unset keeps DRF's default, which
 # trusts the whole header; measure the deployed chain before setting it.
+# It is a deploy prerequisite for the web app, not enforced here, because the
+# migration job also runs deployed and never serves requests.
 _num_proxies = os.environ.get("DJANGO_NUM_PROXIES", "").strip()
 if _num_proxies:
-    if not _num_proxies.isdigit():
+    if not _num_proxies.isdecimal():
         raise RuntimeError("DJANGO_NUM_PROXIES must be a non-negative integer.")
     REST_FRAMEWORK["NUM_PROXIES"] = int(_num_proxies)
+elif DEPLOYED and CONNECTION_ROLE == "app":
+    warnings.warn(
+        "DJANGO_NUM_PROXIES is not set: the per-IP auth ceiling can be bypassed "
+        "by changing X-Forwarded-For.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
+
+# Throttle counters live in this cache. LocMemCache is per process; the larger
+# MAX_ENTRIES keeps many distinct auth buckets from evicting each other until a
+# shared cache (Redis) replaces it.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "OPTIONS": {"MAX_ENTRIES": 10000},
+    }
+}
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),

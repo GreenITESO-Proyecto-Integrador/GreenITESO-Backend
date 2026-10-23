@@ -19,8 +19,8 @@ from .services import (
     compute_campaign_status,
     create_campaign_with_missions,
     date_changed,
+    ensure_campaign_dates_allowed,
     ensure_end_date_allowed,
-    ensure_start_date_allowed,
 )
 
 
@@ -124,14 +124,10 @@ class CampaignSerializer(serializers.ModelSerializer):
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
         end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
         if start_date is not None and end_date is not None:
-            ensure_end_date_allowed(start_date, end_date)
-        if self.instance is None and end_date is not None:
-            if end_date <= timezone.now():
-                raise serializers.ValidationError(
-                    {"end_date": "End date must be in the future."}
-                )
-        if self.instance is None and start_date is not None:
-            ensure_start_date_allowed(start_date)
+            if self.instance is None:
+                ensure_campaign_dates_allowed(start_date, end_date)
+            else:
+                ensure_end_date_allowed(start_date, end_date)
 
         scope = attrs.get("scope", getattr(self.instance, "scope", None))
         target_clan = attrs.get(
@@ -240,9 +236,9 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             )
         # Only re-validate dates the client actually changes, so a campaign
         # that predates these rules can still have its title or description
-        # edited, even when the client resends the stored dates.
-        # Dates compared at millisecond precision are dropped when unchanged, so
-        # they are not rewritten (and truncated) when only the title is edited.
+        # edited, even when the client resends the stored dates. Unchanged
+        # dates (compared at millisecond precision) are dropped so they are not
+        # rewritten, and truncated, when only the title is edited.
         for field in ("start_date", "end_date"):
             if field in attrs and not date_changed(
                 attrs[field], getattr(self.instance, field)
@@ -252,13 +248,9 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             return attrs
         start_date = attrs.get("start_date", self.instance.start_date)
         end_date = attrs.get("end_date", self.instance.end_date)
-        ensure_end_date_allowed(start_date, end_date)
-        if end_date <= timezone.now():
-            raise serializers.ValidationError(
-                {"end_date": "End date must be in the future."}
-            )
-        if "start_date" in attrs:
-            ensure_start_date_allowed(attrs["start_date"])
+        ensure_campaign_dates_allowed(
+            start_date, end_date, check_start="start_date" in attrs
+        )
         return attrs
 
     def update(self, instance: Campaign, validated_data: dict[str, Any]) -> Campaign:
@@ -321,13 +313,7 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
         start_date = attrs.get("start_date")
         end_date = attrs.get("end_date")
         if start_date is not None and end_date is not None:
-            ensure_end_date_allowed(start_date, end_date)
-        if end_date is not None and end_date <= timezone.now():
-            raise serializers.ValidationError(
-                {"end_date": "End date must be in the future."}
-            )
-        if start_date is not None:
-            ensure_start_date_allowed(start_date)
+            ensure_campaign_dates_allowed(start_date, end_date)
         if not attrs.get("missions"):
             raise serializers.ValidationError(
                 {"missions": "A campaign must have at least one mission."}

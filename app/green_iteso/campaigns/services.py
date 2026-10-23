@@ -151,6 +151,26 @@ def ensure_end_date_allowed(start_date: datetime, end_date: datetime) -> None:
         )
 
 
+def ensure_campaign_dates_allowed(
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    check_start: bool = True,
+    now: datetime | None = None,
+) -> None:
+    """Validate the dates a user submits for a campaign.
+
+    Checks, in order: ``end_date`` at least a day after ``start_date``,
+    ``end_date`` in the future, and (unless ``check_start`` is false, for
+    edits that leave the start untouched) ``start_date`` from tomorrow on.
+    """
+    ensure_end_date_allowed(start_date, end_date)
+    if end_date <= (now or timezone.now()):
+        raise ValidationError({"end_date": "End date must be in the future."})
+    if check_start:
+        ensure_start_date_allowed(start_date, now)
+
+
 def sync_campaign_statuses(now: datetime | None = None) -> int:
     """Advance stored campaign statuses to match their dates.
 

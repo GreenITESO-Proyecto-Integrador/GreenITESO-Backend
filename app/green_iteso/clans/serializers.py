@@ -6,7 +6,12 @@ from typing import Any
 
 from rest_framework import serializers
 
-from green_iteso.accounts.models import Clan, ClanMembership, UserProfile
+from green_iteso.accounts.models import (
+    Clan,
+    ClanInvitation,
+    ClanMembership,
+    UserProfile,
+)
 
 
 class ClanSerializer(serializers.ModelSerializer):
@@ -45,6 +50,29 @@ class ClanAvatarUploadSerializer(serializers.Serializer):  # pylint: disable=abs
     """
 
     avatar = serializers.FileField()
+
+
+class ClanInvitationSerializer(serializers.ModelSerializer):
+    """An active invite code as listed to the leader; never includes the code (#165)."""
+
+    class Meta:
+        model = ClanInvitation
+        fields = ["id", "code_hint", "expires_at", "created_at"]
+        read_only_fields = fields
+
+
+class ClanInvitationCreatedSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Response to creating an invite code: the only time ``code`` is returned."""
+
+    id = serializers.UUIDField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    expires_at = serializers.DateTimeField(read_only=True)
+
+
+class RedeemInvitationSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Input for POST /clans/redeem-invitation/ (#165)."""
+
+    code = serializers.CharField(max_length=20)
 
 
 class TransferLeadershipSerializer(serializers.Serializer):

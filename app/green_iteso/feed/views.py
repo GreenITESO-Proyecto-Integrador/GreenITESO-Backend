@@ -115,7 +115,9 @@ class ImageUploadView(APIView):
 
         detected_mime = detect_image_mime(file_obj)
         if not detected_mime or detected_mime not in MIME_TO_EXT:
-            err_msg = "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
+            err_msg = (
+                "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
+            )
             return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
@@ -148,7 +150,9 @@ class ImageUploadView(APIView):
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
-                {"error": "Error al comunicar con el servicio de almacenamiento en la nube."},
+                {
+                    "error": "Error al comunicar con el servicio de almacenamiento en la nube."
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         except Exception:  # pylint: disable=broad-exception-caught

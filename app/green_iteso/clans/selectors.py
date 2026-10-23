@@ -5,8 +5,9 @@ from __future__ import annotations
 import uuid
 
 from django.db.models import Q, QuerySet
+from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
 
 
 def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
@@ -43,3 +44,13 @@ def get_pending_join_requests(*, clan_id: uuid.UUID) -> QuerySet[ClanMembership]
         .select_related("user")
         .order_by("-joined_at")
     )
+
+
+def list_active_clan_invitations(*, clan: Clan) -> QuerySet[ClanInvitation]:
+    """Return ``clan``'s invite codes that can still be redeemed (#165)."""
+    return ClanInvitation.objects.filter(
+        clan=clan,
+        redeemed_at__isnull=True,
+        revoked_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).order_by("-created_at")

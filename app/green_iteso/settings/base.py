@@ -159,12 +159,25 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
+    # Login/refresh/logout limits are per account or user, not per IP, so a
+    # campus behind NAT does not share one quota; auth_ip is the per-IP
+    # flood ceiling on top (core/throttling.py, #186).
     "DEFAULT_THROTTLE_RATES": {
         "auth_login": "10/min",
         "auth_refresh": "30/min",
         "auth_logout": "30/min",
+        "auth_ip": "300/min",
     },
 }
+
+# Number of proxies in front of the app that append to X-Forwarded-For, so
+# DRF throttles read the real client IP. Unset keeps DRF's default, which
+# trusts the whole header; measure the deployed chain before setting it.
+_num_proxies = os.environ.get("DJANGO_NUM_PROXIES", "").strip()
+if _num_proxies:
+    if not _num_proxies.isdigit():
+        raise RuntimeError("DJANGO_NUM_PROXIES must be a non-negative integer.")
+    REST_FRAMEWORK["NUM_PROXIES"] = int(_num_proxies)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),

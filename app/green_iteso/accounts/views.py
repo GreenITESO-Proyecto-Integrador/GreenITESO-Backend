@@ -11,7 +11,6 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import (
     TokenBlacklistView as SimpleJWTTokenBlacklistView,
@@ -19,6 +18,11 @@ from rest_framework_simplejwt.views import (
 from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRefreshView
 
 from green_iteso.core.permissions import IsAdmin
+from green_iteso.core.throttling import (
+    AuthIPCeilingThrottle,
+    LoginIdentityThrottle,
+    RefreshTokenIdentityThrottle,
+)
 
 from .exceptions import RequestValidationError
 from .models import User
@@ -119,7 +123,7 @@ class LoginView(APIView):
 
     authentication_classes: list[type] = []
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [LoginIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_login"
 
     @extend_schema(
@@ -188,7 +192,7 @@ class TokenRefreshView(SimpleJWTTokenRefreshView):
     refresh token is single-use.
     """
 
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [RefreshTokenIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_refresh"
 
 
@@ -204,7 +208,7 @@ class LogoutView(SimpleJWTTokenBlacklistView):
     to 403).
     """
 
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [RefreshTokenIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_logout"
 
 

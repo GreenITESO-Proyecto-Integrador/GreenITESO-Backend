@@ -73,13 +73,17 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   y E3 también, no solo los dos ajustados en este PR
   (`accounts/tests/test_views.py`, `clans/tests/test_views.py`). Si algún
   otro test o cliente asume 403 ante la ausencia de token, va a romper.
-- **El throttle de `/auth/login/` (`10/min`) no limita lo que parece.**
-  `DEFAULT_THROTTLE_RATES`/`ScopedRateThrottle` usa el cache por defecto de
-  Django, `LocMemCache`, que es **por proceso**. Con N workers de Gunicorn el
-  límite real es `10×N` peticiones/min, no 10, y el conteo es por IP, así que
-  una red con NAT (un campus, por ejemplo) comparte esa cuota entre todos sus
-  usuarios. Cerrar esto bien requiere un backend de cache compartido (Redis)
-  entre workers; queda fuera de esta historia.
+- **Throttles de `/auth/login/`, `/auth/refresh/` y `/auth/logout/` (#186).**
+  El límite es por cuenta, no por IP: login usa el `oid` del ID token y
+  refresh/logout el `user_id` del refresh token, leídos sin verificar firma
+  solo para elegir la cubeta (`core/throttling.py`). Así un campus detrás de
+  NAT no comparte una sola cuota. Encima hay un techo por IP (`auth_ip`,
+  `300/min`) contra floods. Ese techo solo es confiable si `DJANGO_NUM_PROXIES`
+  coincide con la cadena real de proxies que agregan a `X-Forwarded-For`
+  (frontend nginx → Cloud Run → backend); sin esa variable DRF usa el header
+  completo y un cliente puede cambiarlo. Mídelo en el despliegue antes de
+  fijarlo. El cache sigue siendo `LocMemCache`, por proceso: con N workers el
+  límite real es N veces el configurado.
 
 ## Registro de la aplicación en Entra ID
 

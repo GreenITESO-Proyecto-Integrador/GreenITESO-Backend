@@ -13,12 +13,10 @@ from green_iteso.clans.services import create_private_clan
 
 @pytest.mark.django_db
 def test_leader_can_kick_accepted_member(leader: User) -> None:
-    """Test that a clan leader can successfully kick an accepted member from their clan."""
     clan = create_private_clan(name="Test Clan", created_by=leader)
     target_user = User.objects.create_user(
         email="member@iteso.mx", password="local-only"
     )
-    # Simular membresía aceptada
     ClanMembership.objects.create(
         user=target_user, clan=clan, status=ClanMembership.Status.ACCEPTED
     )
@@ -35,7 +33,6 @@ def test_leader_can_kick_accepted_member(leader: User) -> None:
 
 @pytest.mark.django_db
 def test_points_history_preserved_after_kick(leader: User) -> None:
-    """Test that the clan's total points remain unchanged after a member is kicked."""
     clan = create_private_clan(name="Test Clan", created_by=leader)
     clan.total_points = 500
     clan.save()
@@ -55,12 +52,11 @@ def test_points_history_preserved_after_kick(leader: User) -> None:
 
     assert response.status_code == status.HTTP_204_NO_CONTENT
     clan.refresh_from_db()
-    assert clan.total_points == 500  # BR-08: Puntos intactos en el clan
+    assert clan.total_points == 500  # BR-08: Puntos retenidos en el clan
 
 
 @pytest.mark.django_db
 def test_leader_cannot_kick_self(leader: User) -> None:
-    """Test that a clan leader cannot kick themselves from their own clan."""
     clan = create_private_clan(name="Test Clan", created_by=leader)
 
     client = APIClient()
@@ -75,9 +71,10 @@ def test_leader_cannot_kick_self(leader: User) -> None:
 
 @pytest.mark.django_db
 def test_non_leader_cannot_kick_member(leader: User) -> None:
-    """Test that a non-leader member cannot kick another member from the clan."""
     clan = create_private_clan(name="Test Clan", created_by=leader)
-    member = User.objects.create_user(email="regular@iteso.mx", password="local-only")
+    member = User.objects.create_user(
+        email="regular@iteso.mx", password="local-only"
+    )
     target_user = User.objects.create_user(
         email="target@iteso.mx", password="local-only"
     )
@@ -98,8 +95,8 @@ def test_non_leader_cannot_kick_member(leader: User) -> None:
 
 
 @pytest.mark.django_db
-def test_admin_can_kick_member(leader: User) -> None:
-    """Test that an admin can kick a member from any clan."""
+def test_admin_cannot_kick_member(leader: User) -> None:
+    """Asegura que un ADMIN sin rol de líder reciba 403 Forbidden (Alineado con PR #195)."""
     admin = User.objects.create_user(
         email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
     )
@@ -117,12 +114,14 @@ def test_admin_can_kick_member(leader: User) -> None:
 
     response = client.post(url, data={"user_id": str(target_user.id)})
 
-    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert ClanMembership.objects.filter(user=target_user, clan=clan).exists()
 
 
 @pytest.mark.django_db
 def test_cannot_kick_member_from_institutional_clan() -> None:
-    """Test that kicking a member from an institutional clan is not allowed."""
+    """Los clanes institucionales representan la carrera y no tienen líder;
+    cualquier intento de expulsión debe ser rechazado con 403 Forbidden."""
     admin = User.objects.create_user(
         email="admin@iteso.mx", password="local-only", role=User.Role.ADMIN
     )
@@ -144,6 +143,6 @@ def test_cannot_kick_member_from_institutional_clan() -> None:
 
     response = client.post(url, data={"user_id": str(target_user.id)})
 
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert "user_id" in response.data
+    # Al no haber líder en un clan institucional, IsClanLeader rechaza la petición con 403
+    assert response.status_code == status.HTTP_403_FORBIDDEN
     assert ClanMembership.objects.filter(user=target_user, clan=inst_clan).exists()

@@ -1,3 +1,4 @@
+# pylint: disable=no-member,too-many-instance-attributes
 """Integration tests for feed REST API endpoints."""
 
 from datetime import timedelta
@@ -23,6 +24,7 @@ VALID_PNG_BYTES = (
 User = get_user_model()
 
 class PostAPITests(APITestCase):
+    """Integration tests for feed REST API endpoints."""
     def setUp(self) -> None:
         self.author = User.objects.create_user(
             email="author@iteso.mx",
@@ -56,15 +58,18 @@ class PostAPITests(APITestCase):
         self.detail_url = f"/api/v1/feed/{self.post.pk}/"
 
     def test_list_feed_posts_unauthenticated(self) -> None:
+        """Ensure the feed listing is publicly accessible."""
         response = self.client.get(self.base_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_retrieve_single_post(self) -> None:
+        """Ensure individual post details can be fetched."""
         response = self.client.get(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], self.post.pk)
 
     def test_author_data_excludes_sensitive_email(self) -> None:
+        """Verify that author payload omits email addresses to prevent harvesting."""
         response = self.client.get(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         author_data = response.data.get("author")
@@ -72,6 +77,7 @@ class PostAPITests(APITestCase):
         self.assertNotIn("email", author_data)
 
     def test_create_post_authenticated(self) -> None:
+        """Ensure logged-in users can successfully publish posts."""
         self.client.force_authenticate(user=self.author)
         payload = {
             "post_type": PostType.COMMUNITY_MILESTONE,
@@ -82,6 +88,7 @@ class PostAPITests(APITestCase):
         self.assertEqual(response.data["post_type"], PostType.COMMUNITY_MILESTONE)
 
     def test_create_post_with_badge_success(self) -> None:
+        """Ensure user can create a post attaching their own badge."""
         self.client.force_authenticate(user=self.author)
         payload = {
             "post_type": PostType.COMMUNITY_MILESTONE,
@@ -95,6 +102,7 @@ class PostAPITests(APITestCase):
         self.assertEqual(response.data["badge_info"]["icon_name"], "tree")
 
     def test_create_post_with_unowned_badge_rejected(self) -> None:
+        """Ensure attaching someone else's badge returns 400 Bad Request."""
         self.client.force_authenticate(user=self.author)
         payload = {
             "post_type": PostType.COMMUNITY_MILESTONE,
@@ -106,6 +114,7 @@ class PostAPITests(APITestCase):
         self.assertIn("badge_user", response.data)
 
     def test_create_post_unauthenticated_unauthorized(self) -> None:
+        """Ensure unauthenticated users receive 401 Unauthorized."""
         payload = {
             "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
             "content": "Intento anonimo.",
@@ -114,6 +123,7 @@ class PostAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_create_post_validation_error(self) -> None:
+        """Ensure serializer rejects payloads with empty content."""
         self.client.force_authenticate(user=self.author)
         payload = {
             "post_type": PostType.COMMUNITY_MILESTONE,
@@ -123,6 +133,7 @@ class PostAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_update_post_as_author(self) -> None:
+        """Ensure authors can edit their own content."""
         self.client.force_authenticate(user=self.author)
         payload = {"content": "Contenido modificado por autor."}
         response = self.client.patch(self.detail_url, data=payload)
@@ -131,23 +142,27 @@ class PostAPITests(APITestCase):
         self.assertEqual(self.post.content, "Contenido modificado por autor.")
 
     def test_update_post_as_non_author_forbidden(self) -> None:
+        """Ensure users cannot edit posts created by others."""
         self.client.force_authenticate(user=self.other_user)
         payload = {"content": "Intento de edicion no autorizada."}
         response = self.client.patch(self.detail_url, data=payload)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_delete_post_as_author(self) -> None:
+        """Ensure authors can delete their own posts."""
         self.client.force_authenticate(user=self.author)
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Post.objects.filter(pk=self.post.pk).exists())
 
     def test_delete_post_as_non_author_forbidden(self) -> None:
+        """Ensure users cannot delete posts created by others."""
         self.client.force_authenticate(user=self.other_user)
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_delete_post_as_staff_allowed(self) -> None:
+        """Ensure staff members can moderate and delete posts from other users."""
         staff_user = User.objects.create_user(
             email="staff@iteso.mx",
             password="StrongPassword123!",
@@ -159,6 +174,7 @@ class PostAPITests(APITestCase):
         self.assertFalse(Post.objects.filter(pk=self.post.pk).exists())
 
     def test_relative_time_formats(self) -> None:
+        """Verify serializer relative time formats in Spanish."""
         post_old = Post.objects.create(
             author=self.author,
             post_type=PostType.COMMUNITY_MILESTONE,
@@ -171,6 +187,7 @@ class PostAPITests(APITestCase):
         self.assertIn("hace", res.data["relative_time"])
 
     def test_feed_list_query_count_does_not_grow_with_badges(self) -> None:
+        """Ensure listing posts does not trigger N+1 queries when posts have badges."""
         for i in range(5):
             Post.objects.create(
                 author=self.author,
@@ -185,6 +202,7 @@ class PostAPITests(APITestCase):
 
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
+    """Integration tests for the GCS image upload endpoint."""
     def setUp(self) -> None:
         self.user = User.objects.create_user(
             email="testupload@iteso.mx",
@@ -194,16 +212,19 @@ class ImageUploadViewTests(APITestCase):
         self.url = "/api/uploads/"
 
     def test_upload_unauthenticated_returns_401(self) -> None:
+        """Ensure unauthenticated users are rejected."""
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_upload_missing_file_returns_400(self) -> None:
+        """Ensure requests without an image file are rejected."""
         self.client.force_authenticate(user=self.user)
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("error", response.data)
 
     def test_upload_invalid_mime_type_returns_400(self) -> None:
+        """Ensure non-image files are properly rejected."""
         self.client.force_authenticate(user=self.user)
         fake_file = SimpleUploadedFile(
             "test.txt",
@@ -214,6 +235,7 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_oversized_file_returns_400(self) -> None:
+        """Ensure files over the 5MB limit are rejected."""
         self.client.force_authenticate(user=self.user)
         large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
         oversized_file = SimpleUploadedFile(
@@ -225,6 +247,7 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_truncated_image_returns_400(self) -> None:
+        """Ensure an image with a valid header but truncated content is rejected by Pillow."""
         self.client.force_authenticate(user=self.user)
         truncated_png = SimpleUploadedFile(
             "truncated.png",
@@ -237,6 +260,7 @@ class ImageUploadViewTests(APITestCase):
 
     @patch("google.cloud.storage.Client")
     def test_upload_gcs_service_failure_returns_500(self, mock_storage_client: MagicMock) -> None:
+        """Ensure GCS failures are handled gracefully with a 500 error."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
@@ -249,6 +273,7 @@ class ImageUploadViewTests(APITestCase):
 
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(self, mock_storage_client: MagicMock) -> None:
+        """Ensure a successful upload returns a 200 OK and the signed URL."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
@@ -268,6 +293,7 @@ class ImageUploadViewTests(APITestCase):
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:
+        """Ensure a missing GCS bucket configuration returns a 503 error."""
         self.client.force_authenticate(user=self.user)
         valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")

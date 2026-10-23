@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """Unit tests for the Post model logic and constraints."""
 
 from django.contrib.auth import get_user_model
@@ -34,6 +35,7 @@ class PostModelTests(APITestCase):
         )
 
     def test_post_creation_and_str_with_author(self) -> None:
+        """Validate string representation and persistence with an author."""
         post = Post.objects.create(
             author=self.user,
             post_type=PostType.COMMUNITY_MILESTONE,
@@ -43,6 +45,7 @@ class PostModelTests(APITestCase):
         self.assertIn(PostType.COMMUNITY_MILESTONE, str(post))
 
     def test_post_str_without_author(self) -> None:
+        """Ensure system announcements format correctly without author."""
         post = Post.objects.create(
             author=None,
             post_type=PostType.OFFICIAL_ANNOUNCEMENT,
@@ -51,6 +54,7 @@ class PostModelTests(APITestCase):
         self.assertIn("System", str(post))
 
     def test_clean_rejects_empty_content(self) -> None:
+        """Verify model validation fails if content contains only whitespace."""
         post = Post(
             author=self.user,
             post_type=PostType.SHARED_EVIDENCE,
@@ -60,6 +64,7 @@ class PostModelTests(APITestCase):
             post.clean()
 
     def test_save_rejects_empty_content_at_persistence(self) -> None:
+        """Verify save() invokes full_clean and prevents persisting empty content."""
         post = Post(
             author=self.user,
             post_type=PostType.SHARED_EVIDENCE,
@@ -69,6 +74,7 @@ class PostModelTests(APITestCase):
             post.save()
 
     def test_clean_rejects_invalid_post_type(self) -> None:
+        """Verify model validation rejects unlisted enum types."""
         post = Post(
             author=self.user,
             post_type="INVALID_CHOICE",
@@ -78,6 +84,7 @@ class PostModelTests(APITestCase):
             post.clean()
 
     def test_clean_rejects_badge_belonging_to_another_user(self) -> None:
+        """Verify model rejects attaching a badge owned by someone else."""
         post = Post(
             author=self.other_user,
             badge_user=self.user_badge,

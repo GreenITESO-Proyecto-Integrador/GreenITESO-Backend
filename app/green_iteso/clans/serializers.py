@@ -145,6 +145,9 @@ class ClanMemberSerializer(serializers.Serializer):
 
     user_id = serializers.UUIDField(source="user.id", read_only=True)
     nickname = serializers.CharField(source="user.nickname", read_only=True)
+    display_name = serializers.CharField(
+        source="user.public_display_name", read_only=True
+    )
     role = serializers.ChoiceField(
         choices=ClanMembership.MembershipRole.choices, read_only=True
     )
@@ -189,6 +192,7 @@ class UserMinimalSerializer(serializers.Serializer):
 
     id = serializers.UUIDField(read_only=True)
     nickname = serializers.CharField(read_only=True)
+    display_name = serializers.CharField(source="public_display_name", read_only=True)
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""

@@ -34,6 +34,7 @@ from .serializers import (
     InstitutionalAssignmentSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
+    KickMemberSerializer,
     PendingMembershipRequestSerializer,
     RedeemInvitationSerializer,
     TransferLeadershipSerializer,
@@ -54,6 +55,7 @@ from .services import (
     set_clan_avatar,
     update_clan,
 )
+from .services import kick_member as kick_member_service
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
 from .throttles import ClanInviteRedeemThrottle
@@ -454,6 +456,40 @@ class ClanViewSet(
         except ValueError as exc:
             raise _validation_error_from(exc, field="clan") from exc
         return Response(ClanMembershipSerializer(membership).data)
+
+    @extend_schema(
+        summary="Expulsar a un miembro del clan",
+        description="Permite únicamente al líder del clan expulsar a un miembro activo.",
+        tags=["Clans Administration"],
+        request=KickMemberSerializer,
+        responses={204: None, 400: None, 403: None, 404: None},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="kick",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def kick_member(self, request: Request, **kwargs: object) -> Response:
+        """Expel a member from the clan as its leader (T2-41)."""
+        clan = self.get_object()
+        serializer = KickMemberSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_user_id = serializer.validated_data["user_id"]
+
+        try:
+            target_user = User.objects.get(pk=target_user_id)
+        except User.DoesNotExist as exc:
+            raise ValidationError({"user_id": "User not found."}) from exc
+
+        try:
+            kick_member_service(clan=clan, actor=request.user, target_user=target_user)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except ValueError as exc:
+            raise _validation_error_from(exc, field="user_id") from exc
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class InstitutionalClanAssignmentView(APIView):

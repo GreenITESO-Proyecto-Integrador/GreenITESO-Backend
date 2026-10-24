@@ -236,6 +236,11 @@ class TestCampaignUpdateEndpoint:
         campaign.refresh_from_db()
         assert campaign.status == Campaign.Status.PROMOTION
 
+
+@pytest.mark.django_db
+class TestCampaignUpdateDateChanges:
+    """Which PATCH dates count as changed, and which rules then apply."""
+
     def test_resending_unchanged_dates_does_not_revalidate_them(
         self, api_client: APIClient, admin_user: User, campaign_factory: Any
     ) -> None:

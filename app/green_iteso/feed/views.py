@@ -13,14 +13,13 @@ from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from PIL import Image, UnidentifiedImageError
 from rest_framework import permissions, status, viewsets
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from green_iteso.core.permissions import IsAdmin
-from green_iteso.feed.models import Post, PostType
+from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
 
 # pylint: disable=no-member
@@ -74,21 +73,9 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         )
 
     def perform_create(self, serializer: PostSerializer) -> None:
-        """Assign authenticated user as author upon creation and restrict official posts."""
+        """Assign authenticated user as author upon creation."""
         user = self.request.user if self.request.user.is_authenticated else None
-
-        # Validar que solo los admins puedan crear anuncios oficiales
-        if serializer.validated_data.get("post_type") == PostType.OFFICIAL_ANNOUNCEMENT:
-            if not IsAdmin().has_permission(self.request, self):
-                raise PermissionDenied("Solo los administradores pueden crear anuncios oficiales.")
-
         serializer.save(author=user)
-
-    def perform_destroy(self, instance: Post) -> None:
-        """Ensure only the post author or admins can delete the instance."""
-        if instance.author != self.request.user and not IsAdmin().has_permission(self.request, self):
-            raise PermissionDenied("You can only delete your own posts.")
-        instance.delete()
 
 
 class ImageUploadView(APIView):

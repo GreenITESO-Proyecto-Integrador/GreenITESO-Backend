@@ -210,6 +210,39 @@ class PostAPITests(APITestCase):
         response = self.client.post(self.base_url, data=payload)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_patch_official_announcement_as_non_admin_forbidden(self) -> None:
+        """Ensure standard users cannot edit an existing post to make it official."""
+        self.client.force_authenticate(user=self.author)
+        payload = {"post_type": PostType.OFFICIAL_ANNOUNCEMENT}
+        response = self.client.patch(self.detail_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_create_official_announcement_as_admin_allowed(self) -> None:
+        """Ensure admins can successfully create official announcements."""
+        admin_user = User.objects.create_user(
+            email="admin_creator@iteso.mx",
+            password="StrongPassword123!",
+            role="ADMIN",
+        )
+        self.client.force_authenticate(user=admin_user)
+        payload = {
+            "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
+            "content": "Aviso oficial real.",
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_delete_post_as_staff_forbidden(self) -> None:
+        """Ensure users with only is_staff=True (not ADMIN role) cannot delete other users' posts."""
+        staff_user = User.objects.create_user(
+            email="staff_no_admin@iteso.mx",
+            password="StrongPassword123!",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=staff_user)
+        response = self.client.delete(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
     """Integration tests for the GCS image upload endpoint."""

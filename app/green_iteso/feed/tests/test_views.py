@@ -200,6 +200,16 @@ class PostAPITests(APITestCase):
             response = self.client.get(self.base_url)
             self.assertEqual(response.status_code, 200)
 
+    def test_create_official_announcement_as_non_admin_forbidden(self) -> None:
+        """Ensure standard users cannot create official announcements."""
+        self.client.force_authenticate(user=self.author)
+        payload = {
+            "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
+            "content": "Intento de anuncio oficial falso.",
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
     """Integration tests for the GCS image upload endpoint."""

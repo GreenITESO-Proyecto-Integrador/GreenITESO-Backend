@@ -161,14 +161,14 @@ class PostAPITests(APITestCase):
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_delete_post_as_staff_allowed(self) -> None:
-        """Ensure staff members can moderate and delete posts from other users."""
-        staff_user = User.objects.create_user(
-            email="staff@iteso.mx",
+    def test_delete_post_as_admin_allowed(self) -> None:
+        """Ensure admin users can moderate and delete posts from other users."""
+        admin_user = User.objects.create_user(
+            email="admin@iteso.mx",
             password="StrongPassword123!",
-            is_staff=True,
+            role="ADMIN",
         )
-        self.client.force_authenticate(user=staff_user)
+        self.client.force_authenticate(user=admin_user)
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Post.objects.filter(pk=self.post.pk).exists())

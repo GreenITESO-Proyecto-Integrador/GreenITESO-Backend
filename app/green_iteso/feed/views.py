@@ -19,6 +19,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
 
@@ -51,11 +52,11 @@ class IsAuthorOrReadOnly(permissions.BasePermission):
     """Custom permission to restrict update and delete actions."""
 
     def has_object_permission(self, request: Request, view: Any, obj: Post) -> bool:
-        """Allow read access to all, updates to author, deletes to author or staff."""
+        """Allow read access to all, updates to author, deletes to author or admin."""
         if request.method in permissions.SAFE_METHODS:
             return True
-        if request.method == "DELETE" and request.user and request.user.is_staff:
-            return True
+        if request.method == "DELETE" and request.user:
+            return obj.author == request.user or IsAdmin().has_permission(request, view)
         return obj.author == request.user
 
 
@@ -78,8 +79,8 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         serializer.save(author=user)
 
     def perform_destroy(self, instance: Post) -> None:
-        """Ensure only the post author or staff members can delete the instance."""
-        if instance.author != self.request.user and not self.request.user.is_staff:
+        """Ensure only the post author or admins can delete the instance."""
+        if instance.author != self.request.user and not IsAdmin().has_permission(self.request, self):
             raise PermissionDenied("You can only delete your own posts.")
         instance.delete()
 

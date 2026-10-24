@@ -1,13 +1,10 @@
-# pylint: disable=no-member
-"""Unit and integration test suite for the feed app."""
-
-from __future__ import annotations
+# pylint: disable=no-member,too-many-instance-attributes
+"""Integration tests for feed REST API endpoints."""
 
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
@@ -26,95 +23,8 @@ VALID_PNG_BYTES = (
 
 User = get_user_model()
 
-
-class PostModelTests(APITestCase):
-    """Unit tests for the Post model logic and constraints."""
-
-    def setUp(self) -> None:
-        self.user = User.objects.create_user(
-            email="testuser@iteso.mx",
-            password="StrongPassword123!",
-            first_name="Test",
-        )
-        self.other_user = User.objects.create_user(
-            email="otheruser@iteso.mx",
-            password="StrongPassword123!",
-            first_name="Other",
-        )
-        self.badge = Badge.objects.create(
-            name="Reciclador Pro",
-            description="Reciclaste 50 items",
-            icon_name="recycle",
-        )
-        self.user_badge = UserBadge.objects.create(
-            user=self.user,
-            badge=self.badge,
-        )
-
-    def test_post_creation_and_str_with_author(self) -> None:
-        """Validate string representation and persistence with an author."""
-        post = Post.objects.create(
-            author=self.user,
-            post_type=PostType.COMMUNITY_MILESTONE,
-            content="Recogimos 10kg de plastico en campus.",
-        )
-        self.assertIn(str(post.pk), str(post))
-        self.assertIn(PostType.COMMUNITY_MILESTONE, str(post))
-
-    def test_post_str_without_author(self) -> None:
-        """Ensure system announcements format correctly without author."""
-        post = Post.objects.create(
-            author=None,
-            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
-            content="Aviso institucional general.",
-        )
-        self.assertIn("System", str(post))
-
-    def test_clean_rejects_empty_content(self) -> None:
-        """Verify model validation fails if content contains only whitespace."""
-        post = Post(
-            author=self.user,
-            post_type=PostType.SHARED_EVIDENCE,
-            content="   ",
-        )
-        with self.assertRaises(ValidationError):
-            post.clean()
-
-    def test_save_rejects_empty_content_at_persistence(self) -> None:
-        """Verify save() invokes full_clean and prevents persisting empty content."""
-        post = Post(
-            author=self.user,
-            post_type=PostType.SHARED_EVIDENCE,
-            content="   ",
-        )
-        with self.assertRaises(ValidationError):
-            post.save()
-
-    def test_clean_rejects_invalid_post_type(self) -> None:
-        """Verify model validation rejects unlisted enum types."""
-        post = Post(
-            author=self.user,
-            post_type="INVALID_CHOICE",
-            content="Contenido valido",
-        )
-        with self.assertRaises(ValidationError):
-            post.clean()
-
-    def test_clean_rejects_badge_belonging_to_another_user(self) -> None:
-        """Verify model rejects attaching a badge owned by someone else."""
-        post = Post(
-            author=self.other_user,
-            badge_user=self.user_badge,
-            post_type=PostType.COMMUNITY_MILESTONE,
-            content="Intento de usar medalla ajena",
-        )
-        with self.assertRaises(ValidationError):
-            post.clean()
-
-
-class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-instance-attributes
+class PostAPITests(APITestCase):
     """Integration tests for feed REST API endpoints."""
-
     def setUp(self) -> None:
         self.author = User.objects.create_user(
             email="author@iteso.mx",
@@ -251,14 +161,14 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_delete_post_as_staff_allowed(self) -> None:
-        """Ensure staff members can moderate and delete posts from other users."""
-        staff_user = User.objects.create_user(
-            email="staff@iteso.mx",
+    def test_delete_post_as_admin_allowed(self) -> None:
+        """Ensure admin users can moderate and delete posts from other users."""
+        admin_user = User.objects.create_user(
+            email="admin@iteso.mx",
             password="StrongPassword123!",
-            is_staff=True,
+            role="ADMIN",
         )
-        self.client.force_authenticate(user=staff_user)
+        self.client.force_authenticate(user=admin_user)
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Post.objects.filter(pk=self.post.pk).exists())
@@ -273,7 +183,6 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
         Post.objects.filter(pk=post_old.pk).update(
             created_at=timezone.now() - timedelta(hours=3)
         )
-
         res = self.client.get(f"/api/v1/feed/{post_old.pk}/")
         self.assertIn("hace", res.data["relative_time"])
 
@@ -286,18 +195,57 @@ class PostAPITests(APITestCase):  # pylint: disable=too-many-ancestors,too-many-
                 post_type=PostType.SHARED_EVIDENCE,
                 badge_user=self.author_badge,
             )
-
         self.client.force_authenticate(user=self.author)
-
         with self.assertNumQueries(2):
             response = self.client.get(self.base_url)
             self.assertEqual(response.status_code, 200)
 
+    def test_create_official_announcement_as_non_admin_forbidden(self) -> None:
+        """Ensure standard users cannot create official announcements."""
+        self.client.force_authenticate(user=self.author)
+        payload = {
+            "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
+            "content": "Intento de anuncio oficial falso.",
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_patch_official_announcement_as_non_admin_forbidden(self) -> None:
+        """Ensure standard users cannot edit an existing post to make it official."""
+        self.client.force_authenticate(user=self.author)
+        payload = {"post_type": PostType.OFFICIAL_ANNOUNCEMENT}
+        response = self.client.patch(self.detail_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_create_official_announcement_as_admin_allowed(self) -> None:
+        """Ensure admins can successfully create official announcements."""
+        admin_user = User.objects.create_user(
+            email="admin_creator@iteso.mx",
+            password="StrongPassword123!",
+            role="ADMIN",
+        )
+        self.client.force_authenticate(user=admin_user)
+        payload = {
+            "post_type": PostType.OFFICIAL_ANNOUNCEMENT,
+            "content": "Aviso oficial real.",
+        }
+        response = self.client.post(self.base_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_delete_post_as_staff_forbidden(self) -> None:
+        """Ensure users with only is_staff=True (not ADMIN role) cannot delete other users' posts."""
+        staff_user = User.objects.create_user(
+            email="staff_no_admin@iteso.mx",
+            password="StrongPassword123!",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=staff_user)
+        response = self.client.delete(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
     """Integration tests for the GCS image upload endpoint."""
-
     def setUp(self) -> None:
         self.user = User.objects.create_user(
             email="testupload@iteso.mx",
@@ -308,13 +256,11 @@ class ImageUploadViewTests(APITestCase):
 
     def test_upload_unauthenticated_returns_401(self) -> None:
         """Ensure unauthenticated users are rejected."""
-
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_upload_missing_file_returns_400(self) -> None:
         """Ensure requests without an image file are rejected."""
-
         self.client.force_authenticate(user=self.user)
         response = self.client.post(self.url, {})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -322,7 +268,6 @@ class ImageUploadViewTests(APITestCase):
 
     def test_upload_invalid_mime_type_returns_400(self) -> None:
         """Ensure non-image files are properly rejected."""
-
         self.client.force_authenticate(user=self.user)
         fake_file = SimpleUploadedFile(
             "test.txt",
@@ -334,7 +279,6 @@ class ImageUploadViewTests(APITestCase):
 
     def test_upload_oversized_file_returns_400(self) -> None:
         """Ensure files over the 5MB limit are rejected."""
-
         self.client.force_authenticate(user=self.user)
         large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
         oversized_file = SimpleUploadedFile(
@@ -342,15 +286,12 @@ class ImageUploadViewTests(APITestCase):
             large_content,
             content_type="image/jpeg",
         )
-        response = self.client.post(
-            self.url, {"image": oversized_file}, format="multipart"
-        )
+        response = self.client.post(self.url, {"image": oversized_file}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_truncated_image_returns_400(self) -> None:
         """Ensure an image with a valid header but truncated content is rejected by Pillow."""
         self.client.force_authenticate(user=self.user)
-        # Imagen con cabecera PNG válida pero sin los bloques de datos obligatorios
         truncated_png = SimpleUploadedFile(
             "truncated.png",
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
@@ -363,9 +304,7 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("error", response.data)
 
     @patch("google.cloud.storage.Client")
-    def test_upload_gcs_service_failure_returns_500(
-        self, mock_storage_client: MagicMock
-    ) -> None:
+    def test_upload_gcs_service_failure_returns_500(self, mock_storage_client: MagicMock) -> None:
         """Ensure GCS failures are handled gracefully with a 500 error."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
@@ -373,31 +312,22 @@ class ImageUploadViewTests(APITestCase):
         mock_blob = mock_bucket.blob.return_value
         mock_blob.upload_from_file.side_effect = GoogleCloudError("GCS error")
 
-        # Usar la imagen válida para superar el chequeo de Pillow
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
+        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @patch("google.cloud.storage.Client")
-    def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock
-    ) -> None:
+    def test_upload_success_returns_200_and_url(self, mock_storage_client: MagicMock) -> None:
         """Ensure a successful upload returns a 200 OK and the signed URL."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
         mock_blob = mock_bucket.blob.return_value
-        # Simular que SDK devuelve una URL con firma
         mock_blob.generate_signed_url.return_value = (
             "https://storage.googleapis.com/test-bucket/"
             "uploads/test.png?X-Goog-Signature=mock"
         )
-
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
+        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -410,8 +340,6 @@ class ImageUploadViewTests(APITestCase):
     def test_upload_unconfigured_bucket_returns_503(self) -> None:
         """Ensure a missing GCS bucket configuration returns a 503 error."""
         self.client.force_authenticate(user=self.user)
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
+        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)

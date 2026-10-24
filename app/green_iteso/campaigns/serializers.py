@@ -237,13 +237,16 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
         # Only re-validate dates the client actually changes, so a campaign
         # that predates these rules can still have its title or description
         # edited, even when the client resends the stored dates. Unchanged
-        # dates (compared at millisecond precision) are dropped so they are not
-        # rewritten, and truncated, when only the title is edited.
-        for field in ("start_date", "end_date"):
-            if field in attrs and not date_changed(
-                attrs[field], getattr(self.instance, field)
-            ):
-                del attrs[field]
+        # dates (compared at millisecond precision) are left out of the result
+        # so they are not rewritten, and truncated, when only the title is
+        # edited.
+        unchanged = {
+            field
+            for field in ("start_date", "end_date")
+            if field in attrs
+            and not date_changed(attrs[field], getattr(self.instance, field))
+        }
+        attrs = {key: value for key, value in attrs.items() if key not in unchanged}
         if "start_date" not in attrs and "end_date" not in attrs:
             return attrs
         start_date = attrs.get("start_date", self.instance.start_date)

@@ -131,16 +131,20 @@ def ensure_start_date_allowed(
         raise ValidationError({"start_date": "Start date must be tomorrow or later."})
 
 
+def _truncate_to_ms(value: datetime) -> datetime:
+    """Drop the sub-millisecond part of ``value``."""
+    return value.replace(microsecond=value.microsecond // 1000 * 1000)
+
+
 def date_changed(new: datetime, stored: datetime) -> bool:
     """Return whether ``new`` differs from ``stored`` at millisecond precision.
 
     Clients such as JavaScript truncate datetimes to milliseconds while the
     database keeps microseconds, so resending an unchanged date must not count
-    as an edit.
+    as an edit. A difference below one millisecond is likewise treated as "no
+    change": the stored value is kept.
     """
-    return new.replace(microsecond=new.microsecond // 1000 * 1000) != stored.replace(
-        microsecond=stored.microsecond // 1000 * 1000
-    )
+    return _truncate_to_ms(new) != _truncate_to_ms(stored)
 
 
 def ensure_end_date_allowed(start_date: datetime, end_date: datetime) -> None:
@@ -156,7 +160,6 @@ def ensure_campaign_dates_allowed(
     end_date: datetime,
     *,
     check_start: bool = True,
-    now: datetime | None = None,
 ) -> None:
     """Validate the dates a user submits for a campaign.
 
@@ -165,10 +168,10 @@ def ensure_campaign_dates_allowed(
     edits that leave the start untouched) ``start_date`` from tomorrow on.
     """
     ensure_end_date_allowed(start_date, end_date)
-    if end_date <= (now or timezone.now()):
+    if end_date <= timezone.now():
         raise ValidationError({"end_date": "End date must be in the future."})
     if check_start:
-        ensure_start_date_allowed(start_date, now)
+        ensure_start_date_allowed(start_date)
 
 
 def sync_campaign_statuses(now: datetime | None = None) -> int:

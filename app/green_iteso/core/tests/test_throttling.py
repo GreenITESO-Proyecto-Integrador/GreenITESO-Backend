@@ -15,6 +15,7 @@ from green_iteso.accounts.models import User
 
 LOGIN_URL = "/api/v1/auth/login/"
 REFRESH_URL = "/api/v1/auth/refresh/"
+LOGOUT_URL = "/api/v1/auth/logout/"
 CAMPUS_IP = "203.0.113.10"
 ATTACKER_IP = "198.51.100.99"
 
@@ -26,7 +27,12 @@ def _rates(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(
         SimpleRateThrottle,
         "THROTTLE_RATES",
-        {"auth_login": "2/min", "auth_refresh": "2/min", "auth_ip": "5/min"},
+        {
+            "auth_login": "2/min",
+            "auth_refresh": "2/min",
+            "auth_logout": "2/min",
+            "auth_ip": "5/min",
+        },
     )
     cache.clear()
     yield
@@ -134,3 +140,65 @@ def test_a_forged_refresh_token_does_not_spend_the_victims_quota() -> None:
     statuses = [_refresh(client, str(RefreshToken.for_user(victim))) for _ in range(2)]
 
     assert statuses == [200, 200]
+
+
+@pytest.mark.django_db
+def test_a_huge_oid_keeps_the_cache_key_short() -> None:
+    client = APIClient()
+
+    _login(client, "x" * 200_000)
+
+    # LocMemCache keeps its entries in ``_cache``; every key must stay small.
+    keys = list(cache._cache)  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    assert keys
+    assert max(len(key) for key in keys) < 200
+
+
+@pytest.mark.django_db
+def test_non_jwt_tokens_are_limited_per_value() -> None:
+    client = APIClient()
+
+    def login_raw(token: str) -> int:
+        return client.post(
+            LOGIN_URL,
+            {"id_token": token, "access_token": ""},
+            format="json",
+            REMOTE_ADDR=CAMPUS_IP,
+        ).status_code
+
+    others = [login_raw(value) for value in ("not-a-jwt-a", "not-a-jwt-b")]
+    repeated = [login_raw("not-a-jwt-c") for _ in range(3)]
+
+    assert 429 not in others
+    assert repeated[2] == 429
+
+
+@pytest.mark.django_db
+def test_logout_is_limited_per_user() -> None:
+    first = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    second = User.objects.create_user(email="beto@iteso.mx", password="local-only")
+    client = APIClient()
+
+    def logout(user: User) -> int:
+        return client.post(
+            LOGOUT_URL,
+            {"refresh": str(RefreshToken.for_user(user))},
+            format="json",
+            REMOTE_ADDR=CAMPUS_IP,
+        ).status_code
+
+    statuses = [logout(first), logout(first), logout(second)]
+    assert 429 not in statuses
+    assert logout(first) == 429
+
+
+@pytest.mark.django_db
+def test_a_valid_refresh_is_not_blocked_by_an_exhausted_ip_ceiling() -> None:
+    user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    client = APIClient()
+    for n in range(5):
+        _login(client, f"user-{n}")
+    assert _login(client, "user-5") == 429
+
+    assert _refresh(client, str(RefreshToken.for_user(user))) == 200
+    assert _refresh(client, "not-a-valid-refresh-token") == 429

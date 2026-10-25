@@ -79,13 +79,15 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   firma del refresh token (local, SimpleJWT) y usan su `user_id`; si la firma
   no es válida, la llave es la IP. Login no puede verificar el ID token de
   Microsoft ahí, así que usa el par (IP, `oid`): un `oid` forjado solo gasta la
-  cubeta de quien lo manda. Encima hay un techo por IP (`auth_ip`, `300/min`)
-  que no cuenta peticiones ya rechazadas por el límite por persona.
+  cubeta de quien lo manda; el `oid` se hashea, así que la llave no crece con
+  lo que mande el cliente. Encima hay un techo por IP (`auth_ip`, `300/min`)
+  que no cuenta peticiones ya rechazadas por el límite por persona y que no
+  aplica a un refresh/logout con firma válida (ya tiene su cubeta por usuario).
   **Requisito de despliegue:** `DJANGO_NUM_PROXIES` debe coincidir con la cadena
   real de proxies que agregan a `X-Forwarded-For` (frontend nginx → Cloud Run →
-  backend). Sin ella DRF usa el header completo y el techo se evade; el app
-  desplegado emite un `RuntimeWarning` al arrancar si falta. No se fuerza porque
-  el job de migraciones también corre desplegado. El cache es `LocMemCache` por
+  backend). Se pasa como secret del GitHub Environment por `scripts/release.sh`
+  (ver `docs/deployment.md`) y es obligatoria para releases de `staging` y
+  `production`; el app desplegado emite un `RuntimeWarning` si falta. El cache es `LocMemCache` por
   proceso (`MAX_ENTRIES` 10000); el límite real es N workers × el configurado
   hasta que haya un cache compartido (Redis).
 

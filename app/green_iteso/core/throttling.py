@@ -12,6 +12,9 @@ someone else's identity, or a forged token could spend the victim's quota:
   and fall back to the client IP when it is not valid;
 - login cannot verify the Microsoft ID token here, so it keys on the pair
   (client IP, ``oid``): a forged ``oid`` only spends the caller's own bucket.
+
+Unverified input is always hashed before it becomes part of a cache key, so
+a huge claim cannot grow the cache.
 """
 
 from __future__ import annotations
@@ -26,6 +29,10 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
+# Set on the request when the refresh token's signature checked out, so the
+# shared per-IP ceiling can leave that request to its per-user bucket.
+VERIFIED_REFRESH_ATTR = "_auth_throttle_verified_refresh"
+
 
 def _body_token(request: Request, field: str) -> str:
     data = request.data if isinstance(request.data, dict) else {}
@@ -37,21 +44,22 @@ class LoginIdentityThrottle(ScopedRateThrottle):
     """Limit logins per (client IP, Microsoft account).
 
     ``oid`` is read without verifying the token, which is why the IP is part
-    of the key. A token that is not a JWT is keyed on its hash so retrying
-    the same value is still limited.
+    of the key. It is hashed, so the key length is fixed whatever the caller
+    sends. A token without an ``oid`` (or not a JWT) is keyed on its own hash,
+    so retrying the same value is still limited.
     """
 
     def get_cache_key(self, request: Request, view: Any) -> str | None:
         ip = self.get_ident(request)
         token = _body_token(request, "id_token")
-        if not token:
-            subject = ""
-        else:
+        subject = ""
+        if token:
             try:
                 payload = jwt.decode(token, options={"verify_signature": False})
-                subject = f"oid:{payload.get('oid') or ''}"
+                oid = str(payload.get("oid") or "")
             except jwt.PyJWTError:
-                subject = "token:" + hashlib.sha256(token.encode()).hexdigest()
+                oid = ""
+            subject = hashlib.sha256((oid or token).encode()).hexdigest()
         return self.cache_format % {"scope": self.scope, "ident": f"{ip}|{subject}"}
 
 
@@ -72,11 +80,17 @@ class RefreshTokenIdentityThrottle(ScopedRateThrottle):
                 user_id = None
             if user_id:
                 ident = f"user:{user_id}"
+                setattr(request, VERIFIED_REFRESH_ATTR, True)
         return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
 class AuthIPCeilingThrottle(SimpleRateThrottle):
     """High per-IP ceiling shared by the auth endpoints to cap floods.
+
+    A refresh/logout whose token signature checked out already has its own
+    per-user bucket and skips the ceiling, so a flood of logins from a campus
+    IP cannot make valid refreshes fail and log everyone out. Requires the
+    per-user throttle to run first.
 
     Set ``DJANGO_NUM_PROXIES`` so DRF reads the real client IP from
     ``X-Forwarded-For``; otherwise the whole header is the key and a caller
@@ -84,6 +98,11 @@ class AuthIPCeilingThrottle(SimpleRateThrottle):
     """
 
     scope = "auth_ip"
+
+    def allow_request(self, request: Request, view: Any) -> bool:
+        if getattr(request, VERIFIED_REFRESH_ATTR, False):
+            return True
+        return super().allow_request(request, view)
 
     def get_cache_key(self, request: Request, view: Any) -> str | None:
         return self.cache_format % {

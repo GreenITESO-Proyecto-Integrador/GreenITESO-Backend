@@ -49,7 +49,7 @@ NOTIFICATION_TEMPLATES: dict[str, NotificationTemplate] = {
     ),
     NotificationType.MISSION_COMPLETED: NotificationTemplate(
         title="Misión completada",
-        message='Completaste la misión "{mission_name}".',
+        message='Completaste la misión "{mission_name}" de la campaña "{campaign_name}".',
     ),
     NotificationType.SOCIAL_FOLLOW: NotificationTemplate(
         title="Nuevo seguidor",

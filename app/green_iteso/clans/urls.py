@@ -5,7 +5,11 @@ from __future__ import annotations
 from django.urls import path
 from rest_framework.routers import SimpleRouter
 
-from .views import ClanViewSet, InstitutionalClanAssignmentView
+from .views import (
+    ClanViewSet,
+    InstitutionalCareersView,
+    InstitutionalClanAssignmentView,
+)
 
 router = SimpleRouter()
 router.register("clans", ClanViewSet, basename="clan")
@@ -17,6 +21,11 @@ urlpatterns = [
         "clans/institutional-clan/",
         InstitutionalClanAssignmentView.as_view(),
         name="institutional-clan-assignment",
+    ),
+    path(
+        "clans/institutional-clan/careers/",
+        InstitutionalCareersView.as_view(),
+        name="institutional-clan-careers",
     ),
     *router.urls,
 ]

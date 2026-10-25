@@ -125,6 +125,18 @@ class InstitutionalOnboardingSerializer(serializers.Serializer):
     """Input payload for declaring a career during onboarding (T2-30)."""
 
     career = serializers.CharField(max_length=150, allow_blank=False)
+    nickname = serializers.CharField(
+        max_length=50,
+        allow_blank=True,
+        required=False,
+        help_text=(
+            "Only fills an empty nickname. If the user already has one it is "
+            "kept and returned unchanged in the response."
+        ),
+    )
+    visibility = serializers.ChoiceField(
+        choices=UserProfile.Visibility.choices, required=False
+    )
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""
@@ -177,11 +189,32 @@ class InstitutionalAssignmentSerializer(serializers.ModelSerializer):
     """Read-only view of the caller's institutional clan assignment."""
 
     institutional_clan = ClanSerializer(read_only=True)
+    nickname = serializers.CharField(source="user.nickname", read_only=True)
 
     class Meta:
         model = UserProfile
-        fields = ["career", "institutional_clan", "onboarding_completed_at"]
+        fields = [
+            "career",
+            "institutional_clan",
+            "onboarding_completed_at",
+            "nickname",
+            "visibility",
+        ]
         read_only_fields = fields
+
+
+class InstitutionalCareersSerializer(serializers.Serializer):
+    """Careers offered in the onboarding picker (#163)."""
+
+    careers = serializers.ListField(child=serializers.CharField(), read_only=True)
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
 
 
 class UserMinimalSerializer(serializers.Serializer):

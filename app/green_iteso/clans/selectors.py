@@ -33,6 +33,19 @@ def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
     return queryset
 
 
+def list_institutional_careers() -> list[str]:
+    """Return the careers users can pick during onboarding (#163).
+
+    Each alive institutional clan is named after its career (see
+    ``assign_institutional_clan``), so its names are the current catalog.
+    """
+    return list(
+        Clan.objects.filter(type=Clan.ClanType.INSTITUTIONAL)
+        .order_by("name")
+        .values_list("name", flat=True)
+    )
+
+
 def get_pending_join_requests(*, clan_id: uuid.UUID) -> QuerySet[ClanMembership]:
     """Retorna las solicitudes de ingreso en estado PENDING para un clan."""
     return (

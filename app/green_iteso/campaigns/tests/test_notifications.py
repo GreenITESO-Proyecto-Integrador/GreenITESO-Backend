@@ -105,6 +105,7 @@ def test_completing_a_mission_creates_mission_completed_notification(
         == Notification.NotificationType.MISSION_COMPLETED
     )
     assert action.name in notification.message
+    assert campaign.title in notification.message
 
 
 @pytest.mark.django_db

@@ -64,4 +64,5 @@ def notify_mission_completed(user: Any, mission: Mission) -> Notification:
         user,
         Notification.NotificationType.MISSION_COMPLETED,
         mission_name=mission.action.name,
+        campaign_name=mission.campaign.title,
     )

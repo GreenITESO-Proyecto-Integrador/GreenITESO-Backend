@@ -4,6 +4,7 @@ from django.urls import path
 
 from .views import (
     CampaignDetailView,
+    CampaignFinishView,
     CampaignJoinView,
     CampaignListCreateView,
     CampaignMissionListCreateView,
@@ -11,6 +12,7 @@ from .views import (
     CampaignProposalApproveView,
     CampaignProposalListCreateView,
     CampaignProposalRejectView,
+    CampaignStartView,
     MissionProgressView,
 )
 
@@ -35,6 +37,16 @@ urlpatterns = [
         "campaigns/<uuid:campaign_id>/",
         CampaignDetailView.as_view(),
         name="campaign-detail",
+    ),
+    path(
+        "campaigns/<uuid:campaign_id>/start/",
+        CampaignStartView.as_view(),
+        name="campaign-start",
+    ),
+    path(
+        "campaigns/<uuid:campaign_id>/finish/",
+        CampaignFinishView.as_view(),
+        name="campaign-finish",
     ),
     path(
         "campaigns/<uuid:campaign_id>/participants/",

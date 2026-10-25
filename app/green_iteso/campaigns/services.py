@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -12,10 +12,13 @@ from rest_framework.exceptions import ValidationError
 
 from green_iteso.accounts.models import Clan, ClanMembership
 from green_iteso.actions.models import ActionLog, ActionLogMissionContribution
+from green_iteso.actions.selectors import local_day_utc_bounds
 from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
 from .notifications import notify_campaign_invite, notify_mission_completed
+
+MIN_CAMPAIGN_DURATION = timedelta(days=1)
 
 
 def is_clan_leader(user: Any, clan: Clan | None) -> bool:
@@ -111,6 +114,66 @@ def compute_campaign_status(
     return Campaign.Status.FINISHED
 
 
+def earliest_allowed_start(now: datetime | None = None) -> datetime:
+    """Return the earliest ``start_date`` a campaign may be created or edited with.
+
+    That is midnight at the start of tomorrow in ``America/Mexico_City``, so
+    users always get the rest of today to join before the campaign starts.
+    """
+    return local_day_utc_bounds(now)[1]
+
+
+def ensure_start_date_allowed(
+    start_date: datetime, now: datetime | None = None
+) -> None:
+    """Reject a ``start_date`` earlier than tomorrow (Mexico City calendar day)."""
+    if start_date < earliest_allowed_start(now):
+        raise ValidationError({"start_date": "Start date must be tomorrow or later."})
+
+
+def _truncate_to_ms(value: datetime) -> datetime:
+    """Drop the sub-millisecond part of ``value``."""
+    return value.replace(microsecond=value.microsecond // 1000 * 1000)
+
+
+def date_changed(new: datetime, stored: datetime) -> bool:
+    """Return whether ``new`` differs from ``stored`` at millisecond precision.
+
+    Clients such as JavaScript truncate datetimes to milliseconds while the
+    database keeps microseconds, so resending an unchanged date must not count
+    as an edit. A difference below one millisecond is likewise treated as "no
+    change": the stored value is kept.
+    """
+    return _truncate_to_ms(new) != _truncate_to_ms(stored)
+
+
+def ensure_end_date_allowed(start_date: datetime, end_date: datetime) -> None:
+    """Reject an ``end_date`` less than 24 hours after ``start_date``."""
+    if end_date < start_date + MIN_CAMPAIGN_DURATION:
+        raise ValidationError(
+            {"end_date": "End date must be at least one day after start date."}
+        )
+
+
+def ensure_campaign_dates_allowed(
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    check_start: bool = True,
+) -> None:
+    """Validate the dates a user submits for a campaign.
+
+    Checks, in order: ``end_date`` at least a day after ``start_date``,
+    ``end_date`` in the future, and (unless ``check_start`` is false, for
+    edits that leave the start untouched) ``start_date`` from tomorrow on.
+    """
+    ensure_end_date_allowed(start_date, end_date)
+    if end_date <= timezone.now():
+        raise ValidationError({"end_date": "End date must be in the future."})
+    if check_start:
+        ensure_start_date_allowed(start_date)
+
+
 def sync_campaign_statuses(now: datetime | None = None) -> int:
     """Advance stored campaign statuses to match their dates.
 
@@ -187,6 +250,15 @@ def approve_campaign(admin: Any, campaign_id: UUID) -> Campaign:
             raise ValidationError(
                 "Cannot approve a proposal whose end date has passed."
             )
+        if campaign.start_date < earliest_allowed_start(now):
+            raise ValidationError(
+                {
+                    "start_date": (
+                        "Cannot approve a proposal that starts today or earlier; "
+                        "users need a day to join."
+                    )
+                }
+            )
         campaign.approval_status = Campaign.ApprovalStatus.APPROVED
         campaign.reviewed_by = admin
         campaign.reviewed_at = now
@@ -221,6 +293,49 @@ def reject_campaign(admin: Any, campaign_id: UUID, reason: str) -> Campaign:
                 "rejection_reason",
             ]
         )
+    return campaign
+
+
+def start_campaign(campaign_id: UUID) -> Campaign:
+    """Move an approved campaign from PROMOTION to IN_PROGRESS right now.
+
+    Only ``start_date`` changes (to now); the transition is one-way because
+    action logs may already be registered once the campaign is in progress.
+    This is the one way to start a campaign today: it deliberately skips the
+    "tomorrow or later" rule, and it closes enrollment as soon as it runs.
+    """
+    with transaction.atomic():
+        campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+        if (
+            campaign.approval_status != Campaign.ApprovalStatus.APPROVED
+            or campaign.status != Campaign.Status.PROMOTION
+        ):
+            raise ValidationError("Only campaigns in promotion can be started.")
+        campaign.start_date = timezone.now()
+        campaign.status = Campaign.Status.IN_PROGRESS
+        campaign.save(update_fields=["start_date", "status"])
+    return campaign
+
+
+def finish_campaign(campaign_id: UUID) -> Campaign:
+    """Finish an IN_PROGRESS campaign right now by moving its end to the present.
+
+    Deliberately exempt from the 24-hour minimum duration: the campaign may
+    end sooner than a day after it started.
+    """
+    with transaction.atomic():
+        campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+        if (
+            campaign.approval_status != Campaign.ApprovalStatus.APPROVED
+            or campaign.status != Campaign.Status.IN_PROGRESS
+        ):
+            raise ValidationError("Only campaigns in progress can be finished.")
+        # Keep ``end_date > start_date`` (DB check constraint) in every case.
+        campaign.end_date = max(
+            timezone.now(), campaign.start_date + timedelta(microseconds=1)
+        )
+        campaign.status = Campaign.Status.FINISHED
+        campaign.save(update_fields=["end_date", "status"])
     return campaign
 
 

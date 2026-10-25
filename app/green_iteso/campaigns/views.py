@@ -37,9 +37,11 @@ from .serializers import (
 from .services import (
     approve_campaign,
     can_manage_campaign,
+    finish_campaign,
     is_clan_leader,
     propose_global_campaign,
     reject_campaign,
+    start_campaign,
     sync_campaign_statuses,
 )
 
@@ -323,6 +325,80 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
             "leader_clan_ids": _leader_clan_ids(request.user),
         }
         return Response(CampaignSerializer(campaign, context=context).data)
+
+
+class CampaignTransitionView(CampaignStatusSyncMixin, APIView):
+    """Base for manager-only lifecycle transitions on a single campaign."""
+
+    permission_classes = [IsAuthenticated]
+    denied_message = "You cannot manage this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        raise NotImplementedError
+
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        visible = get_object_or_404(
+            _visible_campaigns(request.user).select_related("target_clan"),
+            pk=campaign_id,
+        )
+        if not can_manage_campaign(request.user, visible):
+            raise PermissionDenied(self.denied_message)
+        campaign = self.transition(visible.pk)
+        context = {
+            "request": request,
+            "leader_clan_ids": _leader_clan_ids(request.user),
+        }
+        return Response(CampaignSerializer(campaign, context=context).data)
+
+
+class CampaignStartView(CampaignTransitionView):
+    """Start a campaign in promotion immediately."""
+
+    denied_message = "You cannot start this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        return start_campaign(campaign_id)
+
+    @extend_schema(
+        operation_id="campaigns_start",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            200: CampaignSerializer,
+            400: OpenApiResponse(description="Campaign is not in PROMOTION"),
+            403: OpenApiResponse(description="User cannot manage this campaign"),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        return super().post(request, campaign_id)
+
+
+class CampaignFinishView(CampaignTransitionView):
+    """Finish an in-progress campaign immediately."""
+
+    denied_message = "You cannot finish this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        return finish_campaign(campaign_id)
+
+    @extend_schema(
+        operation_id="campaigns_finish",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            200: CampaignSerializer,
+            400: OpenApiResponse(description="Campaign is not IN_PROGRESS"),
+            403: OpenApiResponse(description="User cannot manage this campaign"),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        return super().post(request, campaign_id)
 
 
 class CampaignMissionListCreateView(

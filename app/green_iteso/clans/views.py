@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch, QuerySet
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import mixins, status, viewsets
@@ -13,38 +14,51 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
 from green_iteso.accounts.services import ensure_profile
 from green_iteso.core.permissions import IsClanLeader
 
 from .avatars import InvalidClanAvatarError
-from .selectors import get_pending_join_requests, list_active_clans
+from .selectors import (
+    get_pending_join_requests,
+    list_active_clan_invitations,
+    list_active_clans,
+    list_institutional_careers,
+)
 from .serializers import (
     ClanAvatarUploadSerializer,
     ClanDetailSerializer,
+    ClanInvitationCreatedSerializer,
+    ClanInvitationSerializer,
     ClanMembershipSerializer,
     ClanSerializer,
     InstitutionalAssignmentSerializer,
+    InstitutionalCareersSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
     PendingMembershipRequestSerializer,
+    RedeemInvitationSerializer,
     TransferLeadershipSerializer,
 )
 from .services import (
     DuplicateClanNameError,
     InvalidClanPrivacyError,
     accept_join_request,
-    assign_institutional_clan,
+    complete_onboarding,
+    create_clan_invitation,
     create_private_clan,
     dissolve_clan,
     join_clan,
     leave_clan,
+    redeem_clan_invitation,
     reject_join_request,
+    revoke_clan_invitation,
     set_clan_avatar,
     update_clan,
 )
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
+from .throttles import ClanInviteRedeemThrottle
 
 
 def _validation_error_from(
@@ -185,6 +199,125 @@ class ClanViewSet(
         clan = self.get_object()
         pending_qs = get_pending_join_requests(clan_id=clan.id)
         return Response(PendingMembershipRequestSerializer(pending_qs, many=True).data)
+
+    @extend_schema(
+        methods=["GET"],
+        summary="Listar códigos de invitación activos",
+        description=(
+            "Códigos sin usar, revocar ni expirar. Nunca incluye el código "
+            "completo. Solo el líder del clan."
+        ),
+        responses={200: ClanInvitationSerializer(many=True), 403: None, 404: None},
+    )
+    @extend_schema(
+        methods=["POST"],
+        summary="Generar código de invitación",
+        description=(
+            "Crea un código de un solo uso que expira en 48 h. El código "
+            "completo solo se devuelve aquí. Solo el líder del clan."
+        ),
+        request=None,
+        responses={
+            201: ClanInvitationCreatedSerializer,
+            400: None,
+            403: None,
+            404: None,
+        },
+    )
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path="invitations",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def invitations(self, request: Request, **kwargs: object) -> Response:
+        """List or create this clan's single-use invite codes as its leader (#165)."""
+        clan = self.get_object()
+        if request.method == "GET":
+            active = list_active_clan_invitations(clan=clan)
+            return Response(ClanInvitationSerializer(active, many=True).data)
+        try:
+            invitation, code = create_clan_invitation(clan=clan, actor=request.user)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except ValueError as exc:
+            raise _validation_error_from(exc) from exc
+        payload = {
+            "id": invitation.id,
+            "code": code,
+            "expires_at": invitation.expires_at,
+        }
+        return Response(
+            ClanInvitationCreatedSerializer(payload).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Revocar código de invitación",
+        description="Invalida un código de invitación del clan. Solo el líder del clan.",
+        responses={204: None, 403: None, 404: None},
+    )
+    @action(
+        detail=True,
+        methods=["delete"],
+        # A strict UUID, so a malformed id is a 404 from the router instead of
+        # a ValidationError from the UUID primary-key lookup.
+        url_path=(
+            r"invitations/(?P<invitation_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+        ),
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def revoke_invitation(
+        self, request: Request, invitation_id: str, **kwargs: object
+    ) -> Response:
+        """Revoke one of this clan's invite codes as its leader (#165)."""
+        clan = self.get_object()
+        try:
+            revoke_clan_invitation(
+                clan=clan, actor=request.user, invitation_id=invitation_id
+            )
+        except (
+            Clan.DoesNotExist,
+            ClanInvitation.DoesNotExist,
+            DjangoValidationError,
+        ) as exc:
+            raise NotFound() from exc
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
+        summary="Unirse a un clan con código de invitación",
+        description=(
+            "Canjea un código de un solo uso y une al usuario al clan como "
+            "miembro aceptado (respeta el límite de 5 clanes privados). "
+            "Todos los errores se devuelven en el campo `code`. Limitado a 10 "
+            "intentos por minuto por usuario y por proceso del servidor."
+        ),
+        request=RedeemInvitationSerializer,
+        responses={201: ClanMembershipSerializer, 400: None, 429: None},
+    )
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="redeem-invitation",
+        throttle_classes=[ClanInviteRedeemThrottle],
+    )
+    def redeem_invitation(self, request: Request) -> Response:
+        """Join a clan with a single-use invite code (#165)."""
+        payload = RedeemInvitationSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            membership = redeem_clan_invitation(
+                code=payload.validated_data["code"], user=request.user
+            )
+        except ValueError as exc:
+            # One shape for every refusal (unknown code, already a member,
+            # BR-04 cap), matching the serializer's own field errors, so
+            # clients read ``{"code": [message]}`` in every case.
+            raise ValidationError({"code": [str(exc)]}) from exc
+        return Response(
+            ClanMembershipSerializer(membership).data, status=status.HTTP_201_CREATED
+        )
 
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request: Request, **kwargs: object) -> Response:
@@ -333,17 +466,47 @@ class InstitutionalClanAssignmentView(APIView):
         profile = ensure_profile(request.user)
         return Response(InstitutionalAssignmentSerializer(profile).data)
 
+    @extend_schema(
+        request=InstitutionalOnboardingSerializer,
+        responses=InstitutionalAssignmentSerializer,
+        description=(
+            "Declare the career and join its institutional clan. Optional "
+            "nickname and visibility are saved in the same transaction; an "
+            "existing nickname is never replaced, so read it from the response."
+        ),
+    )
     def post(self, request: Request) -> Response:
-        """Declare a career and auto-assign its institutional clan."""
+        """Declare a career and auto-assign its institutional clan.
+
+        Also accepts the optional first-login ``nickname`` and ``visibility``
+        so the onboarding modal completes in one transaction (#163).
+        """
         payload = InstitutionalOnboardingSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        data = payload.validated_data
         try:
-            profile = assign_institutional_clan(
-                user=request.user, career=payload.validated_data["career"]
+            profile = complete_onboarding(
+                user=request.user,
+                career=data["career"],
+                nickname=data.get("nickname"),
+                visibility=data.get("visibility"),
             )
         except ValueError as exc:
             raise _validation_error_from(exc, field="career") from exc
         return Response(
             InstitutionalAssignmentSerializer(profile).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class InstitutionalCareersView(APIView):
+    """List the careers offered in the onboarding picker (#163)."""
+
+    @extend_schema(responses=InstitutionalCareersSerializer)
+    def get(self, _request: Request) -> Response:
+        """Return the names of the alive institutional clans, sorted."""
+        return Response(
+            InstitutionalCareersSerializer(
+                {"careers": list_institutional_careers()}
+            ).data
         )

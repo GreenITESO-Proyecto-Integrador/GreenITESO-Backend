@@ -220,7 +220,7 @@ class TestCampaignUpdateEndpoint:
         assert response.status_code == 400
         assert "end_date" in response.data
 
-    def test_past_start_recomputes_status_to_in_progress(
+    def test_past_start_gets_400_and_keeps_promotion(
         self, api_client: APIClient, admin_user: User, campaign: Campaign
     ) -> None:
         api_client.force_authenticate(user=admin_user)
@@ -231,7 +231,173 @@ class TestCampaignUpdateEndpoint:
             format="json",
         )
 
-        assert response.status_code == 200
-        assert response.data["status"] == Campaign.Status.IN_PROGRESS
+        assert response.status_code == 400
+        assert "start_date" in response.data
         campaign.refresh_from_db()
-        assert campaign.status == Campaign.Status.IN_PROGRESS
+        assert campaign.status == Campaign.Status.PROMOTION
+
+
+@pytest.mark.django_db
+class TestCampaignUpdateDateChanges:
+    """Which PATCH dates count as changed, and which rules then apply."""
+
+    def test_resending_unchanged_dates_does_not_revalidate_them(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stale = campaign_factory(
+            start_date=now + timedelta(hours=1), end_date=now + timedelta(hours=5)
+        )
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(stale),
+            {
+                "title": "Same dates",
+                "start_date": stale.start_date.isoformat(),
+                "end_date": stale.end_date.isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        stale.refresh_from_db()
+        assert stale.title == "Same dates"
+
+    def test_title_edit_on_short_legacy_campaign_is_allowed(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        legacy = campaign_factory(
+            start_date=now + timedelta(hours=1), end_date=now + timedelta(hours=5)
+        )
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(_url(legacy), {"title": "Edited"}, format="json")
+
+        assert response.status_code == 200, response.data
+
+    def test_changed_start_is_still_validated(
+        self, api_client: APIClient, admin_user: User, campaign: Campaign
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {"start_date": (timezone.now() + timedelta(hours=1)).isoformat()},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "start_date" in response.data
+
+    def test_changed_end_less_than_a_day_after_start_gets_400(
+        self, api_client: APIClient, admin_user: User, campaign: Campaign
+    ) -> None:
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {"end_date": (campaign.start_date + timedelta(hours=12)).isoformat()},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "end_date" in response.data
+
+    def test_resending_dates_truncated_to_milliseconds_is_not_a_change(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stored_start = (now + timedelta(hours=1)).replace(microsecond=123456)
+        stored_end = (now + timedelta(hours=5)).replace(microsecond=654321)
+        legacy = campaign_factory(start_date=stored_start, end_date=stored_end)
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(legacy),
+            {
+                "title": "Truncated dates",
+                "start_date": stored_start.replace(microsecond=123000).isoformat(),
+                "end_date": stored_end.replace(microsecond=654000).isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        legacy.refresh_from_db()
+        assert legacy.title == "Truncated dates"
+        assert legacy.start_date == stored_start
+        assert legacy.end_date == stored_end
+
+    def test_truncated_start_with_a_real_end_change_skips_the_start_rule(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stored_start = (now + timedelta(hours=1)).replace(microsecond=123456)
+        legacy = campaign_factory(
+            start_date=stored_start, end_date=now + timedelta(hours=5)
+        )
+        new_end = now + timedelta(days=3)
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(legacy),
+            {
+                "start_date": stored_start.replace(microsecond=123000).isoformat(),
+                "end_date": new_end.isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        legacy.refresh_from_db()
+        assert legacy.start_date == stored_start
+        assert legacy.end_date == new_end
+
+    def test_truncated_end_with_a_real_start_change_is_validated(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stored_end = (now + timedelta(days=10)).replace(microsecond=654321)
+        campaign = campaign_factory(
+            start_date=now + timedelta(days=2), end_date=stored_end
+        )
+        new_start = now + timedelta(days=4)
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {
+                "start_date": new_start.isoformat(),
+                "end_date": stored_end.replace(microsecond=654000).isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        campaign.refresh_from_db()
+        assert campaign.start_date == new_start
+        assert campaign.end_date == stored_end
+
+    def test_truncated_end_with_a_past_start_change_gets_400(
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
+    ) -> None:
+        now = timezone.now()
+        stored_end = (now + timedelta(days=10)).replace(microsecond=654321)
+        campaign = campaign_factory(
+            start_date=now + timedelta(days=2), end_date=stored_end
+        )
+        api_client.force_authenticate(user=admin_user)
+
+        response = api_client.patch(
+            _url(campaign),
+            {
+                "start_date": (now + timedelta(hours=1)).isoformat(),
+                "end_date": stored_end.replace(microsecond=654000).isoformat(),
+            },
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "start_date" in response.data

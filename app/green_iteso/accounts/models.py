@@ -303,6 +303,65 @@ class ClanMembership(models.Model):
         return f"{self.user.email} @ {self.clan.name}"
 
 
+class ClanInvitation(models.Model):
+    """Single-use invite code for joining a private clan (#165).
+
+    Only an HMAC of the code is stored (``code_hash``): the plain code is
+    shown to the leader once, when it is created. ``code_hint`` keeps the last
+    four characters so the leader can tell active codes apart. A code is
+    usable while it is not expired, redeemed, or revoked; see
+    ``clans.services.redeem_clan_invitation``.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clan = models.ForeignKey(
+        "accounts.Clan", on_delete=models.CASCADE, related_name="invitations"
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_clan_invitations",
+    )
+    code_hash = models.CharField(max_length=64)
+    code_hint = models.CharField(max_length=4)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    redeemed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="redeemed_clan_invitations",
+    )
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_clan_invitation"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["code_hash"], name="clan_invitation_code_hash_unique"
+            ),
+            # A redeemer always has a redemption time. The reverse can't be
+            # enforced: SET_NULL clears redeemed_by if that user is deleted.
+            models.CheckConstraint(
+                condition=Q(redeemed_by__isnull=True) | Q(redeemed_at__isnull=False),
+                name="clan_invitation_redeemed_at_set",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["clan", "expires_at"], name="clan_invitation_clan_exp_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Invitation ••••{self.code_hint} @ {self.clan_id}"
+
+
 class UserRoleAudit(models.Model):
     """Audit record for global user role changes."""
 

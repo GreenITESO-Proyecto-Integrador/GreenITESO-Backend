@@ -241,3 +241,17 @@ class PendingMembershipRequestSerializer(serializers.ModelSerializer):
         model = ClanMembership
         fields = ["id", "clan_id", "user", "role", "status", "joined_at"]
         read_only_fields = fields
+
+
+class KickMemberSerializer(serializers.Serializer):
+    """Input payload for expelling a clan member (T2-41)."""
+
+    user_id = serializers.UUIDField()
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError
+
+    def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
+        """Stub required by abstract base class definition."""
+        raise NotImplementedError

@@ -956,3 +956,45 @@ def redeem_clan_invitation(*, code: str, user: User) -> ClanMembership:
     invitation.redeemed_at = now
     invitation.save(update_fields=["redeemed_by", "redeemed_at"])
     return membership
+
+
+@transaction.atomic
+def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
+    """Expel ``target_user`` from ``clan`` (T2-41).
+
+    Only the clan's current LEADER may expel members.
+    Expulsion is only permitted for private clans; institutional clans cannot
+    have members expelled individually.
+    Preserves points history contributed to ``clan.total_points`` (BR-08).
+    A leader cannot expel themselves.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            if the clan is institutional.
+        ValueError: If ``target_user`` is ``actor``, or if ``target_user``
+            is not an accepted member of the clan.
+    """
+    locked_clan = _lock_clan_for_leader(
+        clan=clan,
+        actor=actor,
+        not_leader="Only the clan leader can expel members.",
+        not_private="Only private clans allow expelling members.",
+    )
+
+    if actor.pk == target_user.pk:
+        raise ValueError("Leaders cannot expel themselves from the clan.")
+
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked_clan,
+            user=target_user,
+            status=ClanMembership.Status.ACCEPTED,
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not an accepted member of this clan.") from exc
+
+    if membership.role == ClanMembership.MembershipRole.LEADER:
+        raise ValueError("Cannot expel a clan leader.")
+
+    membership.delete()

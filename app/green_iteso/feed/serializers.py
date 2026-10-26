@@ -1,4 +1,5 @@
 """Serializers for the feed module."""
+# pylint: disable=no-member,missing-class-docstring,too-few-public-methods
 
 from __future__ import annotations
 
@@ -112,13 +113,16 @@ class PostSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Content cannot be empty.")
         return value.strip()
 
-    def validate_post_type(self, value: Any) -> Any:
-        """Ensure only admins can create or edit official announcements."""
-        request = self.context.get('request')
-        if value == PostType.OFFICIAL_ANNOUNCEMENT:
-            if not request or not IsAdmin().has_permission(request, self):
-                raise PermissionDenied("Solo los administradores pueden crear o editar anuncios oficiales.")
-        return value
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        post_type = attrs.get("post_type") or getattr(self.instance, "post_type", None)
+        request = self.context.get("request")
+        is_admin = request is not None and IsAdmin().has_permission(request, None)
+
+        if post_type == PostType.OFFICIAL_ANNOUNCEMENT and not is_admin:
+            raise PermissionDenied(
+                "Solo los administradores pueden crear o editar anuncios oficiales."
+            )
+        return attrs
 
     def validate_image_url(self, value: str) -> str:
         """Ensure valid URL formatting if provided."""

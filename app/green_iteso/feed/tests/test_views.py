@@ -1,4 +1,4 @@
-# pylint: disable=no-member,too-many-instance-attributes
+# pylint: disable=no-member,too-many-instance-attributes, too-many-public-methods,line-too-long
 """Integration tests for feed REST API endpoints."""
 
 from datetime import timedelta
@@ -23,8 +23,10 @@ VALID_PNG_BYTES = (
 
 User = get_user_model()
 
+
 class PostAPITests(APITestCase):
     """Integration tests for feed REST API endpoints."""
+
     def setUp(self) -> None:
         self.author = User.objects.create_user(
             email="author@iteso.mx",
@@ -243,9 +245,23 @@ class PostAPITests(APITestCase):
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_update_post_as_admin_forbidden(self) -> None:
+        """Ensure admins cannot edit posts created by other users."""
+        admin_user = User.objects.create_user(
+            email="admin_editor@iteso.mx",
+            password="StrongPassword123!",
+            role="ADMIN",
+        )
+        self.client.force_authenticate(user=admin_user)
+        payload = {"content": "Admin intentando editar post ajeno."}
+        response = self.client.patch(self.detail_url, data=payload)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):
     """Integration tests for the GCS image upload endpoint."""
+
     def setUp(self) -> None:
         self.user = User.objects.create_user(
             email="testupload@iteso.mx",
@@ -286,7 +302,9 @@ class ImageUploadViewTests(APITestCase):
             large_content,
             content_type="image/jpeg",
         )
-        response = self.client.post(self.url, {"image": oversized_file}, format="multipart")
+        response = self.client.post(
+            self.url, {"image": oversized_file}, format="multipart"
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_truncated_image_returns_400(self) -> None:
@@ -304,7 +322,9 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("error", response.data)
 
     @patch("google.cloud.storage.Client")
-    def test_upload_gcs_service_failure_returns_500(self, mock_storage_client: MagicMock) -> None:
+    def test_upload_gcs_service_failure_returns_500(
+        self, mock_storage_client: MagicMock
+    ) -> None:
         """Ensure GCS failures are handled gracefully with a 500 error."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
@@ -312,12 +332,16 @@ class ImageUploadViewTests(APITestCase):
         mock_blob = mock_bucket.blob.return_value
         mock_blob.upload_from_file.side_effect = GoogleCloudError("GCS error")
 
-        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @patch("google.cloud.storage.Client")
-    def test_upload_success_returns_200_and_url(self, mock_storage_client: MagicMock) -> None:
+    def test_upload_success_returns_200_and_url(
+        self, mock_storage_client: MagicMock
+    ) -> None:
         """Ensure a successful upload returns a 200 OK and the signed URL."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
@@ -327,7 +351,9 @@ class ImageUploadViewTests(APITestCase):
             "https://storage.googleapis.com/test-bucket/"
             "uploads/test.png?X-Goog-Signature=mock"
         )
-        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -340,6 +366,8 @@ class ImageUploadViewTests(APITestCase):
     def test_upload_unconfigured_bucket_returns_503(self) -> None:
         """Ensure a missing GCS bucket configuration returns a 503 error."""
         self.client.force_authenticate(user=self.user)
-        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)

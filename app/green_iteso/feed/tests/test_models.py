@@ -10,6 +10,7 @@ from green_iteso.gamification.models import Badge, UserBadge
 
 User = get_user_model()
 
+
 class PostModelTests(APITestCase):
     """Unit tests for the Post model logic and constraints."""
 

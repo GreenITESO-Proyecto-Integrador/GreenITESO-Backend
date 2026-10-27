@@ -9,7 +9,6 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
@@ -19,28 +18,24 @@ from green_iteso.clans.avatars import (
     delete_clan_avatar,
 )
 from green_iteso.clans.services import create_private_clan
-
-PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
-    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+from green_iteso.core.tests.image_helpers import (
+    PNG_BYTES,
+    stored_files,
+    use_fake_gcs,
+    use_local_media,
+    write_outsider_file,
 )
+from green_iteso.core.tests.image_helpers import png_upload as _png
 
 
 @pytest.fixture
 def avatar_media(settings: Any, tmp_path: Path) -> Path:
-    settings.DEPLOYED = False
-    settings.MEDIA_ROOT = tmp_path
-    return tmp_path
+    return use_local_media(settings, tmp_path)
 
 
 @pytest.fixture
 def private_clan(leader: User) -> Clan:
     return create_private_clan(name="Green Team", created_by=leader)
-
-
-def _png(payload: bytes = PNG_BYTES, content_type: str = "image/png") -> Any:
-    return SimpleUploadedFile("avatar.png", payload, content_type=content_type)
 
 
 def _client(user: User) -> APIClient:
@@ -51,10 +46,6 @@ def _client(user: User) -> APIClient:
 
 def _url(clan: Clan) -> str:
     return f"/api/v1/clans/{clan.pk}/avatar/"
-
-
-def _stored_files(media: Path) -> list[Path]:
-    return [path for path in media.rglob("*") if path.is_file()]
 
 
 @pytest.mark.django_db
@@ -94,7 +85,7 @@ def test_replacing_the_avatar_deletes_the_previous_file(
     clan.refresh_from_db()
     assert clan.avatar_object_key != first_key
     assert not (avatar_media / first_key).exists()
-    assert _stored_files(avatar_media) == [avatar_media / clan.avatar_object_key]
+    assert stored_files(avatar_media) == [avatar_media / clan.avatar_object_key]
 
 
 @pytest.mark.django_db(transaction=True)
@@ -108,7 +99,7 @@ def test_leader_removes_the_avatar(leader: User, avatar_media: Path) -> None:
     assert response.status_code == 200
     clan.refresh_from_db()
     assert clan.avatar_object_key == ""
-    assert _stored_files(avatar_media) == []
+    assert stored_files(avatar_media) == []
 
 
 @pytest.mark.django_db
@@ -128,7 +119,7 @@ def test_only_the_leader_can_upload(
     assert response.status_code == 403
     private_clan.refresh_from_db()
     assert private_clan.avatar_object_key == ""
-    assert _stored_files(avatar_media) == []
+    assert stored_files(avatar_media) == []
 
 
 @pytest.mark.django_db
@@ -141,7 +132,7 @@ def test_upload_rejects_a_file_that_is_not_an_image(
 
     assert response.status_code == 400
     assert "avatar" in response.json()
-    assert _stored_files(avatar_media) == []
+    assert stored_files(avatar_media) == []
 
 
 @pytest.mark.django_db
@@ -167,7 +158,7 @@ def test_upload_rejects_an_image_over_5_mb(
 
     assert response.status_code == 400
     assert "avatar" in response.json()
-    assert _stored_files(avatar_media) == []
+    assert stored_files(avatar_media) == []
 
 
 @pytest.mark.django_db
@@ -204,9 +195,7 @@ def test_delete_clan_avatar_ignores_keys_outside_the_clan_prefix(
     avatar_media: Path,
 ) -> None:
     clan_id = UUID("00000000-0000-0000-0000-000000000001")
-    outsider = avatar_media / "action-evidence" / "keep.png"
-    outsider.parent.mkdir(parents=True)
-    outsider.write_bytes(PNG_BYTES)
+    outsider = write_outsider_file(avatar_media)
 
     delete_clan_avatar(clan_id, "action-evidence/keep.png")
     delete_clan_avatar(
@@ -220,22 +209,7 @@ def test_delete_clan_avatar_ignores_keys_outside_the_clan_prefix(
 def test_deployed_service_stores_the_avatar_in_the_configured_bucket(
     leader: User, private_clan: Clan, settings: Any, monkeypatch: Any
 ) -> None:
-    settings.DEPLOYED = True
-    settings.GCS_EVIDENCE_BUCKET = "greeniteso-test-objects"
-    uploads: dict[str, tuple[bytes, str]] = {}
-
-    class FakeBlob:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def upload_from_string(self, payload: bytes, content_type: str) -> None:
-            uploads[self.name] = (payload, content_type)
-
-    class FakeBucket:
-        def blob(self, name: str) -> FakeBlob:
-            return FakeBlob(name)
-
-    monkeypatch.setattr("green_iteso.clans.avatars._gcs_bucket", FakeBucket)
+    uploads = use_fake_gcs(settings, monkeypatch)
 
     response = _client(leader).post(_url(private_clan), {"avatar": _png()})
 

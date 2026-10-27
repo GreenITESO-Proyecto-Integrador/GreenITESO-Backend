@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from django.db.models import QuerySet
+from django.http import HttpResponseBase
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -18,10 +23,12 @@ from rest_framework_simplejwt.views import (
 )
 from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRefreshView
 
+from green_iteso.core.image_storage import InvalidImageError, image_response
 from green_iteso.core.permissions import IsAdmin
 
+from .avatars import PROFILE_AVATAR_PREFIX
 from .exceptions import RequestValidationError
-from .models import User
+from .models import User, UserProfile
 from .selectors import (
     MetricsFilters,
     get_ecological_profile,
@@ -36,13 +43,19 @@ from .serializers import (
     ImpactTrendPointSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
+    ProfileAvatarUploadSerializer,
     ProfileMetricsQuerySerializer,
     ProfileMetricsSerializer,
     ProfileUpdateSerializer,
     UserRoleAuditSerializer,
     UserSerializer,
 )
-from .services import login_with_microsoft, update_profile, update_user_role
+from .services import (
+    login_with_microsoft,
+    set_profile_avatar,
+    update_profile,
+    update_user_role,
+)
 
 
 class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -151,7 +164,8 @@ class LoginView(APIView):
                 "refresh": result.refresh,
                 "user": result.user,
                 "created": result.created,
-            }
+            },
+            context={"request": request},
         )
         return Response(body.data, status=status.HTTP_200_OK)
 
@@ -222,7 +236,9 @@ class EcologicalProfileView(APIView):
     def get(self, request: Request) -> Response:
         """Aggregate the caller's own data with E1 (points/badges) and E3 (campaigns) data."""
         profile = get_ecological_profile(request.user)
-        return Response(EcologicalProfileSerializer(profile).data)
+        return Response(
+            EcologicalProfileSerializer(profile, context={"request": request}).data
+        )
 
     @extend_schema(
         request=ProfileUpdateSerializer,
@@ -234,16 +250,85 @@ class EcologicalProfileView(APIView):
     def patch(self, request: Request) -> Response:
         """Edit bio, preferences, visibility, and/or avatar_url (T2-21).
 
-        ``avatar_url`` is the URL of a file the client already uploaded to
-        Cloud Storage; this endpoint never receives or stores the binary
-        (see ``accounts.serializers._validate_avatar_url`` for why real
-        size/type enforcement is still pending the GCS bucket/account).
+        ``avatar_url`` is an external https link to a photo. Setting it
+        replaces a photo uploaded through ``/profile/me/avatar/``; uploading
+        a file from the device goes through that endpoint instead (#170).
         """
         payload = ProfileUpdateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         update_profile(user=request.user, **payload.validated_data)
         profile = get_ecological_profile(request.user)
-        return Response(EcologicalProfileSerializer(profile).data)
+        return Response(
+            EcologicalProfileSerializer(profile, context={"request": request}).data
+        )
+
+
+class ProfileAvatarView(APIView):
+    """Upload or remove the caller's own profile photo (#170)."""
+
+    parser_classes = [MultiPartParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "profile_avatar"
+
+    @extend_schema(
+        request={"multipart/form-data": ProfileAvatarUploadSerializer},
+        responses={
+            200: EcologicalProfileSerializer,
+            400: OpenApiResponse(description="Not a JPG/PNG/WEBP of at most 5 MB."),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """Store a JPG/PNG/WEBP of at most 5 MB as the photo, replacing any link."""
+        payload = ProfileAvatarUploadSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        return self._set_avatar(request, payload.validated_data["avatar"])
+
+    @extend_schema(request=None, responses={200: EcologicalProfileSerializer})
+    def delete(self, request: Request) -> Response:
+        """Remove the photo, whether it was uploaded or a pasted link."""
+        return self._set_avatar(request, None)
+
+    def _set_avatar(self, request: Request, uploaded: object) -> Response:
+        try:
+            set_profile_avatar(user=request.user, uploaded=uploaded)
+        except InvalidImageError as exc:
+            raise DRFValidationError({"avatar": [str(exc)]}) from exc
+        profile = get_ecological_profile(request.user)
+        return Response(
+            EcologicalProfileSerializer(profile, context={"request": request}).data
+        )
+
+
+class ProfileAvatarImageView(APIView):
+    """Serve a user's uploaded profile photo (#170).
+
+    Open to anyone: an ``<img>`` can't send the Bearer token, and the photo
+    is shown wherever the user appears (feed, clans, rankings). It only
+    serves files uploaded through ``ProfileAvatarView``, never a pasted link.
+    """
+
+    authentication_classes: list[type] = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        responses={
+            (200, "image/*"): OpenApiTypes.BINARY,
+            302: OpenApiResponse(description="Redirect to a short-lived signed URL."),
+            404: OpenApiResponse(description="The user has no uploaded photo."),
+        },
+    )
+    def get(self, _request: Request, user_id: UUID) -> HttpResponseBase:
+        """Redirect to (deployed) or stream (local) the stored photo."""
+        object_key = (
+            UserProfile.objects.filter(user_id=user_id, user__is_active=True)
+            .values_list("avatar_object_key", flat=True)
+            .first()
+        )
+        response = image_response(PROFILE_AVATAR_PREFIX, user_id, object_key or "")
+        if response is None:
+            raise NotFound()
+        response["Cache-Control"] = "private, max-age=300"
+        return response
 
 
 class ProfileMetricsView(APIView):

@@ -197,7 +197,14 @@ def signed_evidence_url(object_key: str) -> str:
     key = safe_object_key(object_key)
     if key is None or not gcs_evidence_enabled():
         return ""
-    blob = _gcs_bucket().blob(key)
+    return signed_read_url(_gcs_bucket().blob(key))
+
+
+def signed_read_url(blob: Any) -> str:
+    """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
+
+    Shared with ``core.image_storage``, which serves avatars from the same bucket.
+    """
     if not blob.exists():
         return ""
     try:

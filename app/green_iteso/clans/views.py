@@ -76,7 +76,7 @@ ACCEPTED_MEMBERSHIPS = Prefetch(
     "memberships",
     queryset=ClanMembership.objects.filter(
         status=ClanMembership.Status.ACCEPTED
-    ).select_related("user"),
+    ).select_related("user__profile"),
 )
 """Roster prefetch used by ``retrieve``: a PENDING/REJECTED row never counts
 as a member, so both ``members`` and ``member_count`` on the detail

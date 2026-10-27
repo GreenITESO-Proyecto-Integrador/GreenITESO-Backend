@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from green_iteso.accounts.avatars import public_avatar_url
 from green_iteso.accounts.models import Clan, UserProfile
 
 from .models import Badge
@@ -17,16 +18,21 @@ class UserRankingSerializer(serializers.ModelSerializer):
     id = serializers.UUIDField(source="user_id", read_only=True)
     rank = serializers.IntegerField(read_only=True)
     display_name = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
-        fields = ["id", "rank", "display_name", "total_points"]
+        fields = ["id", "rank", "display_name", "avatar_url", "total_points"]
         read_only_fields = fields
 
     def get_display_name(self, profile: UserProfile) -> str:
         """Return the nickname, else the full name, else a generic label."""
         user = profile.user
         return user.nickname or user.get_full_name() or ANONYMOUS_DISPLAY_NAME
+
+    def get_avatar_url(self, profile: UserProfile) -> str:
+        """The user's profile photo URL (#170), or "" when there is none."""
+        return public_avatar_url(profile, self.context.get("request"))
 
 
 class ClanRankingSerializer(serializers.ModelSerializer):

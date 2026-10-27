@@ -61,6 +61,21 @@ class User(AbstractUser):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    ANONYMOUS_DISPLAY_NAME = "Usuario GreenITESO"
+
+    @property
+    def public_display_name(self) -> str:
+        """Name other users see: nickname, else full name, never the email.
+
+        Shared by the user ranking, clan rosters and join requests, so a person
+        is labeled the same way everywhere.
+        """
+        return (
+            self.nickname.strip()
+            or self.get_full_name().strip()
+            or self.ANONYMOUS_DISPLAY_NAME
+        )
+
     class Meta:
         db_table = "accounts_user"
         constraints = [

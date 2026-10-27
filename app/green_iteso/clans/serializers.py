@@ -11,6 +11,7 @@ from green_iteso.accounts.models import (
     Clan,
     ClanInvitation,
     ClanMembership,
+    User,
     UserProfile,
 )
 
@@ -154,15 +155,28 @@ class ClanMemberSerializer(serializers.Serializer):
     Only ever serialized from an ACCEPTED membership: the view's prefetch
     for ``memberships`` is pre-filtered to ``status=ACCEPTED``, so a pending
     join request never appears on the roster.
+
+    Any authenticated user can read the roster of an institutional or PUBLIC
+    clan, so a PRIVATE profile shows only its nickname, never the real name,
+    the same way the ranking hides it.
     """
 
     user_id = serializers.UUIDField(source="user.id", read_only=True)
     nickname = serializers.CharField(source="user.nickname", read_only=True)
+    display_name = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     role = serializers.ChoiceField(
         choices=ClanMembership.MembershipRole.choices, read_only=True
     )
     joined_at = serializers.DateTimeField(read_only=True)
+
+    def get_display_name(self, membership: ClanMembership) -> str:
+        """``public_display_name``, without the real name for PRIVATE profiles."""
+        user = membership.user
+        profile = getattr(user, "profile", None)
+        if profile is not None and profile.visibility == UserProfile.Visibility.PRIVATE:
+            return user.nickname.strip() or User.ANONYMOUS_DISPLAY_NAME
+        return user.public_display_name
 
     def get_avatar_url(self, membership: ClanMembership) -> str:
         """The member's profile photo URL (#170), or "" when there is none."""
@@ -224,10 +238,16 @@ class InstitutionalCareersSerializer(serializers.Serializer):
 
 
 class UserMinimalSerializer(serializers.Serializer):
-    """Minimal representation of a user for join requests (excludes personal email)."""
+    """Minimal representation of a user for join requests (excludes personal email).
+
+    Unlike the roster, the full name is shown even for PRIVATE profiles: the
+    applicant started the request and only the clan leader sees it, who needs
+    to know who is asking to join.
+    """
 
     id = serializers.UUIDField(read_only=True)
     nickname = serializers.CharField(read_only=True)
+    display_name = serializers.CharField(source="public_display_name", read_only=True)
 
     def create(self, validated_data: dict[str, Any]) -> Any:
         """Stub required by abstract base class definition."""

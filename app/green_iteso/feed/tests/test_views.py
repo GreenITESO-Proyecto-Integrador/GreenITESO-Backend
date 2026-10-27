@@ -408,6 +408,7 @@ class ImageUploadViewTests(APITestCase):
         mock_blob.generate_signed_url.assert_not_called()
         mock_blob.delete.assert_not_called()
 
+    @override_settings(ALLOWED_HOSTS=["api.greeniteso.mx"])
     @patch("google.cloud.storage.Client")
     def test_upload_url_can_be_used_to_create_a_post(
         self, mock_storage_client: MagicMock

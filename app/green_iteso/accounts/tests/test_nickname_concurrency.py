@@ -18,6 +18,15 @@ from green_iteso.actions.views import ActionLogAuditView
 from green_iteso.clans.services import complete_onboarding
 
 
+def _run_workers(workers: list[threading.Thread]) -> None:
+    """Start concurrent workers and ensure each finishes within the test."""
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=20)
+    assert not any(worker.is_alive() for worker in workers)
+
+
 @pytest.mark.django_db(transaction=True)
 def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
     """Force overlapping row locks, rather than relying on thread timing."""
@@ -41,15 +50,19 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
             context: dict[str, Any],
         ) -> Any:
             result = execute(sql, params, many, context)
-            if "FOR UPDATE" in sql and not nickname_locked.is_set():
+            normalized_sql = sql.upper()
+            is_row_lock = (
+                " FOR UPDATE" in normalized_sql
+                or " FOR NO KEY UPDATE" in normalized_sql
+            )
+            if is_row_lock and not nickname_locked.is_set():
                 nickname_locked.set()
                 # With the correct order onboarding waits for our user lock.
                 # With the old order let it hold User while we hold UserProfile,
                 # reproducing the cycle when each service requests the next row.
+                locks_user = 'FROM "ACCOUNTS_USER"' in normalized_sql
                 other_lock = (
-                    onboarding_attempted
-                    if 'FROM "accounts_user"' in sql
-                    else onboarding_locked_user
+                    onboarding_attempted if locks_user else onboarding_locked_user
                 )
                 assert other_lock.wait(10), "Onboarding did not reach its user lock"
             return result
@@ -72,7 +85,11 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
             many: bool,
             context: dict[str, Any],
         ) -> Any:
-            locks_user = "FOR UPDATE" in sql and 'FROM "accounts_user"' in sql
+            normalized_sql = sql.upper()
+            locks_user = (
+                " FOR UPDATE" in normalized_sql
+                and 'FROM "ACCOUNTS_USER"' in normalized_sql
+            )
             if locks_user:
                 onboarding_attempted.set()
             result = execute(sql, params, many, context)
@@ -94,12 +111,7 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
             connection.close()
 
     workers = [threading.Thread(target=change), threading.Thread(target=onboard)]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=20)
-
-    assert not any(worker.is_alive() for worker in workers)
+    _run_workers(workers)
     assert not errors, errors
     user.refresh_from_db()
     profile = ensure_profile(user)
@@ -137,7 +149,8 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
             context: dict[str, Any],
         ) -> Any:
             result = execute(sql, params, many, context)
-            if 'FROM "accounts_user"' in sql and "FOR " in sql:
+            normalized_sql = sql.upper()
+            if 'FROM "ACCOUNTS_USER"' in normalized_sql and " FOR " in normalized_sql:
                 nickname_user_locked.set()
                 assert approval_profile_updated.wait(10), (
                     "Approval did not update the profile before notification"
@@ -163,7 +176,11 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
             context: dict[str, Any],
         ) -> Any:
             result = execute(sql, params, many, context)
-            if sql.lstrip().startswith("UPDATE") and '"accounts_userprofile"' in sql:
+            normalized_sql = sql.lstrip().upper()
+            if (
+                normalized_sql.startswith("UPDATE")
+                and "ACCOUNTS_USERPROFILE" in normalized_sql
+            ):
                 approval_profile_updated.set()
             return result
 
@@ -182,12 +199,7 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
             connection.close()
 
     workers = [threading.Thread(target=change), threading.Thread(target=approve)]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=20)
-
-    assert not any(worker.is_alive() for worker in workers)
+    _run_workers(workers)
     assert not errors, errors
     assert statuses == [200]
     log.refresh_from_db()

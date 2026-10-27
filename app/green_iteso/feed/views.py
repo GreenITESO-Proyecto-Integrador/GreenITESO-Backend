@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone as datetime_timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from django.conf import settings
@@ -215,7 +215,7 @@ class FeedImageView(APIView):
 
         blob = storage.Client().bucket(bucket_name).blob(f"uploads/{key}")
         absolute_expiry = datetime.fromtimestamp(
-            issued_at + FEED_IMAGE_URL_TTL_SECONDS, tz=datetime_timezone.utc
+            issued_at + FEED_IMAGE_URL_TTL_SECONDS, tz=UTC
         )
         expiration = min(timezone.now() + SIGNED_URL_TTL, absolute_expiry)
         if expiration <= timezone.now():

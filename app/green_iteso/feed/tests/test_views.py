@@ -1,7 +1,7 @@
 # pylint: disable=no-member,too-many-instance-attributes, too-many-public-methods,line-too-long
 """Integration tests for feed REST API endpoints."""
 
-from datetime import datetime, timedelta, timezone as datetime_timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -499,10 +499,11 @@ class ImageUploadViewTests(APITestCase):
         response = self.client.get(f"/api/uploads/{key}/", {"token": "valid"})
 
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        mock_storage_client.assert_called_once()
         mock_sign.assert_called_once()
         expiration = mock_sign.call_args.kwargs["expiration"]
         expected_expiry = datetime.fromtimestamp(
-            mock_unsign.return_value["issued_at"] + 3600, tz=datetime_timezone.utc
+            mock_unsign.return_value["issued_at"] + 3600, tz=UTC
         )
         self.assertEqual(expiration, expected_expiry)
 

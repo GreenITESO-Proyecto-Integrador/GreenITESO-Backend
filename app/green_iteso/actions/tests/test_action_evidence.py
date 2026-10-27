@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -308,7 +308,7 @@ def test_signed_read_url_respects_absolute_expiry_after_slow_preparation(
     monkeypatch: Any,
 ) -> None:
     """Do not extend an absolute expiry when credential lookup is slow."""
-    now = [datetime.now(timezone.utc)]
+    now = [datetime.now(UTC)]
     deadline = now[0] + timedelta(seconds=5)
     signed: dict[str, Any] = {}
 
@@ -333,4 +333,4 @@ def test_signed_read_url_respects_absolute_expiry_after_slow_preparation(
     )
 
     assert signed_read_url(ExistingBlob(), expiration=deadline) == ""
-    assert signed == {}
+    assert not signed

@@ -281,6 +281,7 @@ class PostAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         official_post.refresh_from_db()
         self.assertEqual(official_post.content, "Contenido original")
+        self.assertEqual(official_post.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
 
     def test_degraded_admin_cannot_change_post_type(self) -> None:
         """Ensure an admin who loses their role cannot change the type of their official announcement."""
@@ -302,12 +303,17 @@ class PostAPITests(APITestCase):
         self.client.force_authenticate(user=admin_user)
         detail_url = f"{self.base_url}{official_post.pk}/"
         response = self.client.patch(
-            detail_url, data={"post_type": PostType.SHARED_EVIDENCE}
+            detail_url,
+            data={
+                "post_type": PostType.SHARED_EVIDENCE,
+                "content": "Contenido malicioso",
+            },
         )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         official_post.refresh_from_db()
         self.assertEqual(official_post.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
+        self.assertEqual(official_post.content, "Contenido original")
 
 
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")

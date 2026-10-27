@@ -10,6 +10,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -172,7 +173,7 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
             ),
             OpenApiParameter(
                 "target_clan",
-                str,
+                OpenApiTypes.UUID,
                 description=(
                     "Only campaigns targeting this clan id, e.g. a clan's active "
                     "campaigns together with is_active=true. Visibility still "

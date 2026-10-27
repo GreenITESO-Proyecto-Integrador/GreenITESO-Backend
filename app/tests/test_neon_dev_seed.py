@@ -6,7 +6,7 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event, get_ident
 from time import monotonic, sleep
@@ -39,6 +39,7 @@ from green_iteso.actions.models import (
     ActionLogMissionContribution,
     ActionMaster,
 )
+from green_iteso.campaigns.models import Campaign
 from green_iteso.clans.services import (
     assign_institutional_clan,
     assign_leader,
@@ -1393,6 +1394,38 @@ def test_seed_retires_empty_legacy_clans_and_accepts_manual_retirement(
     before = list(legacy.order_by("pk").values_list("pk", "deleted_at"))
     call_command("seed_neon_dev", **options, verbosity=0)
     assert list(legacy.order_by("pk").values_list("pk", "deleted_at")) == before
+
+
+@pytest.mark.django_db(transaction=True)
+def test_seed_preserves_legacy_clan_referenced_by_campaign(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_legacy_neon_demo(monkeypatch)
+    monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
+    monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
+    legacy_clan = Clan.objects.get(pk=demo_id("clan", "institutional-01"))
+    creator = User.objects.create_user("legacy-campaign-owner@iteso.mx")
+    campaign = Campaign.objects.create(
+        title="Legacy career campaign",
+        scope=Campaign.Scope.PRIVATE,
+        creator=creator,
+        target_clan=legacy_clan,
+        start_date=datetime(2030, 1, 1, tzinfo=UTC),
+        end_date=datetime(2030, 2, 1, tzinfo=UTC),
+        status=Campaign.Status.IN_PROGRESS,
+    )
+
+    call_command(
+        "seed_neon_dev",
+        confirm_target="dev",
+        as_of="2030-01-15T12:00:00+00:00",
+        verbosity=0,
+    )
+
+    legacy_clan.refresh_from_db()
+    campaign.refresh_from_db()
+    assert legacy_clan.deleted_at is None
+    assert campaign.target_clan_id == legacy_clan.pk
 
 
 @pytest.mark.django_db(transaction=True)

@@ -34,6 +34,7 @@ from green_iteso.actions.management.commands.load_catalog import (
     stable_reference_id,
 )
 from green_iteso.actions.models import ActionLog, ActionMaster
+from green_iteso.campaigns.models import Campaign
 from green_iteso.core.database import require_connection_tls
 from green_iteso.settings.neon_endpoints import canonical_neon_host
 
@@ -644,6 +645,7 @@ def finish_career_clans(career_clans: list[Clan]) -> None:
             UserProfile.objects.filter(institutional_clan=clan).exists()
             or ClanMembership.objects.filter(clan=clan).exists()
             or ActionLog.objects.filter(institutional_clan=clan).exists()
+            or Campaign.objects.filter(target_clan=clan).exists()
         ):
             clan.deleted_at = timezone.now()
             clan.save(update_fields=["deleted_at"])

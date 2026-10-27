@@ -61,6 +61,17 @@ class User(AbstractUser):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    ANONYMOUS_DISPLAY_NAME = "Usuario GreenITESO"
+
+    @property
+    def public_display_name(self) -> str:
+        """Return the preferred public label without ever using the email."""
+        return (
+            self.nickname.strip()
+            or self.get_full_name().strip()
+            or self.ANONYMOUS_DISPLAY_NAME
+        )
+
     class Meta:
         db_table = "accounts_user"
         constraints = [

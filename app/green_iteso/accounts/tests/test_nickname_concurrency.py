@@ -179,7 +179,7 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
             normalized_sql = sql.lstrip().upper()
             if (
                 normalized_sql.startswith("UPDATE")
-                and "ACCOUNTS_USERPROFILE" in normalized_sql
+                and "ACCOUNTS_USER_PROFILE" in normalized_sql
             ):
                 approval_profile_updated.set()
             return result

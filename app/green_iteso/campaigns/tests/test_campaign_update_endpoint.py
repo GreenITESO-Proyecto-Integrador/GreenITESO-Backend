@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from django.urls import reverse
@@ -12,6 +13,8 @@ from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.campaigns.models import Campaign
+
+FROZEN_NOW = datetime(2030, 1, 10, 15, 0, tzinfo=UTC)
 
 
 def _url(campaign: Campaign) -> str:
@@ -278,15 +281,22 @@ class TestCampaignUpdateDateChanges:
         assert response.status_code == 200, response.data
 
     def test_changed_start_is_still_validated(
-        self, api_client: APIClient, admin_user: User, campaign: Campaign
+        self, api_client: APIClient, admin_user: User, campaign_factory: Any
     ) -> None:
+        campaign = campaign_factory(
+            start_date=FROZEN_NOW + timedelta(days=2),
+            end_date=FROZEN_NOW + timedelta(days=7),
+        )
         api_client.force_authenticate(user=admin_user)
 
-        response = api_client.patch(
-            _url(campaign),
-            {"start_date": (timezone.now() + timedelta(hours=1)).isoformat()},
-            format="json",
-        )
+        with patch(
+            "green_iteso.campaigns.services.timezone.now", return_value=FROZEN_NOW
+        ):
+            response = api_client.patch(
+                _url(campaign),
+                {"start_date": (FROZEN_NOW + timedelta(hours=1)).isoformat()},
+                format="json",
+            )
 
         assert response.status_code == 400
         assert "start_date" in response.data
@@ -383,21 +393,23 @@ class TestCampaignUpdateDateChanges:
     def test_truncated_end_with_a_past_start_change_gets_400(
         self, api_client: APIClient, admin_user: User, campaign_factory: Any
     ) -> None:
-        now = timezone.now()
-        stored_end = (now + timedelta(days=10)).replace(microsecond=654321)
+        stored_end = (FROZEN_NOW + timedelta(days=10)).replace(microsecond=654321)
         campaign = campaign_factory(
-            start_date=now + timedelta(days=2), end_date=stored_end
+            start_date=FROZEN_NOW + timedelta(days=2), end_date=stored_end
         )
         api_client.force_authenticate(user=admin_user)
 
-        response = api_client.patch(
-            _url(campaign),
-            {
-                "start_date": (now + timedelta(hours=1)).isoformat(),
-                "end_date": stored_end.replace(microsecond=654000).isoformat(),
-            },
-            format="json",
-        )
+        with patch(
+            "green_iteso.campaigns.services.timezone.now", return_value=FROZEN_NOW
+        ):
+            response = api_client.patch(
+                _url(campaign),
+                {
+                    "start_date": (FROZEN_NOW + timedelta(hours=1)).isoformat(),
+                    "end_date": stored_end.replace(microsecond=654000).isoformat(),
+                },
+                format="json",
+            )
 
         assert response.status_code == 400
         assert "start_date" in response.data

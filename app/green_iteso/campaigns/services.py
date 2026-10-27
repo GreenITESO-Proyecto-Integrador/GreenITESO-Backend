@@ -419,15 +419,20 @@ def apply_action_log_to_missions(action_log: Any) -> list[UserMissionProgress]:
 
     Precondition: must be called inside the caller's transaction, at the same
     point the log's points are credited. Does nothing if the log is REJECTED.
+
+    Eligibility is decided by when the log was registered (``created_at``)
+    against the campaign window, not by the campaign's current status, so a
+    log approved after the campaign finished still counts (BR-07 holds: a log
+    created at or after ``end_date`` never does).
     """
     if action_log.status == action_log.Status.REJECTED:
         return []
 
-    sync_campaign_statuses()
     missions = Mission.objects.filter(
         action=action_log.action,
         campaign__approval_status=Campaign.ApprovalStatus.APPROVED,
-        campaign__status=Campaign.Status.IN_PROGRESS,
+        campaign__start_date__lte=action_log.created_at,
+        campaign__end_date__gt=action_log.created_at,
         campaign__participants__user=action_log.user,
     ).distinct()
 

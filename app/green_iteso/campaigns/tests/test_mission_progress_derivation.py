@@ -217,6 +217,61 @@ class TestApplyActionLogToMissions:
         assert not UserMissionProgress.objects.filter(mission=promo_mission).exists()
         assert not UserMissionProgress.objects.filter(mission=finished_mission).exists()
 
+    def test_counts_log_created_in_window_but_approved_after_finish(
+        self,
+        user: User,
+        action: ActionMaster,
+        institutional_clan: Clan,
+        in_progress_campaign: Campaign,
+        in_progress_mission: Mission,
+    ) -> None:
+        log = _make_action_log(
+            user=user,
+            action=action,
+            clan=institutional_clan,
+            key="k-late",
+            status=ActionLog.Status.PENDING_AUDIT,
+        )
+        now = timezone.now()
+        in_progress_campaign.start_date = now - timedelta(days=2)
+        in_progress_campaign.end_date = now - timedelta(minutes=1)
+        in_progress_campaign.status = Campaign.Status.FINISHED
+        in_progress_campaign.save(update_fields=["start_date", "end_date", "status"])
+        ActionLog.objects.filter(pk=log.pk).update(created_at=now - timedelta(hours=1))
+        log.refresh_from_db()
+        log.status = ActionLog.Status.APPROVED
+        log.save(update_fields=["status"])
+
+        progresses = apply_action_log_to_missions(log)
+
+        assert len(progresses) == 1
+        progress = UserMissionProgress.objects.get(
+            user=user, mission=in_progress_mission
+        )
+        assert progress.current_count == 1
+
+    def test_ignores_log_created_after_campaign_end(
+        self,
+        user: User,
+        action: ActionMaster,
+        institutional_clan: Clan,
+        in_progress_campaign: Campaign,
+        in_progress_mission: Mission,
+    ) -> None:
+        log = _make_action_log(
+            user=user, action=action, clan=institutional_clan, key="k-after"
+        )
+        now = timezone.now()
+        in_progress_campaign.start_date = now - timedelta(days=2)
+        in_progress_campaign.end_date = now - timedelta(hours=1)
+        in_progress_campaign.status = Campaign.Status.FINISHED
+        in_progress_campaign.save(update_fields=["start_date", "end_date", "status"])
+
+        assert apply_action_log_to_missions(log) == []
+        assert not UserMissionProgress.objects.filter(
+            mission=in_progress_mission
+        ).exists()
+
     def test_does_not_affect_campaign_where_not_participant(
         self,
         other_user: User,

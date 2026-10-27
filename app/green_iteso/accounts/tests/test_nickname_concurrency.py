@@ -12,7 +12,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.accounts.services import change_nickname, ensure_profile
-from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
+from green_iteso.actions.models import ActionLog
+from green_iteso.actions.tests.helpers import create_pending_photo_audit_log
 from green_iteso.actions.views import ActionLogAuditView
 from green_iteso.clans.services import complete_onboarding
 
@@ -119,22 +120,7 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
     )
     clan = Clan.objects.create(name="Audit clan", type=Clan.ClanType.INSTITUTIONAL)
     UserProfile.objects.create(user=user, institutional_clan=clan)
-    category = ActionCategory.objects.create(code="AUDIT", name="Audit")
-    action = ActionMaster.objects.create(
-        code="AUDIT_PHOTO",
-        category=category,
-        name="Audit photo",
-        points=10,
-        validation_type=ActionMaster.ValidationType.PHOTO,
-    )
-    log = ActionLog.objects.create(
-        user=user,
-        action=action,
-        institutional_clan=clan,
-        idempotency_key="nickname-audit-concurrency",
-        points_awarded=10,
-        status=ActionLog.Status.PENDING_AUDIT,
-    )
+    log = create_pending_photo_audit_log(user, clan)
     nickname_user_locked = threading.Event()
     approval_profile_updated = threading.Event()
     errors: list[Exception] = []

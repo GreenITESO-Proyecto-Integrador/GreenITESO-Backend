@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, User, UserProfile
-from green_iteso.actions.models import ActionCategory, ActionMaster
+from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 from green_iteso.campaigns.models import Campaign, CampaignParticipant, Mission
 from green_iteso.gamification.models import Badge, UserBadge
 from green_iteso.notifications.models import Notification
@@ -57,6 +57,32 @@ def create_compost_action(*, code: str, category: ActionCategory) -> ActionMaste
         description="Compost organic waste",
         points=15,
         validation_type=ActionMaster.ValidationType.NONE,
+    )
+
+
+def create_pending_photo_audit_log(user: User, clan: Clan) -> ActionLog:
+    """Create a pending photo audit log for ``user`` in ``clan``."""
+    category = ActionCategory.objects.create(code="AUDIT", name="Audit")
+    action = ActionMaster.objects.create(
+        code="PHOTO_AUDIT",
+        category=category,
+        name="Photo audit",
+        description="Evidence requiring review",
+        points=10,
+        validation_type=ActionMaster.ValidationType.PHOTO,
+    )
+    return create_pending_audit_log(user, clan, action)
+
+
+def create_pending_audit_log(user: User, clan: Clan, action: ActionMaster) -> ActionLog:
+    """Create a pending audit log using the supplied action."""
+    return ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key=str(uuid.uuid4()),
+        points_awarded=10,
+        status=ActionLog.Status.PENDING_AUDIT,
     )
 
 

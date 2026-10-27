@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth.models import update_last_login
+from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .avatars import delete_profile_avatar, save_profile_avatar
 from .exceptions import (
     AccountConflictError,
     AccountDisabledError,
@@ -61,11 +63,49 @@ def update_profile(
     if visibility is not None:
         profile.visibility = visibility
         update_fields.append("visibility")
+    previous_key = ""
     if avatar_url is not None:
+        # A pasted link replaces an uploaded photo, so only one source is live.
+        previous_key = profile.avatar_object_key
         profile.avatar_url = avatar_url
-        update_fields.append("avatar_url")
+        profile.avatar_object_key = ""
+        update_fields += ["avatar_url", "avatar_object_key"]
     if update_fields:
         profile.save(update_fields=update_fields)
+    if previous_key:
+        user_id = user.pk
+        transaction.on_commit(lambda: delete_profile_avatar(user_id, previous_key))
+    return profile
+
+
+@transaction.atomic
+def set_profile_avatar(*, user: User, uploaded: UploadedFile | None) -> UserProfile:
+    """Replace, or with ``uploaded=None`` remove, ``user``'s profile photo (#170).
+
+    An upload also clears any pasted ``avatar_url``. The new key is generated
+    by ``avatars.save_profile_avatar`` and is scoped to this user. The
+    previous file is deleted only once the change commits, so a rolled-back
+    request never loses the current photo.
+
+    Raises:
+        InvalidImageError: If the upload is not a JPG/PNG/WEBP of at most 5 MB.
+    """
+    ensure_profile(user)
+    profile = UserProfile.objects.select_for_update().get(user=user)
+    previous_key = profile.avatar_object_key
+    new_key = save_profile_avatar(user.pk, uploaded) if uploaded is not None else ""
+
+    try:
+        profile.avatar_object_key = new_key
+        profile.avatar_url = ""
+        profile.save(update_fields=["avatar_object_key", "avatar_url"])
+    except Exception:
+        if new_key:
+            delete_profile_avatar(user.pk, new_key)
+        raise
+    if previous_key and previous_key != new_key:
+        user_id = user.pk
+        transaction.on_commit(lambda: delete_profile_avatar(user_id, previous_key))
     return profile
 
 

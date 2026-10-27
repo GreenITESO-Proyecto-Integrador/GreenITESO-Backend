@@ -26,6 +26,8 @@ def list_user_points_ranking() -> QuerySet[UserProfile]:
         .select_related("user")
         .only(
             "total_points",
+            "avatar_url",
+            "avatar_object_key",
             "user__id",
             "user__nickname",
             "user__first_name",

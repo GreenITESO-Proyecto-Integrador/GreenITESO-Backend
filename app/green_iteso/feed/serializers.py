@@ -11,6 +11,7 @@ from django.utils.timesince import timesince
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
+from green_iteso.accounts.avatars import user_avatar_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge
@@ -21,10 +22,16 @@ User = get_user_model()
 class PostAuthorSerializer(serializers.ModelSerializer):
     """Minimal nested author details for feed cards."""
 
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name"]
-        read_only_fields = ["id", "email", "first_name", "last_name"]
+        fields = ["id", "first_name", "last_name", "avatar_url"]
+        read_only_fields = ["id", "email", "first_name", "last_name", "avatar_url"]
+
+    def get_avatar_url(self, user: Any) -> str:
+        """The author's profile photo URL (#170), or "" when there is none."""
+        return user_avatar_url(user, self.context.get("request"))
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -114,11 +121,15 @@ class PostSerializer(serializers.ModelSerializer):
         return value.strip()
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        post_type = attrs.get("post_type") or getattr(self.instance, "post_type", None)
         request = self.context.get("request")
         is_admin = request is not None and IsAdmin().has_permission(request, None)
 
-        if post_type == PostType.OFFICIAL_ANNOUNCEMENT and not is_admin:
+        is_currently_official = (
+            getattr(self.instance, "post_type", None) == PostType.OFFICIAL_ANNOUNCEMENT
+        )
+        is_becoming_official = attrs.get("post_type") == PostType.OFFICIAL_ANNOUNCEMENT
+
+        if (is_currently_official or is_becoming_official) and not is_admin:
             raise PermissionDenied(
                 "Solo los administradores pueden crear o editar anuncios oficiales."
             )

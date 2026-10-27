@@ -10,6 +10,8 @@ from .views import (
     ImpactTrendView,
     LoginView,
     LogoutView,
+    ProfileAvatarImageView,
+    ProfileAvatarView,
     ProfileMetricsView,
     TokenRefreshView,
     UserViewSet,
@@ -23,6 +25,12 @@ urlpatterns = [
     path("auth/refresh/", TokenRefreshView.as_view(), name="auth-refresh"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("profile/me/", EcologicalProfileView.as_view(), name="profile-me"),
+    path("profile/me/avatar/", ProfileAvatarView.as_view(), name="profile-me-avatar"),
+    path(
+        "avatars/<uuid:user_id>/",
+        ProfileAvatarImageView.as_view(),
+        name="profile-avatar",
+    ),
     path("profile/me/metrics/", ProfileMetricsView.as_view(), name="profile-metrics"),
     path(
         "profile/me/impact-trend/",

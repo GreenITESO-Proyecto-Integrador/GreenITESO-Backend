@@ -262,7 +262,9 @@ def test_institutional_clan_assignment_get_returns_current_state() -> None:
     assert body["visibility"] == "PRIVATE"
     assert body["onboarding_completed_at"] is not None
 
-    schema_response = client.get("/api/schema/")
+    schema_response = client.get(
+        "/api/schema/", HTTP_ACCEPT="application/vnd.oai.openapi+json"
+    )
     assert schema_response.status_code == 200
     schema = schema_response.json()
     operation_schema = schema["paths"]["/api/v1/clans/institutional-clan/"]["get"]

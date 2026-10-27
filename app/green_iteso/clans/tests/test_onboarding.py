@@ -70,6 +70,7 @@ def test_onboarding_keeps_an_existing_nickname() -> None:
     )
 
     assert response.status_code == 200
+    assert response.json()["nickname"] == "Original"
     caller.refresh_from_db()
     assert caller.nickname == "Original"
 

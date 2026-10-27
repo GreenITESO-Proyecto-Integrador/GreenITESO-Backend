@@ -81,6 +81,7 @@ class CampaignSerializer(serializers.ModelSerializer):
         allow_null=True,
         error_messages={"does_not_exist": "Clan does not exist or was deleted."},
     )
+    target_clan_name = serializers.SerializerMethodField()
     is_participant = serializers.SerializerMethodField()
     can_manage = serializers.SerializerMethodField()
 
@@ -94,6 +95,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "status",
             "creator",
             "target_clan",
+            "target_clan_name",
             "start_date",
             "end_date",
             "created_at",
@@ -199,6 +201,13 @@ class CampaignSerializer(serializers.ModelSerializer):
         if user is None or not getattr(user, "is_authenticated", False):
             return False
         return instance.participants.filter(user=user).exists()
+
+    def get_target_clan_name(self, instance: Campaign) -> str | None:
+        """Return the targeted clan's name, or ``None`` for a global campaign.
+
+        Lets clients label a clan campaign (#171) without fetching the clan.
+        """
+        return instance.target_clan.name if instance.target_clan_id else None
 
     def get_can_manage(self, instance: Campaign) -> bool:
         """Return whether the request user may manage this campaign.

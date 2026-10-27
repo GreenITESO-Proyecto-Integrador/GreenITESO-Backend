@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from functools import cached_property
 from typing import Any
+from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -170,6 +172,15 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
                 description="Filter by campaign status.",
             ),
             OpenApiParameter(
+                "target_clan",
+                OpenApiTypes.UUID,
+                description=(
+                    "Only campaigns targeting this clan id, e.g. a clan's active "
+                    "campaigns together with is_active=true. Visibility still "
+                    "applies, so a non-member gets an empty list."
+                ),
+            ),
+            OpenApiParameter(
                 "is_active", bool, description="If true, only IN_PROGRESS campaigns."
             ),
             OpenApiParameter(
@@ -212,6 +223,14 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
             if value.strip()
         ]
         campaign_status = self.request.query_params.get("status")
+        target_clan = self.request.query_params.get("target_clan")
+        if target_clan:
+            try:
+                queryset = queryset.filter(target_clan_id=UUID(target_clan))
+            except ValueError as exc:
+                raise ValidationError(
+                    {"target_clan": "Enter a valid clan id."}
+                ) from exc
         if scope:
             queryset = queryset.filter(scope=scope)
         if scopes:
@@ -257,9 +276,13 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
     lookup_url_kwarg = "campaign_id"
 
     def get_queryset(self) -> QuerySet[Campaign]:
-        return _annotate_is_participant(
-            _visible_campaigns(self.request.user), self.request.user
-        ).prefetch_related("missions__action", "participants")
+        return (
+            _annotate_is_participant(
+                _visible_campaigns(self.request.user), self.request.user
+            )
+            .select_related("target_clan")
+            .prefetch_related("missions__action", "participants")
+        )
 
     @extend_schema(
         operation_id="campaigns_retrieve",

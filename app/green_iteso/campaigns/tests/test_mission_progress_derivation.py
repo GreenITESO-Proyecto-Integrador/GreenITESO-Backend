@@ -267,7 +267,7 @@ class TestApplyActionLogToMissions:
         in_progress_campaign.status = Campaign.Status.FINISHED
         in_progress_campaign.save(update_fields=["start_date", "end_date", "status"])
 
-        assert apply_action_log_to_missions(log) == []
+        assert not apply_action_log_to_missions(log)
         assert not UserMissionProgress.objects.filter(
             mission=in_progress_mission
         ).exists()

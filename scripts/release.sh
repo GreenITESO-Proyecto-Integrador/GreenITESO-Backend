@@ -78,6 +78,17 @@ if [[ -n "${GCS_EVIDENCE_BUCKET:-}" && ! "$GCS_EVIDENCE_BUCKET" =~ ^[a-z0-9][a-z
   echo "GCS_EVIDENCE_BUCKET must be a valid Cloud Storage bucket name" >&2
   exit 2
 fi
+# DJANGO_NUM_PROXIES is how many proxies append to X-Forwarded-For before the
+# app; the auth throttles need it to read the real client IP (#186). Measure
+# the deployed chain before setting it. Required where real users connect.
+if [[ -n "${DJANGO_NUM_PROXIES:-}" && ! "$DJANGO_NUM_PROXIES" =~ ^[0-9]+$ ]]; then
+  echo "DJANGO_NUM_PROXIES must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ "$RELEASE_ENVIRONMENT" == staging || "$RELEASE_ENVIRONMENT" == production ]] && [[ -z "${DJANGO_NUM_PROXIES:-}" ]]; then
+  echo "DJANGO_NUM_PROXIES is required for ${RELEASE_ENVIRONMENT} releases" >&2
+  exit 2
+fi
 
 IMAGE_REGISTRY="${ARTIFACT_REGISTRY_LOCATION}-docker.pkg.dev/${IMAGE_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
 IMAGE="${IMAGE_REGISTRY}/greeniteso"
@@ -126,6 +137,9 @@ RUNTIME_ENV="^@^DJANGO_ENV=${RELEASE_ENVIRONMENT}@DJANGO_DEPLOYED=true@DJANGO_CO
 # is optional because dev and staging do not have one.
 if [[ -n "${GCS_EVIDENCE_BUCKET:-}" ]]; then
   RUNTIME_ENV+="@GCS_EVIDENCE_BUCKET=${GCS_EVIDENCE_BUCKET}"
+fi
+if [[ -n "${DJANGO_NUM_PROXIES:-}" ]]; then
+  RUNTIME_ENV+="@DJANGO_NUM_PROXIES=${DJANGO_NUM_PROXIES}"
 fi
 MIGRATION_ENV="^@^DJANGO_ENV=${RELEASE_ENVIRONMENT}@DJANGO_DEPLOYED=true@DJANGO_CONNECTION_ROLE=direct@DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS}"
 RUNTIME_SECRETS="DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest"

@@ -257,6 +257,58 @@ class PostAPITests(APITestCase):
         response = self.client.patch(self.detail_url, data=payload)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_degraded_admin_cannot_change_content(self) -> None:
+        """Ensure an admin who loses their role cannot edit the content of their official announcement."""
+        admin_user = User.objects.create_user(
+            email="degraded_content@iteso.mx",
+            password="StrongPassword123!",
+            role="ADMIN",
+        )
+        official_post = Post.objects.create(
+            author=admin_user,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Contenido original",
+        )
+
+        # Degradar al administrador
+        admin_user.role = "STUDENT"
+        admin_user.save()
+
+        self.client.force_authenticate(user=admin_user)
+        detail_url = f"{self.base_url}{official_post.pk}/"
+        response = self.client.patch(detail_url, data={"content": "Contenido hackeado"})
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        official_post.refresh_from_db()
+        self.assertEqual(official_post.content, "Contenido original")
+
+    def test_degraded_admin_cannot_change_post_type(self) -> None:
+        """Ensure an admin who loses their role cannot change the type of their official announcement."""
+        admin_user = User.objects.create_user(
+            email="degraded_type@iteso.mx",
+            password="StrongPassword123!",
+            role="ADMIN",
+        )
+        official_post = Post.objects.create(
+            author=admin_user,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Contenido original",
+        )
+
+        # Degradar al administrador
+        admin_user.role = "STUDENT"
+        admin_user.save()
+
+        self.client.force_authenticate(user=admin_user)
+        detail_url = f"{self.base_url}{official_post.pk}/"
+        response = self.client.patch(
+            detail_url, data={"post_type": PostType.SHARED_EVIDENCE}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        official_post.refresh_from_db()
+        self.assertEqual(official_post.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
+
 
 @override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
 class ImageUploadViewTests(APITestCase):

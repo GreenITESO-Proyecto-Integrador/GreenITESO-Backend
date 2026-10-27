@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.signing import TimestampSigner
 from django.test import override_settings
 from django.utils import timezone
 from google.cloud.exceptions import GoogleCloudError
@@ -381,25 +382,15 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         mock_blob.delete.assert_not_called()
 
-    @patch("green_iteso.actions.evidence._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
+        self, mock_storage_client: MagicMock
     ) -> None:
-        """Ensure a successful upload returns a 200 OK and the signed URL."""
+        """Return a stable first-party URL that fits the post URL field."""
         self.client.force_authenticate(user=self.user)
-        mock_signing_credentials.return_value = (
-            "runtime@example.iam.gserviceaccount.com",
-            "access-token",
-        )
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
         mock_blob = mock_bucket.blob.return_value
-        # Simular que SDK devuelve una URL con firma
-        mock_blob.generate_signed_url.return_value = (
-            "https://storage.googleapis.com/test-bucket/"
-            "uploads/test.png?X-Goog-Signature=mock"
-        )
 
         valid_png = SimpleUploadedFile(
             "sample.png", VALID_PNG_BYTES, content_type="image/png"
@@ -408,105 +399,117 @@ class ImageUploadViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("url", response.data)
-        self.assertIn("X-Goog-Signature", response.data["url"])
-        mock_blob.upload_from_file.assert_called_once()
-        mock_blob.generate_signed_url.assert_called_once_with(
-            version="v4",
-            expiration=timedelta(hours=1),
-            method="GET",
-            service_account_email="runtime@example.iam.gserviceaccount.com",
-            access_token="access-token",
+        self.assertRegex(
+            response.data["url"],
+            r"^http://testserver/api/uploads/[0-9a-f-]{36}\.png/\?token=.+$",
         )
+        self.assertLessEqual(len(response.data["url"]), 500)
+        mock_blob.upload_from_file.assert_called_once()
+        mock_blob.generate_signed_url.assert_not_called()
         mock_blob.delete.assert_not_called()
 
-    @patch("green_iteso.actions.evidence._signing_credentials", return_value=("", ""))
     @patch("google.cloud.storage.Client")
-    def test_upload_signing_credentials_unavailable_returns_500(
-        self, mock_storage_client: MagicMock, _mock_signing_credentials: MagicMock
+    def test_upload_url_can_be_used_to_create_a_post(
+        self, mock_storage_client: MagicMock
     ) -> None:
-        """Do not return an unusable URL when ADC cannot provide signing credentials."""
+        """Ensure the URL returned by upload passes feed serializer validation."""
         self.client.force_authenticate(user=self.user)
+        mock_blob = (
+            mock_storage_client.return_value.bucket.return_value.blob.return_value
+        )
         valid_png = SimpleUploadedFile(
             "sample.png", VALID_PNG_BYTES, content_type="image/png"
         )
+        upload_response = self.client.post(
+            self.url, {"image": valid_png}, format="multipart"
+        )
+        self.assertEqual(upload_response.status_code, status.HTTP_200_OK)
 
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+        post_response = self.client.post(
+            "/api/v1/feed/",
+            {
+                "post_type": "COMMUNITY_MILESTONE",
+                "content": "Publicación con imagen recién cargada",
+                "image_url": upload_response.data["url"],
+            },
+            format="json",
+        )
 
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        mock_storage_client.return_value.bucket.return_value.blob.return_value.generate_signed_url.assert_not_called()
+        self.assertEqual(post_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(post_response.data["image_url"], upload_response.data["url"])
+        self.assertEqual(mock_blob.upload_from_file.call_count, 1)
 
     @patch(
         "green_iteso.feed.views.signed_read_url",
-        side_effect=RuntimeError("signing failed"),
+        return_value="https://storage.googleapis.com/test-bucket/uploads/fresh?signature=one",
     )
     @patch("google.cloud.storage.Client")
-    def test_upload_signing_exception_deletes_uploaded_blob(
-        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
+    def test_resolver_redirects_with_fresh_signed_url(
+        self, mock_storage_client: MagicMock, mock_sign: MagicMock
     ) -> None:
-        """Remove the stored object when signing raises, preserving the API error."""
-        self.client.force_authenticate(user=self.user)
-        mock_blob = (
-            mock_storage_client.return_value.bucket.return_value.blob.return_value
-        )
+        """Resolve the expiring app URL to a fresh GCS URL without caching it."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign(key)
 
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+        response = self.client.get(f"/api/uploads/{key}/", {"token": token})
 
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         self.assertEqual(
-            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
+            response["Location"],
+            "https://storage.googleapis.com/test-bucket/uploads/fresh?signature=one",
         )
-        mock_blob.delete.assert_called_once_with()
-
-    @patch("green_iteso.feed.views.signed_read_url", return_value="")
-    @patch("google.cloud.storage.Client")
-    def test_upload_empty_signed_url_deletes_uploaded_blob(
-        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
-    ) -> None:
-        """Remove the stored object when signing returns no usable URL."""
-        self.client.force_authenticate(user=self.user)
-        mock_blob = (
-            mock_storage_client.return_value.bucket.return_value.blob.return_value
-        )
-
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        mock_sign.assert_called_once()
         self.assertEqual(
-            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
+            mock_sign.call_args.args[0],
+            mock_storage_client.return_value.bucket.return_value.blob(f"uploads/{key}"),
         )
-        mock_blob.delete.assert_called_once_with()
+        self.assertLessEqual(
+            mock_sign.call_args.kwargs["expiration"], timedelta(minutes=10)
+        )
 
+    @patch("green_iteso.feed.views.TimestampSigner.unsign")
     @patch(
         "green_iteso.feed.views.signed_read_url",
-        side_effect=RuntimeError("signing failed"),
+        return_value="https://storage.googleapis.com/image",
     )
     @patch("google.cloud.storage.Client")
-    def test_upload_cleanup_failure_preserves_signing_error_response(
-        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
+    def test_resolver_bounds_gcs_url_to_remaining_app_url_lifetime(
+        self,
+        mock_storage_client: MagicMock,
+        mock_sign: MagicMock,
+        mock_unsign: MagicMock,
     ) -> None:
-        """A failed best-effort delete must not replace the signing failure response."""
-        self.client.force_authenticate(user=self.user)
-        mock_blob = (
-            mock_storage_client.return_value.bucket.return_value.blob.return_value
-        )
-        mock_blob.delete.side_effect = GoogleCloudError("delete failed")
+        """A late resolver request must not extend access beyond the upload URL."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        signed_at = timezone.now() - timedelta(seconds=3590)
+        mock_unsign.return_value = (key, signed_at)
 
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+        response = self.client.get(f"/api/uploads/{key}/", {"token": "valid"})
 
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        self.assertEqual(
-            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
-        )
-        mock_blob.delete.assert_called_once_with()
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        mock_sign.assert_called_once()
+        expiration = mock_sign.call_args.kwargs["expiration"]
+        self.assertGreater(expiration, timedelta(0))
+        self.assertLessEqual(expiration, timedelta(seconds=10))
+
+    @patch("green_iteso.feed.views.FEED_IMAGE_URL_TTL_SECONDS", -1)
+    @patch("green_iteso.feed.views.signed_read_url")
+    @patch("google.cloud.storage.Client")
+    def test_resolver_rejects_expired_or_malformed_uploads(
+        self, mock_storage_client: MagicMock, mock_sign: MagicMock
+    ) -> None:
+        """Reject expired, unsigned and malformed URLs without touching GCS."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign(key)
+        expired = self.client.get(f"/api/uploads/{key}/", {"token": token})
+        unsigned = self.client.get(f"/api/uploads/{key}/")
+        malformed_key = self.client.get("/api/uploads/../../secrets/")
+        self.assertEqual(expired.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(unsigned.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(malformed_key.status_code, status.HTTP_404_NOT_FOUND)
+        mock_sign.assert_not_called()
+        mock_storage_client.assert_not_called()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

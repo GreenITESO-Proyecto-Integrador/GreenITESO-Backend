@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.db.models import QuerySet
+from django.http import HttpResponseRedirect
+from django.utils import timezone
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from PIL import Image, UnidentifiedImageError
@@ -18,7 +22,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.actions.evidence import signed_read_url
+from green_iteso.actions.evidence import SIGNED_URL_TTL, signed_read_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -33,6 +37,8 @@ MIME_TO_EXT = {
     "image/png": "png",
     "image/webp": "webp",
 }
+FEED_IMAGE_URL_TTL_SECONDS = 60 * 60
+FEED_IMAGE_SIGNER_SALT = "greeniteso.feed.upload"
 
 
 def detect_image_mime(file_obj: Any) -> str | None:
@@ -136,17 +142,12 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            try:
-                signed_url = signed_read_url(blob, expiration=timedelta(hours=1))
-                if not signed_url:
-                    raise RuntimeError("Could not sign the uploaded image URL.")
-            except Exception:  # pylint: disable=broad-exception-caught
-                try:
-                    blob.delete()
-                except Exception:  # pylint: disable=broad-exception-caught
-                    logger.exception("Could not remove image after signing failed.")
-                raise
-            return Response({"url": signed_url}, status=status.HTTP_200_OK)
+            key = blob_name.rsplit("/", 1)[1]
+            token = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).sign(key)
+            signed_app_url = request.build_absolute_uri(
+                f"/api/uploads/{key}/?token={token}"
+            )
+            return Response({"url": signed_app_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
@@ -161,3 +162,51 @@ class ImageUploadView(APIView):
                 {"error": "Ocurrió un error inesperado al procesar la imagen."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class FeedImageView(APIView):
+    """Resolve a short-lived signed feed-upload URL to a fresh GCS URL."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(
+        self, request: Request, key: str, *_args: Any, **_kwargs: Any
+    ) -> HttpResponseRedirect | Response:
+        """Validate the time-limited capability before signing a private object."""
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}\.(?:jpg|png|webp)", key):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        token = request.query_params.get("token", "")
+        try:
+            signed_key, signed_at = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).unsign(
+                token,
+                max_age=FEED_IMAGE_URL_TTL_SECONDS,
+                return_timestamp=True,
+            )
+        except (BadSignature, SignatureExpired):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if signed_key != key:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
+        if not bucket_name:
+            return Response(
+                {"error": "El servicio de almacenamiento no está configurado."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        blob = storage.Client().bucket(bucket_name).blob(f"uploads/{key}")
+        remaining_ttl = timedelta(seconds=FEED_IMAGE_URL_TTL_SECONDS) - (
+            timezone.now() - signed_at
+        )
+        if remaining_ttl <= timedelta(0):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        signed_url = signed_read_url(
+            blob, expiration=min(SIGNED_URL_TTL, remaining_ttl)
+        )
+        if not signed_url:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        response = HttpResponseRedirect(signed_url)
+        response["Cache-Control"] = "no-store"
+        return response

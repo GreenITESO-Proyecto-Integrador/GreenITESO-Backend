@@ -437,6 +437,7 @@ class ImageUploadViewTests(APITestCase):
                 "image_url": upload_response.data["url"],
             },
             format="json",
+            HTTP_HOST="api.greeniteso.mx",
         )
 
         self.assertEqual(

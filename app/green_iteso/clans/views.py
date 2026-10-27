@@ -497,6 +497,7 @@ class ClanViewSet(
 class InstitutionalClanAssignmentView(APIView):
     """Read or declare the caller's institutional clan assignment (T2-30)."""
 
+    @extend_schema(responses=InstitutionalAssignmentSerializer)
     def get(self, request: Request) -> Response:
         """Return the caller's current onboarding/institutional clan state."""
         profile = ensure_profile(request.user)

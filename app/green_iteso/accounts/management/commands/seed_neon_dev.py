@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,8 @@ from django.conf import settings
 from django.core.management import BaseCommand, CommandError
 from django.db import connection, transaction
 from django.db.models import F
-from django.db.utils import OperationalError
+from django.db.utils import IntegrityError, OperationalError
+from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
@@ -78,18 +80,74 @@ def _career_clan_specs(catalog: CatalogData) -> list[tuple[dict[str, Any], Any]]
     ]
 
 
+def load_dev_career_clans(catalog: CatalogData) -> list[Clan]:
+    """Adopt onboarding rows without changing their identity, metadata or totals.
+
+    Resolve in fixture-ID order so random onboarding UUIDs never reshuffle demo
+    assignments. Prefer the live row; restore a sole deleted row only after all
+    reconciliation checks. Multiple deleted candidates without a live row are
+    ambiguous and require operator evidence.
+    """
+    result = []
+    for item, fixture_id in sorted(
+        _career_clan_specs(catalog), key=lambda pair: pair[1]
+    ):
+        pinned = Clan.all_objects.filter(pk=fixture_id).first()
+        if pinned is not None and not _career_clan_matches_fixture(item, pinned):
+            raise CommandError(
+                "A synthetic career clan differs from the pinned fixture; refusing reconciliation."
+            )
+        candidates = list(Clan.all_objects.filter(name=item["name"]).order_by("pk"))
+        live = [clan for clan in candidates if clan.deleted_at is None]
+        if live:
+            clan = live[0]
+        elif len(candidates) == 1:
+            clan = candidates[0]
+        elif candidates:
+            raise CommandError(
+                "Ambiguous deleted career clans; refusing reconciliation."
+            )
+        else:
+            clan, _created = Clan.objects.get_or_create(
+                name=item["name"],
+                defaults={
+                    "id": fixture_id,
+                    "description": f"{item['description']} Career key: {item['career']}",
+                    "type": Clan.ClanType.INSTITUTIONAL,
+                    "privacy": Clan.Privacy.PUBLIC,
+                },
+            )
+        if not _career_clan_matches_fixture(item, clan):
+            raise CommandError(
+                "A synthetic career clan differs from the pinned fixture; refusing reconciliation."
+            )
+        result.append(clan)
+    return result
+
+
 def _career_clan_map(
-    catalog: CatalogData, locked_clans: dict[Any, Clan]
+    catalog: CatalogData,
+    locked_clans: dict[Any, Clan],
+    career_clans: list[Clan] | None = None,
 ) -> list[tuple[dict[str, Any], Clan]]:
     """Validate career destination identities from their already locked rows."""
     result: list[tuple[dict[str, Any], Clan]] = []
-    for item, clan_id in _career_clan_specs(catalog):
+    snapshots = {clan.name: clan for clan in career_clans or []}
+    for item, fixture_id in sorted(
+        _career_clan_specs(catalog), key=lambda pair: pair[1]
+    ):
+        snapshot = snapshots.get(item["name"])
+        clan_id = snapshot.pk if snapshot is not None else fixture_id
         clan = locked_clans.get(clan_id)
         if clan is None:
             raise CommandError(
                 "A configured synthetic career clan is missing; refusing reconciliation."
             )
-        if not _career_clan_matches_fixture(item, clan):
+        if not _career_clan_matches_fixture(item, clan) or (
+            snapshot is not None
+            and (clan.deleted_at, clan.description)
+            != (snapshot.deleted_at, snapshot.description)
+        ):
             raise CommandError(
                 "A synthetic career clan differs from the pinned fixture; refusing reconciliation."
             )
@@ -98,12 +156,14 @@ def _career_clan_map(
 
 
 def _career_clan_matches_fixture(item: dict[str, Any], clan: Clan) -> bool:
-    """Compare every mutable career-clan identity field to the fixture."""
+    """Require public institutional identity; preserve adopted-row metadata."""
     expected_description = f"{item['description']} Career key: {item['career']}"
     return (
-        clan.deleted_at is None
-        and clan.name == item["name"]
-        and clan.description == expected_description
+        clan.name == item["name"]
+        and (
+            clan.pk != stable_reference_id("institutional-clan", item["key"])
+            or clan.description == expected_description
+        )
         and clan.type == Clan.ClanType.INSTITUTIONAL
         and clan.privacy == Clan.Privacy.PUBLIC
         and clan.created_by_id is None
@@ -127,14 +187,16 @@ def _validate_legacy_clan_identities(legacy_clans: dict[Any, Clan]) -> None:
             )
 
 
-def _legacy_clan_matches_fixture(index: int, clan: Clan) -> bool:
+def _legacy_clan_matches_fixture(
+    index: int, clan: Clan, *, allow_deleted: bool = False
+) -> bool:
     """Compare every mutable source-clan identity field to the v1 fixture."""
     return (
         clan.name == LEGACY_INSTITUTIONAL_CLAN_NAMES[index]
         and clan.description == DEMO_INSTITUTIONAL_CLAN_DESCRIPTION
         and clan.type == Clan.ClanType.INSTITUTIONAL
         and clan.privacy == Clan.Privacy.PUBLIC
-        and clan.deleted_at is None
+        and (allow_deleted or clan.deleted_at is None)
         and clan.created_by_id is None
     )
 
@@ -268,12 +330,14 @@ def _validate_demo_logs(
 # audit the transaction's validation order as one sequence.
 def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     catalog: CatalogData,
+    career_clans: list[Clan] | None = None,
 ) -> bool:
     """Move only a complete, verified v1 synthetic seed onto the four career clans.
 
     Returns True when the known v1 dataset was reconciled. A clean database and
     an already reconciled dataset return False. Partial or edited states fail
-    closed so this command never guesses whether a row is synthetic.
+    closed. Only the 24 identity-verified synthetic logs may change attribution,
+    including APPROVED ones; unrelated history and points are preserved.
     """
     user_ids = [demo_id("user", str(index)) for index in range(1, 21)]
     career_specs = _career_clan_specs(catalog)
@@ -281,7 +345,12 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
     legacy_clan_ids = [
         demo_id("clan", f"institutional-{index:02d}") for index in range(1, 4)
     ]
-    reconciliation_clan_ids = sorted(set(career_clan_ids + legacy_clan_ids), key=str)
+    existing_career_ids = list(
+        Clan.all_objects.filter(name__in=DEV_CAREER_LABELS).values_list("pk", flat=True)
+    )
+    reconciliation_clan_ids = sorted(
+        set(career_clan_ids + legacy_clan_ids + existing_career_ids), key=str
+    )
     (
         locked_logs,
         locked_users,
@@ -289,10 +358,8 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
         locked_memberships,
         locked_clans,
     ) = _lock_synthetic_reconciliation_rows(user_ids, reconciliation_clan_ids)
-    career_pairs = sorted(
-        _career_clan_map(catalog, locked_clans), key=lambda pair: pair[1].pk
-    )
-    career_clans = [clan for _item, clan in career_pairs]
+    career_pairs = _career_clan_map(catalog, locked_clans, career_clans)
+    destination_clans = [clan for _item, clan in career_pairs]
     users_by_id = {user.pk: user for user in locked_users}
     if not users_by_id:
         has_legacy_logs = ActionLog.objects.filter(
@@ -338,7 +405,7 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
     expected_new_clans: dict[Any, Clan] = {}
     is_v2 = True
     for index, user in enumerate(users):
-        expected_clan = career_clans[index % len(career_clans)]
+        expected_clan = destination_clans[index % len(destination_clans)]
         profile = profiles_by_id[user.pk]
         if (
             profile.career != expected_clan.name
@@ -357,24 +424,47 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
         )
         return False
 
-    if len(legacy_clans) != 3 or existing_demo_logs != 24:
-        raise CommandError(
-            "The shared-dev legacy seed is partial; refusing career reconciliation."
-        )
-    _validate_legacy_clan_identities(legacy_clans)
     old_clan_by_user: dict[Any, Clan] = {}
-    for index, user in enumerate(users):
-        old_clan = legacy_clans.get(legacy_clan_ids[index % 3])
-        profile = profiles_by_id[user.pk]
-        if (
-            old_clan is None
-            or profile.career != LEGACY_CAREER_LABELS[index % 3]
-            or profile.institutional_clan_id != old_clan.pk
-        ):
+    previous_v2 = all(
+        profiles_by_id[user.pk].career == expected_new_clans[user.pk].name
+        for user in users
+    )
+    if previous_v2:
+        _validate_retained_legacy_clans(legacy_clans, user_ids, demo_log_ids)
+        items_by_name = {item["name"]: item for item, _clan in career_pairs}
+        for user in users:
+            profile = profiles_by_id[user.pk]
+            old_clan = locked_clans.get(profile.institutional_clan_id)
+            destination = expected_new_clans[user.pk]
+            if (
+                old_clan is None
+                or not _career_clan_matches_fixture(
+                    items_by_name[destination.name], old_clan
+                )
+                or (old_clan.pk != destination.pk and old_clan.deleted_at is None)
+            ):
+                raise CommandError(
+                    "A previous synthetic career clan differs from the known seed; refusing reconciliation."
+                )
+            old_clan_by_user[user.pk] = old_clan
+    else:
+        if len(legacy_clans) != 3 or existing_demo_logs != 24:
             raise CommandError(
-                "A legacy demo profile or clan differs from the known synthetic seed; refusing reconciliation."
+                "The shared-dev legacy seed is partial; refusing career reconciliation."
             )
-        old_clan_by_user[user.pk] = old_clan
+        _validate_legacy_clan_identities(legacy_clans)
+        for index, user in enumerate(users):
+            old_clan = legacy_clans.get(legacy_clan_ids[index % 3])
+            profile = profiles_by_id[user.pk]
+            if (
+                old_clan is None
+                or profile.career != LEGACY_CAREER_LABELS[index % 3]
+                or profile.institutional_clan_id != old_clan.pk
+            ):
+                raise CommandError(
+                    "A legacy demo profile or clan differs from the known synthetic seed; refusing reconciliation."
+                )
+            old_clan_by_user[user.pk] = old_clan
 
     old_memberships = _validate_institutional_memberships(
         users, old_clan_by_user, locked_memberships
@@ -389,7 +479,10 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
     )
     for user in users:
         expected_new = expected_new_clans[user.pk]
-        if ClanMembership.objects.filter(user=user, clan=expected_new).exists():
+        if (
+            expected_new.pk != old_clan_by_user[user.pk].pk
+            and ClanMembership.objects.filter(user=user, clan=expected_new).exists()
+        ):
             raise CommandError(
                 "A demo user already has a career-clan membership outside the known "
                 "legacy seed; refusing reconciliation."
@@ -417,8 +510,9 @@ def reconcile_legacy_demo_careers(  # pylint: disable=too-many-locals,too-many-b
 
     # Recheck all mutable clan identity fields on the locked rows directly
     # before the first profile, membership, or action-log reference is changed.
-    _career_clan_map(catalog, locked_clans)
-    _validate_legacy_clan_identities(legacy_clans)
+    _career_clan_map(catalog, locked_clans, career_clans)
+    if not previous_v2:
+        _validate_legacy_clan_identities(legacy_clans)
 
     for user in users:
         profile = profiles_by_id[user.pk]
@@ -513,12 +607,46 @@ def _validate_retained_legacy_clans(
         )
         if (
             clan is None
-            or not _legacy_clan_matches_fixture(index, clan)
+            or not _legacy_clan_matches_fixture(index, clan, allow_deleted=True)
             or has_demo_references
         ):
             raise CommandError(
                 "A retained legacy demo clan was edited or still has demo references; refusing reconciliation."
             )
+
+
+def finish_career_clans(career_clans: list[Clan]) -> None:
+    """Restore chosen careers and retire only unreferenced synthetic placeholders.
+
+    Full NOWAIT locks prevent FK inserts racing the emptiness check; contention
+    aborts the transaction for retry instead of waiting in a different lock order.
+    """
+    for clan in career_clans:
+        if clan.deleted_at is not None:
+            Clan.all_objects.filter(pk=clan.pk).update(deleted_at=None)
+    legacy_ids = [
+        demo_id("clan", f"institutional-{index:02d}") for index in range(1, 4)
+    ]
+    try:
+        legacy_clans = list(
+            Clan.all_objects.select_for_update(nowait=True)
+            .filter(pk__in=legacy_ids)
+            .order_by("pk")
+        )
+    except OperationalError as error:
+        if getattr(error.__cause__, "sqlstate", None) == "55P03":
+            raise CommandError(
+                "A concurrent write is holding a legacy clan; retry the Neon dev seed."
+            ) from error
+        raise
+    for clan in legacy_clans:
+        if clan.deleted_at is None and not (
+            UserProfile.objects.filter(institutional_clan=clan).exists()
+            or ClanMembership.objects.filter(clan=clan).exists()
+            or ActionLog.objects.filter(institutional_clan=clan).exists()
+        ):
+            clan.deleted_at = timezone.now()
+            clan.save(update_fields=["deleted_at"])
 
 
 def load_dev_synthetic_catalog() -> CatalogData:
@@ -616,9 +744,18 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             acquire_neon_dev_seed_lock()
-            load_catalog_data(catalog)
-            reconcile_legacy_demo_careers(catalog)
-            result = seed_demo_data(catalog, as_of, shared_dev=True)
+            load_catalog_data(replace(catalog, clans=()))
+            career_clans = load_dev_career_clans(catalog)
+            reconcile_legacy_demo_careers(catalog, career_clans)
+            try:
+                finish_career_clans(career_clans)
+            except IntegrityError as error:
+                raise CommandError(
+                    "Concurrent career name collision; retry the Neon dev seed."
+                ) from error
+            result = seed_demo_data(
+                catalog, as_of, shared_dev=True, career_clans=career_clans
+            )
 
         return (
             f"Seeded Neon dev demo: {result.user_count} student users "

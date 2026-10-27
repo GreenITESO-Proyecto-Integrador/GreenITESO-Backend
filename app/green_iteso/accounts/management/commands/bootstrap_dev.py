@@ -852,23 +852,36 @@ def refresh_demo_totals(
     )
 
 
+def resolve_demo_careers(
+    catalog: CatalogData,
+    shared_dev: bool,
+    career_clans: list[Clan] | None,
+) -> tuple[list[Clan], dict[uuid.UUID, str] | None]:
+    """Keep local fixture IDs strict and accept validated shared-dev clan rows."""
+    if shared_dev and not catalog.clans:
+        return create_dev_institutional_clans()
+    clans = (
+        career_clans
+        if career_clans is not None
+        else get_catalog_institutional_clans(catalog)
+    )
+    careers_by_name = {item["name"]: item["career"] for item in catalog.clans}
+    return clans, (
+        {clan.pk: careers_by_name[clan.name] for clan in clans} if shared_dev else None
+    )
+
+
 def create_log_seed_context(
-    catalog: CatalogData, as_of: datetime, shared_dev: bool
+    catalog: CatalogData,
+    as_of: datetime,
+    shared_dev: bool,
+    career_clans: list[Clan] | None = None,
 ) -> LogSeedContext:
     """Resolve the catalog and deterministic fixtures needed by the seed."""
     users, user_created = create_demo_users(shared_dev=shared_dev)
-    if shared_dev and not catalog.clans:
-        institutional_clans, careers = create_dev_institutional_clans()
-    else:
-        institutional_clans = get_catalog_institutional_clans(catalog)
-        careers = (
-            {
-                stable_reference_id("institutional-clan", item["key"]): item["career"]
-                for item in catalog.clans
-            }
-            if shared_dev
-            else None
-        )
+    institutional_clans, careers = resolve_demo_careers(
+        catalog, shared_dev, career_clans
+    )
     private_clans = create_private_clans(users)
     profiles = create_profiles_and_memberships(
         users, institutional_clans, private_clans, as_of, careers=careers
@@ -898,10 +911,14 @@ def create_log_seed_context(
 
 
 def seed_demo_data(
-    catalog: CatalogData, as_of: datetime, *, shared_dev: bool = False
+    catalog: CatalogData,
+    as_of: datetime,
+    *,
+    shared_dev: bool = False,
+    career_clans: list[Clan] | None = None,
 ) -> DemoSeedResult:
     """Write the complete demo graph inside the caller's transaction."""
-    context = create_log_seed_context(catalog, as_of, shared_dev)
+    context = create_log_seed_context(catalog, as_of, shared_dev, career_clans)
     created_logs, approved_user_points, approved_clan_points = create_action_logs(
         context
     )

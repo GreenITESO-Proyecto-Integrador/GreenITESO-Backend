@@ -566,10 +566,11 @@ def test_audit_status_update_serializes_before_career_reconciliation(
     audit_started = Event()
     release_audit = Event()
     seed_reached_row_locks = Event()
-    seed_finished = Event()
+    seed_backend_pids: list[int] = []
     original_lock_rows = seed_neon_dev._lock_synthetic_reconciliation_rows
 
     def signal_before_row_locks(user_ids: list[Any], clan_ids: list[Any]) -> Any:
+        seed_backend_pids.append(connection.connection.info.backend_pid)
         seed_reached_row_locks.set()
         return original_lock_rows(user_ids, clan_ids)
 
@@ -612,7 +613,6 @@ def test_audit_status_update_serializes_before_career_reconciliation(
         try:
             return call_command("seed_neon_dev", **options, verbosity=0)
         finally:
-            seed_finished.set()
             connections.close_all()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -622,7 +622,22 @@ def test_audit_status_update_serializes_before_career_reconciliation(
         assert seed_reached_row_locks.wait(timeout=10)
         # The seed must wait for the existing audit row lock, then validate the
         # committed status instead of calculating from a stale pending snapshot.
-        assert not seed_finished.wait(timeout=0.2)
+        deadline = monotonic() + 10
+        try:
+            while monotonic() < deadline:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT wait_event_type, pg_blocking_pids(pid) FROM pg_stat_activity WHERE pid = %s",
+                        [seed_backend_pids[0]],
+                    )
+                    activity = cursor.fetchone()
+                if activity is not None and activity[0] == "Lock" and activity[1]:
+                    break
+                sleep(0.01)
+            else:
+                pytest.fail(f"Seed did not wait for the audit lock: {activity!r}")
+        finally:
+            release_audit.set()
         release_audit.set()
         audit.result(timeout=20)
         with pytest.raises(CommandError, match="edited or has an unexpected identity"):
@@ -1258,3 +1273,210 @@ def test_neon_dev_command_rolls_back_catalog_if_demo_seed_fails(
     assert ActionCategory.objects.count() == 0
     assert ActionMaster.objects.count() == 0
     assert User.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "state", ["clean", "legacy", "v2", "deleted", "replaced", "onboarding_deleted"]
+)
+def test_seed_adopts_onboarding_career_without_changing_real_data(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    pin_catalog_digest(seed_neon_dev.DEV_SYNTHETIC_CATALOG, monkeypatch)
+    monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
+    monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
+    options = {"confirm_target": "dev", "as_of": "2030-01-15T12:00:00+00:00"}
+    career = DEV_CAREERS[1]
+    if state == "legacy":
+        _seed_legacy_neon_demo(monkeypatch)
+    elif state in {"v2", "deleted", "replaced"}:
+        call_command("seed_neon_dev", **options, verbosity=0)
+    if state in {"deleted", "replaced"}:
+        clan = Clan.objects.get(name=career)
+        clan.deleted_at = datetime.fromisoformat("2030-01-16T12:00:00+00:00")
+        clan.save(update_fields=["deleted_at"])
+    user = User.objects.create_user("onboarding-real@iteso.mx")
+    if state == "deleted":
+        # A pre-existing soft-deleted onboarding row must also be restored.
+        clan_id = clan.pk
+        profile = UserProfile.objects.create(
+            user=user, career=career, institutional_clan=clan
+        )
+        ClanMembership.objects.create(user=user, clan=clan)
+    else:
+        profile = assign_institutional_clan(user=user, career=career)
+        clan_id = profile.institutional_clan_id
+    if state == "onboarding_deleted":
+        Clan.all_objects.filter(pk=clan_id).update(
+            deleted_at=datetime.fromisoformat("2030-01-16T12:00:00+00:00")
+        )
+    clan = Clan.all_objects.get(pk=clan_id)
+    clan.description = "Descripción del equipo"
+    # Only adopted random IDs permit arbitrary metadata; deterministic fixture
+    # identities must still reject edits.
+    catalog = seed_neon_dev.load_dev_synthetic_catalog()
+    fixture_ids = {
+        stable_reference_id("institutional-clan", item["key"]) for item in catalog.clans
+    }
+    if clan.pk not in fixture_ids:
+        clan.save(update_fields=["description"])
+    clan.refresh_from_db()
+    clan.total_points += 19
+    clan.save(update_fields=["total_points"])
+    action = ActionMaster.objects.first()
+    if action is None:
+        with transaction.atomic():
+            load_catalog_data(replace(catalog, clans=()))
+        action = ActionMaster.objects.first()
+    real_log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key="real-onboarding-log",
+        points_awarded=19,
+        status=ActionLog.Status.APPROVED,
+    )
+    original = (
+        profile.pk,
+        profile.career,
+        profile.institutional_clan_id,
+        ClanMembership.objects.get(user=user, clan=clan).pk,
+        clan.description,
+    )
+    for _ in range(2):
+        call_command("seed_neon_dev", **options, verbosity=0)
+        profile.refresh_from_db()
+        real_log.refresh_from_db()
+        clan.refresh_from_db()
+        assert (
+            profile.pk,
+            profile.career,
+            profile.institutional_clan_id,
+            ClanMembership.objects.get(user=user, clan=clan).pk,
+            clan.description,
+        ) == original
+        assert real_log.institutional_clan_id == clan_id
+        assert clan.deleted_at is None
+        demo_points = sum(
+            ActionLog.objects.filter(
+                institutional_clan=clan,
+                user_id__in=[demo_id("user", str(i)) for i in range(1, 21)],
+                status=ActionLog.Status.APPROVED,
+            ).values_list("points_awarded", flat=True)
+        )
+        assert clan.total_points == 19 + demo_points
+        assert all(
+            p.institutional_clan_id == Clan.objects.get(name=p.career).pk
+            for p in UserProfile.objects.filter(
+                user_id__in=[demo_id("user", str(i)) for i in range(1, 21)]
+            )
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_seed_retires_empty_legacy_clans_and_accepts_manual_retirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from green_iteso.clans.selectors import list_institutional_careers
+
+    _seed_legacy_neon_demo(monkeypatch)
+    monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
+    monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
+    options = {"confirm_target": "dev", "as_of": "2030-01-15T12:00:00+00:00"}
+    call_command("seed_neon_dev", **options, verbosity=0)
+    assert set(list_institutional_careers()) == set(DEV_CAREERS)
+    legacy = Clan.all_objects.filter(
+        name__in=seed_neon_dev.LEGACY_INSTITUTIONAL_CLAN_NAMES
+    )
+    assert legacy.count() == 3
+    assert not legacy.filter(deleted_at__isnull=True).exists()
+    before = list(legacy.order_by("pk").values_list("pk", "deleted_at"))
+    call_command("seed_neon_dev", **options, verbosity=0)
+    assert list(legacy.order_by("pk").values_list("pk", "deleted_at")) == before
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "incompatibility", ["private", "privacy", "creator", "ambiguous", "fixture_edit"]
+)
+def test_seed_rejects_incompatible_career_adoption_atomically(
+    monkeypatch: pytest.MonkeyPatch, incompatibility: str
+) -> None:
+    pin_catalog_digest(seed_neon_dev.DEV_SYNTHETIC_CATALOG, monkeypatch)
+    monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
+    monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
+    catalog = seed_neon_dev.load_dev_synthetic_catalog()
+    item = catalog.clans[1]
+    owner = User.objects.create_user("career-owner@iteso.mx")
+    fields: dict[str, Any] = {
+        "name": item["name"],
+        "type": Clan.ClanType.INSTITUTIONAL,
+        "description": "Preserve me",
+        "total_points": 23,
+    }
+    if incompatibility == "private":
+        fields["type"] = Clan.ClanType.PRIVATE
+    elif incompatibility == "privacy":
+        fields["privacy"] = Clan.Privacy.PRIVATE_INVITE
+    elif incompatibility == "creator":
+        fields["created_by"] = owner
+    elif incompatibility == "fixture_edit":
+        fields["id"] = stable_reference_id("institutional-clan", item["key"])
+    elif incompatibility == "ambiguous":
+        fields["deleted_at"] = datetime.fromisoformat("2030-01-16T12:00:00+00:00")
+        Clan.all_objects.create(**fields)
+    Clan.all_objects.create(**fields)
+    before = list(Clan.all_objects.order_by("pk").values())
+    with pytest.raises(CommandError):
+        call_command(
+            "seed_neon_dev",
+            confirm_target="dev",
+            as_of="2030-01-15T12:00:00+00:00",
+            verbosity=0,
+        )
+    assert list(Clan.all_objects.order_by("pk").values()) == before
+    assert User.objects.count() == 1
+    assert (
+        UserProfile.objects.count()
+        == ActionLog.objects.count()
+        == ActionMaster.objects.count()
+        == 0
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_seed_allows_manual_retirement_of_referenced_legacy_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_legacy_neon_demo(monkeypatch)
+    user = User.objects.create_user("legacy-real@iteso.mx")
+    clan = Clan.objects.get(pk=demo_id("clan", "institutional-01"))
+    action = ActionMaster.objects.first()
+    log = ActionLog.objects.create(
+        user=user,
+        action=action,
+        institutional_clan=clan,
+        idempotency_key="retained-real-history",
+        status=ActionLog.Status.APPROVED,
+        points_awarded=13,
+    )
+    clan.total_points += 13
+    clan.save(update_fields=["total_points"])
+    monkeypatch.setattr(seed_neon_dev, "ensure_neon_dev_target", lambda: None)
+    monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
+    options = {"confirm_target": "dev", "as_of": "2030-01-15T12:00:00+00:00"}
+    call_command("seed_neon_dev", **options, verbosity=0)
+    clan.refresh_from_db()
+    assert clan.deleted_at is None
+    assert clan.total_points == 13
+    retired_at = datetime.fromisoformat("2030-01-16T12:00:00+00:00")
+    clan.deleted_at = retired_at
+    clan.save(update_fields=["deleted_at"])
+    call_command("seed_neon_dev", **options, verbosity=0)
+    clan.refresh_from_db()
+    log.refresh_from_db()
+    assert (clan.deleted_at, clan.total_points, log.institutional_clan_id) == (
+        retired_at,
+        13,
+        clan.pk,
+    )

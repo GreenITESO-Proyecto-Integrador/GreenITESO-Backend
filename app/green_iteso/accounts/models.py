@@ -76,6 +76,18 @@ class User(AbstractUser):
             or self.ANONYMOUS_DISPLAY_NAME
         )
 
+    def name_shown_to_others(self) -> str:
+        """``public_display_name``, without the real name for PRIVATE profiles.
+
+        The one rule for naming a person to someone else (clan rosters and
+        clan notifications): a PRIVATE profile shows only its nickname, the
+        same way the ranking hides it, and falls back to the anonymous label.
+        """
+        profile = getattr(self, "profile", None)
+        if profile is not None and profile.visibility == UserProfile.Visibility.PRIVATE:
+            return self.nickname.strip() or self.ANONYMOUS_DISPLAY_NAME
+        return self.public_display_name
+
     class Meta:
         db_table = "accounts_user"
         constraints = [

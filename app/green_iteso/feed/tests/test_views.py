@@ -253,6 +253,29 @@ class PostAPITests(APITestCase):
         announcement.refresh_from_db()
         self.assertEqual(announcement.content, "Aviso oficial.")
 
+    def test_demoted_admin_cannot_retype_official_announcement(self) -> None:
+        """Changing the type must not bypass an announcement's edit restriction."""
+        self.author.role = User.Role.ADMIN
+        self.author.save(update_fields=["role"])
+        announcement = Post.objects.create(
+            author=self.author,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Aviso oficial.",
+        )
+        self.author.role = User.Role.STUDENT
+        self.author.save(update_fields=["role"])
+        self.client.force_authenticate(user=self.author)
+        for post_type in (PostType.SHARED_EVIDENCE, PostType.COMMUNITY_MILESTONE):
+            with self.subTest(post_type=post_type):
+                response = self.client.patch(
+                    f"/api/v1/feed/{announcement.pk}/",
+                    data={"post_type": post_type, "content": "Editado."},
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+                announcement.refresh_from_db()
+                self.assertEqual(announcement.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
+                self.assertEqual(announcement.content, "Aviso oficial.")
+
     def test_delete_post_as_staff_forbidden(self) -> None:
         """Ensure users with only is_staff=True (not ADMIN role) cannot delete other users' posts."""
         staff_user = User.objects.create_user(

@@ -120,11 +120,14 @@ class PostSerializer(serializers.ModelSerializer):
         return value.strip()
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        post_type = attrs.get("post_type") or getattr(self.instance, "post_type", None)
+        is_official = PostType.OFFICIAL_ANNOUNCEMENT in (
+            attrs.get("post_type"),
+            getattr(self.instance, "post_type", None),
+        )
         request = self.context.get("request")
         is_admin = request is not None and IsAdmin().has_permission(request, None)
 
-        if post_type == PostType.OFFICIAL_ANNOUNCEMENT and not is_admin:
+        if is_official and not is_admin:
             raise PermissionDenied(
                 "Solo los administradores pueden crear o editar anuncios oficiales."
             )

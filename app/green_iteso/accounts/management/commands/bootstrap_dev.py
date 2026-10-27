@@ -890,7 +890,7 @@ def create_log_seed_context(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    additional_created, additional_scenarios = create_additional_campaigns(
+    additional_campaigns = create_additional_campaigns(
         users, actions, private_clans, as_of
     )
     return LogSeedContext(
@@ -902,9 +902,9 @@ def create_log_seed_context(
         metadata=DemoSeedMetadata(
             institutional_clans=institutional_clans,
             user_created=user_created,
-            campaigns_created=int(campaign_created) + additional_created,
-            campaign_count=1 + additional_scenarios,
-            mission_count=len(missions) + additional_scenarios,
+            campaigns_created=int(campaign_created) + additional_campaigns[0],
+            campaign_count=1 + additional_campaigns[1],
+            mission_count=len(missions) + additional_campaigns[1],
             shared_dev=shared_dev,
         ),
     )

@@ -11,13 +11,14 @@ deployed setting is on.
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
+from django.utils import timezone
 from google.auth import default
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.cloud import storage
@@ -200,7 +201,9 @@ def signed_evidence_url(object_key: str) -> str:
     return signed_read_url(_gcs_bucket().blob(key))
 
 
-def signed_read_url(blob: Any, expiration: timedelta = SIGNED_URL_TTL) -> str:
+def signed_read_url(
+    blob: Any, expiration: datetime | timedelta = SIGNED_URL_TTL
+) -> str:
     """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
 
     Shared with ``core.image_storage``, which serves avatars from the same bucket.
@@ -212,6 +215,8 @@ def signed_read_url(blob: Any, expiration: timedelta = SIGNED_URL_TTL) -> str:
     except Exception:
         return ""
     if not email or not token:
+        return ""
+    if isinstance(expiration, datetime) and expiration <= timezone.now():
         return ""
     return str(
         blob.generate_signed_url(

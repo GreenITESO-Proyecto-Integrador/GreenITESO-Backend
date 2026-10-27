@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from typing import Any
 
 from django.conf import settings
@@ -52,6 +52,35 @@ def detect_image_mime(file_obj: Any) -> str | None:
     if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+def _feed_image_url(request: Request, key: str) -> str:
+    """Create a short first-party capability URL for one uploaded image."""
+    token = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).sign_object(
+        {"key": key, "issued_at": int(timezone.now().timestamp())}
+    )
+    return request.build_absolute_uri(f"/api/uploads/{key}/?token={token}")
+
+
+def _verified_feed_image_timestamp(key: str, token: str) -> int | None:
+    """Return the signed upload time only when this capability is valid."""
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}\.(?:jpg|png|webp)", key):
+        return None
+
+    try:
+        payload = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).unsign_object(
+            token, max_age=FEED_IMAGE_URL_TTL_SECONDS
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("key") != key
+        or not isinstance(payload.get("issued_at"), int)
+    ):
+        return None
+    return payload["issued_at"]
 
 
 class IsAuthorOrReadOnly(permissions.BasePermission):
@@ -143,11 +172,9 @@ class ImageUploadView(APIView):
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
             key = blob_name.rsplit("/", 1)[1]
-            token = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).sign(key)
-            signed_app_url = request.build_absolute_uri(
-                f"/api/uploads/{key}/?token={token}"
+            return Response(
+                {"url": _feed_image_url(request, key)}, status=status.HTTP_200_OK
             )
-            return Response({"url": signed_app_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
@@ -173,19 +200,10 @@ class FeedImageView(APIView):
         self, request: Request, key: str, *_args: Any, **_kwargs: Any
     ) -> HttpResponseRedirect | Response:
         """Validate the time-limited capability before signing a private object."""
-        if not re.fullmatch(r"[0-9a-fA-F-]{36}\.(?:jpg|png|webp)", key):
-            return Response(status=status.HTTP_404_NOT_FOUND)
-
-        token = request.query_params.get("token", "")
-        try:
-            signed_key, signed_at = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).unsign(
-                token,
-                max_age=FEED_IMAGE_URL_TTL_SECONDS,
-                return_timestamp=True,
-            )
-        except (BadSignature, SignatureExpired):
-            return Response(status=status.HTTP_404_NOT_FOUND)
-        if signed_key != key:
+        issued_at = _verified_feed_image_timestamp(
+            key, request.query_params.get("token", "")
+        )
+        if issued_at is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
@@ -196,14 +214,13 @@ class FeedImageView(APIView):
             )
 
         blob = storage.Client().bucket(bucket_name).blob(f"uploads/{key}")
-        remaining_ttl = timedelta(seconds=FEED_IMAGE_URL_TTL_SECONDS) - (
-            timezone.now() - signed_at
+        absolute_expiry = datetime.fromtimestamp(
+            issued_at + FEED_IMAGE_URL_TTL_SECONDS, tz=datetime_timezone.utc
         )
-        if remaining_ttl <= timedelta(0):
+        expiration = min(timezone.now() + SIGNED_URL_TTL, absolute_expiry)
+        if expiration <= timezone.now():
             return Response(status=status.HTTP_404_NOT_FOUND)
-        signed_url = signed_read_url(
-            blob, expiration=min(SIGNED_URL_TTL, remaining_ttl)
-        )
+        signed_url = signed_read_url(blob, expiration=expiration)
         if not signed_url:
             return Response(status=status.HTTP_404_NOT_FOUND)
 

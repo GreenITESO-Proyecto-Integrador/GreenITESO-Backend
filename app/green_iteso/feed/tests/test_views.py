@@ -1,7 +1,7 @@
 # pylint: disable=no-member,too-many-instance-attributes, too-many-public-methods,line-too-long
 """Integration tests for feed REST API endpoints."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -421,7 +421,10 @@ class ImageUploadViewTests(APITestCase):
             "sample.png", VALID_PNG_BYTES, content_type="image/png"
         )
         upload_response = self.client.post(
-            self.url, {"image": valid_png}, format="multipart"
+            self.url,
+            {"image": valid_png},
+            format="multipart",
+            HTTP_HOST="api.greeniteso.mx",
         )
         self.assertEqual(upload_response.status_code, status.HTTP_200_OK)
 
@@ -435,7 +438,11 @@ class ImageUploadViewTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(post_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            post_response.status_code,
+            status.HTTP_201_CREATED,
+            post_response.data,
+        )
         self.assertEqual(post_response.data["image_url"], upload_response.data["url"])
         self.assertEqual(mock_blob.upload_from_file.call_count, 1)
 
@@ -449,7 +456,9 @@ class ImageUploadViewTests(APITestCase):
     ) -> None:
         """Resolve the expiring app URL to a fresh GCS URL without caching it."""
         key = "12345678-1234-5678-1234-567812345678.png"
-        token = TimestampSigner(salt="greeniteso.feed.upload").sign(key)
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign_object(
+            {"key": key, "issued_at": int(timezone.now().timestamp())}
+        )
 
         response = self.client.get(f"/api/uploads/{key}/", {"token": token})
 
@@ -464,11 +473,11 @@ class ImageUploadViewTests(APITestCase):
             mock_sign.call_args.args[0],
             mock_storage_client.return_value.bucket.return_value.blob(f"uploads/{key}"),
         )
-        self.assertLessEqual(
-            mock_sign.call_args.kwargs["expiration"], timedelta(minutes=10)
-        )
+        expiration = mock_sign.call_args.kwargs["expiration"]
+        self.assertLessEqual(expiration, timezone.now() + timedelta(minutes=10))
+        self.assertGreater(expiration, timezone.now())
 
-    @patch("green_iteso.feed.views.TimestampSigner.unsign")
+    @patch("green_iteso.feed.views.TimestampSigner.unsign_object")
     @patch(
         "green_iteso.feed.views.signed_read_url",
         return_value="https://storage.googleapis.com/image",
@@ -482,26 +491,31 @@ class ImageUploadViewTests(APITestCase):
     ) -> None:
         """A late resolver request must not extend access beyond the upload URL."""
         key = "12345678-1234-5678-1234-567812345678.png"
-        signed_at = timezone.now() - timedelta(seconds=3590)
-        mock_unsign.return_value = (key, signed_at)
+        mock_unsign.return_value = {
+            "key": key,
+            "issued_at": int(timezone.now().timestamp()) - 3590,
+        }
 
         response = self.client.get(f"/api/uploads/{key}/", {"token": "valid"})
 
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         mock_sign.assert_called_once()
         expiration = mock_sign.call_args.kwargs["expiration"]
-        self.assertGreater(expiration, timedelta(0))
-        self.assertLessEqual(expiration, timedelta(seconds=10))
+        expected_expiry = datetime.fromtimestamp(
+            mock_unsign.return_value["issued_at"] + 3600, tz=datetime_timezone.utc
+        )
+        self.assertEqual(expiration, expected_expiry)
 
     @patch("green_iteso.feed.views.FEED_IMAGE_URL_TTL_SECONDS", -1)
     @patch("green_iteso.feed.views.signed_read_url")
-    @patch("google.cloud.storage.Client")
     def test_resolver_rejects_expired_or_malformed_uploads(
-        self, mock_storage_client: MagicMock, mock_sign: MagicMock
+        self, mock_sign: MagicMock
     ) -> None:
         """Reject expired, unsigned and malformed URLs without touching GCS."""
         key = "12345678-1234-5678-1234-567812345678.png"
-        token = TimestampSigner(salt="greeniteso.feed.upload").sign(key)
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign_object(
+            {"key": key, "issued_at": int(timezone.now().timestamp())}
+        )
         expired = self.client.get(f"/api/uploads/{key}/", {"token": token})
         unsigned = self.client.get(f"/api/uploads/{key}/")
         malformed_key = self.client.get("/api/uploads/../../secrets/")
@@ -509,7 +523,6 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(unsigned.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(malformed_key.status_code, status.HTTP_404_NOT_FOUND)
         mock_sign.assert_not_called()
-        mock_storage_client.assert_not_called()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -301,3 +302,35 @@ def test_signed_read_url_returns_empty_without_signing_credentials(
     )
 
     assert signed_read_url(ExistingBlob()) == ""
+
+
+def test_signed_read_url_respects_absolute_expiry_after_slow_preparation(
+    monkeypatch: Any,
+) -> None:
+    """Do not extend an absolute expiry when credential lookup is slow."""
+    now = [datetime.now(timezone.utc)]
+    deadline = now[0] + timedelta(seconds=5)
+    signed: dict[str, Any] = {}
+
+    class ExistingBlob:
+        def exists(self) -> bool:
+            return True
+
+        def generate_signed_url(self, **kwargs: Any) -> str:
+            signed.update(kwargs)
+            return "https://storage.example/expired"
+
+    def slow_credentials() -> tuple[str, str]:
+        now[0] = deadline + timedelta(seconds=1)
+        return "backend@example.iam.gserviceaccount.com", "access-token"
+
+    monkeypatch.setattr(
+        "green_iteso.actions.evidence._signing_credentials", slow_credentials
+    )
+    monkeypatch.setattr(
+        "green_iteso.actions.evidence.timezone.now",
+        lambda: now[0],
+    )
+
+    assert signed_read_url(ExistingBlob(), expiration=deadline) == ""
+    assert signed == {}

@@ -139,6 +139,8 @@ def nickname_change_cost(profile: UserProfile) -> int:
 def change_nickname(*, user: User, nickname: str) -> NicknameChange:
     """Set ``user``'s nickname; the first change is free, later ones cost points (#175).
 
+    Locks the user before the profile, matching onboarding's lock order, so
+    overlapping onboarding and nickname changes cannot deadlock.
     Locks the profile row so two concurrent changes cannot both pass the
     balance check or both count as "the first". Points come out of
     ``available_points`` only: ``total_points`` (ranking) is untouched, the
@@ -149,6 +151,7 @@ def change_nickname(*, user: User, nickname: str) -> NicknameChange:
             nothing is charged.
         InsufficientPointsForNicknameError: If the balance is below the cost.
     """
+    User.objects.select_for_update().get(pk=user.pk)
     profile = UserProfile.objects.select_for_update().get(pk=ensure_profile(user).pk)
     user.refresh_from_db(fields=["nickname"])
     if nickname == user.nickname:

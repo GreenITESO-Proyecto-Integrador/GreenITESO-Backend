@@ -8,8 +8,10 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone, translation
 from django.utils.timesince import timesince
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
+from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge
 
@@ -117,11 +119,19 @@ class PostSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Content cannot be empty.")
         return value.strip()
 
-    def validate_post_type(self, value: str) -> str:
-        """Ensure post_type belongs to valid choices."""
-        if value not in PostType.values:
-            raise serializers.ValidationError(f"Invalid post type: {value}")
-        return value
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        is_official = PostType.OFFICIAL_ANNOUNCEMENT in (
+            attrs.get("post_type"),
+            getattr(self.instance, "post_type", None),
+        )
+        request = self.context.get("request")
+        is_admin = request is not None and IsAdmin().has_permission(request, None)
+
+        if is_official and not is_admin:
+            raise PermissionDenied(
+                "Solo los administradores pueden crear o editar anuncios oficiales."
+            )
+        return attrs
 
     def validate_image_url(self, value: str) -> str:
         """Ensure valid URL formatting if provided."""

@@ -151,7 +151,9 @@ def change_nickname(*, user: User, nickname: str) -> NicknameChange:
             nothing is charged.
         InsufficientPointsForNicknameError: If the balance is below the cost.
     """
-    User.objects.select_for_update().get(pk=user.pk)
+    # A NO KEY UPDATE lock preserves the user-before-profile ordering shared
+    # with onboarding without blocking notification FK checks (KEY SHARE).
+    User.objects.select_for_update(no_key=True).get(pk=user.pk)
     profile = UserProfile.objects.select_for_update().get(pk=ensure_profile(user).pk)
     user.refresh_from_db(fields=["nickname"])
     if nickname == user.nickname:

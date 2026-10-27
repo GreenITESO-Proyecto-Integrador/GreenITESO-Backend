@@ -16,7 +16,6 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import (
     TokenBlacklistView as SimpleJWTTokenBlacklistView,
@@ -25,6 +24,12 @@ from rest_framework_simplejwt.views import TokenRefreshView as SimpleJWTTokenRef
 
 from green_iteso.core.image_storage import InvalidImageError, image_response
 from green_iteso.core.permissions import IsAdmin
+from green_iteso.core.throttling import (
+    AuthIPCeilingThrottle,
+    FirstRejectionThrottleMixin,
+    LoginIdentityThrottle,
+    RefreshTokenIdentityThrottle,
+)
 
 from .avatars import PROFILE_AVATAR_PREFIX
 from .exceptions import RequestValidationError
@@ -127,12 +132,12 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return Response(UserRoleAuditSerializer(audits, many=True).data)
 
 
-class LoginView(APIView):
+class LoginView(FirstRejectionThrottleMixin, APIView):
     """Exchange a Microsoft sign-in for a GreenITESO JWT pair."""
 
     authentication_classes: list[type] = []
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [LoginIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_login"
 
     @extend_schema(
@@ -194,7 +199,7 @@ def _flatten_validation_detail(detail: object) -> str:
     return str(detail)
 
 
-class TokenRefreshView(SimpleJWTTokenRefreshView):
+class TokenRefreshView(FirstRejectionThrottleMixin, SimpleJWTTokenRefreshView):
     """Exchange a refresh token for a new access token (T2-11).
 
     ``ROTATE_REFRESH_TOKENS``/``BLACKLIST_AFTER_ROTATION`` make this also
@@ -202,11 +207,11 @@ class TokenRefreshView(SimpleJWTTokenRefreshView):
     refresh token is single-use.
     """
 
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [RefreshTokenIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_refresh"
 
 
-class LogoutView(SimpleJWTTokenBlacklistView):
+class LogoutView(FirstRejectionThrottleMixin, SimpleJWTTokenBlacklistView):
     """Blacklist a refresh token so it can no longer be redeemed (T2-11).
 
     Subclasses simplejwt's stock ``TokenBlacklistView`` (same relationship
@@ -218,7 +223,7 @@ class LogoutView(SimpleJWTTokenBlacklistView):
     to 403).
     """
 
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [RefreshTokenIdentityThrottle, AuthIPCeilingThrottle]
     throttle_scope = "auth_logout"
 
 

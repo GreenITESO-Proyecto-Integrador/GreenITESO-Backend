@@ -200,7 +200,7 @@ def signed_evidence_url(object_key: str) -> str:
     return signed_read_url(_gcs_bucket().blob(key))
 
 
-def signed_read_url(blob: Any) -> str:
+def signed_read_url(blob: Any, expiration: timedelta = SIGNED_URL_TTL) -> str:
     """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
 
     Shared with ``core.image_storage``, which serves avatars from the same bucket.
@@ -216,7 +216,7 @@ def signed_read_url(blob: Any) -> str:
     return str(
         blob.generate_signed_url(
             version="v4",
-            expiration=SIGNED_URL_TTL,
+            expiration=expiration,
             method="GET",
             service_account_email=email,
             access_token=token,

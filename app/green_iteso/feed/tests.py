@@ -380,12 +380,17 @@ class ImageUploadViewTests(APITestCase):
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @patch("green_iteso.actions.evidence._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock
+        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
     ) -> None:
         """Ensure a successful upload returns a 200 OK and the signed URL."""
         self.client.force_authenticate(user=self.user)
+        mock_signing_credentials.return_value = (
+            "runtime@example.iam.gserviceaccount.com",
+            "access-token",
+        )
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
         mock_blob = mock_bucket.blob.return_value
@@ -404,7 +409,29 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("url", response.data)
         self.assertIn("X-Goog-Signature", response.data["url"])
         mock_blob.upload_from_file.assert_called_once()
-        mock_blob.generate_signed_url.assert_called_once()
+        mock_blob.generate_signed_url.assert_called_once_with(
+            version="v4",
+            expiration=timedelta(hours=1),
+            method="GET",
+            service_account_email="runtime@example.iam.gserviceaccount.com",
+            access_token="access-token",
+        )
+
+    @patch("green_iteso.actions.evidence._signing_credentials", return_value=("", ""))
+    @patch("google.cloud.storage.Client")
+    def test_upload_signing_credentials_unavailable_returns_500(
+        self, mock_storage_client: MagicMock, _mock_signing_credentials: MagicMock
+    ) -> None:
+        """Do not return an unusable URL when ADC cannot provide signing credentials."""
+        self.client.force_authenticate(user=self.user)
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        mock_storage_client.return_value.bucket.return_value.blob.return_value.generate_signed_url.assert_not_called()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

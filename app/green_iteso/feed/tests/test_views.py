@@ -379,6 +379,7 @@ class ImageUploadViewTests(APITestCase):
         )
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        mock_blob.delete.assert_not_called()
 
     @patch("green_iteso.actions.evidence._signing_credentials")
     @patch("google.cloud.storage.Client")
@@ -416,6 +417,7 @@ class ImageUploadViewTests(APITestCase):
             service_account_email="runtime@example.iam.gserviceaccount.com",
             access_token="access-token",
         )
+        mock_blob.delete.assert_not_called()
 
     @patch("green_iteso.actions.evidence._signing_credentials", return_value=("", ""))
     @patch("google.cloud.storage.Client")
@@ -432,6 +434,79 @@ class ImageUploadViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         mock_storage_client.return_value.bucket.return_value.blob.return_value.generate_signed_url.assert_not_called()
+
+    @patch(
+        "green_iteso.feed.views.signed_read_url",
+        side_effect=RuntimeError("signing failed"),
+    )
+    @patch("google.cloud.storage.Client")
+    def test_upload_signing_exception_deletes_uploaded_blob(
+        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
+    ) -> None:
+        """Remove the stored object when signing raises, preserving the API error."""
+        self.client.force_authenticate(user=self.user)
+        mock_blob = (
+            mock_storage_client.return_value.bucket.return_value.blob.return_value
+        )
+
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(
+            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
+        )
+        mock_blob.delete.assert_called_once_with()
+
+    @patch("green_iteso.feed.views.signed_read_url", return_value="")
+    @patch("google.cloud.storage.Client")
+    def test_upload_empty_signed_url_deletes_uploaded_blob(
+        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
+    ) -> None:
+        """Remove the stored object when signing returns no usable URL."""
+        self.client.force_authenticate(user=self.user)
+        mock_blob = (
+            mock_storage_client.return_value.bucket.return_value.blob.return_value
+        )
+
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(
+            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
+        )
+        mock_blob.delete.assert_called_once_with()
+
+    @patch(
+        "green_iteso.feed.views.signed_read_url",
+        side_effect=RuntimeError("signing failed"),
+    )
+    @patch("google.cloud.storage.Client")
+    def test_upload_cleanup_failure_preserves_signing_error_response(
+        self, mock_storage_client: MagicMock, _mock_signed_read_url: MagicMock
+    ) -> None:
+        """A failed best-effort delete must not replace the signing failure response."""
+        self.client.force_authenticate(user=self.user)
+        mock_blob = (
+            mock_storage_client.return_value.bucket.return_value.blob.return_value
+        )
+        mock_blob.delete.side_effect = GoogleCloudError("delete failed")
+
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(
+            response.data["error"], "Ocurrió un error inesperado al procesar la imagen."
+        )
+        mock_blob.delete.assert_called_once_with()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

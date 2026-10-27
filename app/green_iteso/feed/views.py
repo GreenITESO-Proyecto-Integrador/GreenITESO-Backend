@@ -136,9 +136,16 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            signed_url = signed_read_url(blob, expiration=timedelta(hours=1))
-            if not signed_url:
-                raise RuntimeError("Could not sign the uploaded image URL.")
+            try:
+                signed_url = signed_read_url(blob, expiration=timedelta(hours=1))
+                if not signed_url:
+                    raise RuntimeError("Could not sign the uploaded image URL.")
+            except Exception:  # pylint: disable=broad-exception-caught
+                try:
+                    blob.delete()
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.exception("Could not remove image after signing failed.")
+                raise
             return Response({"url": signed_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")

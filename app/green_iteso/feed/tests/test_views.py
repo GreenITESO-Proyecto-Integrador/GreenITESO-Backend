@@ -234,6 +234,25 @@ class PostAPITests(APITestCase):
         response = self.client.post(self.base_url, data=payload)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
+    def test_demoted_admin_cannot_edit_official_announcement(self) -> None:
+        """Ensure a former admin cannot edit the content of their announcement."""
+        self.author.role = User.Role.ADMIN
+        self.author.save(update_fields=["role"])
+        announcement = Post.objects.create(
+            author=self.author,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Aviso oficial.",
+        )
+        self.author.role = User.Role.STUDENT
+        self.author.save(update_fields=["role"])
+        self.client.force_authenticate(user=self.author)
+        response = self.client.patch(
+            f"/api/v1/feed/{announcement.pk}/", data={"content": "Editado."}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        announcement.refresh_from_db()
+        self.assertEqual(announcement.content, "Aviso oficial.")
+
     def test_delete_post_as_staff_forbidden(self) -> None:
         """Ensure users with only is_staff=True (not ADMIN role) cannot delete other users' posts."""
         staff_user = User.objects.create_user(

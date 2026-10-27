@@ -23,6 +23,7 @@ from .selectors import (
     get_pending_join_requests,
     list_active_clan_invitations,
     list_active_clans,
+    list_institutional_careers,
 )
 from .serializers import (
     ClanAvatarUploadSerializer,
@@ -32,8 +33,10 @@ from .serializers import (
     ClanMembershipSerializer,
     ClanSerializer,
     InstitutionalAssignmentSerializer,
+    InstitutionalCareersSerializer,
     InstitutionalOnboardingSerializer,
     JoinRequestDecisionSerializer,
+    KickMemberSerializer,
     PendingMembershipRequestSerializer,
     RedeemInvitationSerializer,
     TransferLeadershipSerializer,
@@ -42,7 +45,7 @@ from .services import (
     DuplicateClanNameError,
     InvalidClanPrivacyError,
     accept_join_request,
-    assign_institutional_clan,
+    complete_onboarding,
     create_clan_invitation,
     create_private_clan,
     dissolve_clan,
@@ -54,6 +57,7 @@ from .services import (
     set_clan_avatar,
     update_clan,
 )
+from .services import kick_member as kick_member_service
 from .services import select_active_private_clan as select_active_private_clan_service
 from .services import transfer_leadership as transfer_leadership_service
 from .throttles import ClanInviteRedeemThrottle
@@ -72,7 +76,7 @@ ACCEPTED_MEMBERSHIPS = Prefetch(
     "memberships",
     queryset=ClanMembership.objects.filter(
         status=ClanMembership.Status.ACCEPTED
-    ).select_related("user"),
+    ).select_related("user__profile"),
 )
 """Roster prefetch used by ``retrieve``: a PENDING/REJECTED row never counts
 as a member, so both ``members`` and ``member_count`` on the detail
@@ -455,6 +459,40 @@ class ClanViewSet(
             raise _validation_error_from(exc, field="clan") from exc
         return Response(ClanMembershipSerializer(membership).data)
 
+    @extend_schema(
+        summary="Expulsar a un miembro del clan",
+        description="Permite únicamente al líder del clan expulsar a un miembro activo.",
+        tags=["Clans Administration"],
+        request=KickMemberSerializer,
+        responses={204: None, 400: None, 403: None, 404: None},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="kick",
+        permission_classes=[IsAuthenticated, IsClanLeader],
+    )
+    def kick_member(self, request: Request, **kwargs: object) -> Response:
+        """Expel a member from the clan as its leader (T2-41)."""
+        clan = self.get_object()
+        serializer = KickMemberSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_user_id = serializer.validated_data["user_id"]
+
+        try:
+            target_user = User.objects.get(pk=target_user_id)
+        except User.DoesNotExist as exc:
+            raise ValidationError({"user_id": "User not found."}) from exc
+
+        try:
+            kick_member_service(clan=clan, actor=request.user, target_user=target_user)
+        except Clan.DoesNotExist as exc:
+            raise NotFound() from exc
+        except ValueError as exc:
+            raise _validation_error_from(exc, field="user_id") from exc
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class InstitutionalClanAssignmentView(APIView):
     """Read or declare the caller's institutional clan assignment (T2-30)."""
@@ -464,17 +502,47 @@ class InstitutionalClanAssignmentView(APIView):
         profile = ensure_profile(request.user)
         return Response(InstitutionalAssignmentSerializer(profile).data)
 
+    @extend_schema(
+        request=InstitutionalOnboardingSerializer,
+        responses=InstitutionalAssignmentSerializer,
+        description=(
+            "Declare the career and join its institutional clan. Optional "
+            "nickname and visibility are saved in the same transaction; an "
+            "existing nickname is never replaced, so read it from the response."
+        ),
+    )
     def post(self, request: Request) -> Response:
-        """Declare a career and auto-assign its institutional clan."""
+        """Declare a career and auto-assign its institutional clan.
+
+        Also accepts the optional first-login ``nickname`` and ``visibility``
+        so the onboarding modal completes in one transaction (#163).
+        """
         payload = InstitutionalOnboardingSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        data = payload.validated_data
         try:
-            profile = assign_institutional_clan(
-                user=request.user, career=payload.validated_data["career"]
+            profile = complete_onboarding(
+                user=request.user,
+                career=data["career"],
+                nickname=data.get("nickname"),
+                visibility=data.get("visibility"),
             )
         except ValueError as exc:
             raise _validation_error_from(exc, field="career") from exc
         return Response(
             InstitutionalAssignmentSerializer(profile).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class InstitutionalCareersView(APIView):
+    """List the careers offered in the onboarding picker (#163)."""
+
+    @extend_schema(responses=InstitutionalCareersSerializer)
+    def get(self, _request: Request) -> Response:
+        """Return the names of the alive institutional clans, sorted."""
+        return Response(
+            InstitutionalCareersSerializer(
+                {"careers": list_institutional_careers()}
+            ).data
         )

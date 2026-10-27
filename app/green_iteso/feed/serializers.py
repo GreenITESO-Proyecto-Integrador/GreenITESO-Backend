@@ -1,5 +1,4 @@
 """Serializers for the feed module."""
-# pylint: disable=no-member,missing-class-docstring,too-few-public-methods
 
 from __future__ import annotations
 
@@ -11,6 +10,7 @@ from django.utils.timesince import timesince
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
+from green_iteso.accounts.avatars import user_avatar_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge
@@ -21,10 +21,16 @@ User = get_user_model()
 class PostAuthorSerializer(serializers.ModelSerializer):
     """Minimal nested author details for feed cards."""
 
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name"]
-        read_only_fields = ["id", "email", "first_name", "last_name"]
+        fields = ["id", "first_name", "last_name", "avatar_url"]
+        read_only_fields = ["id", "email", "first_name", "last_name", "avatar_url"]
+
+    def get_avatar_url(self, user: User) -> str:
+        """The author's profile photo URL (#170), or "" when there is none."""
+        return user_avatar_url(user, self.context.get("request"))
 
 
 class PostSerializer(serializers.ModelSerializer):

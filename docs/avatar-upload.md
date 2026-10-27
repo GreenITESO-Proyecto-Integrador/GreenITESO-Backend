@@ -1,98 +1,79 @@
-# Avatar de perfil y Cloud Storage (T2-21)
+# Fotos de perfil y avatares de clan
 
-`PATCH /api/v1/profile/me/` permite editar `bio`, `preferences`,
-`visibility` y `avatar_url`. El binario del avatar nunca pasa por este
-backend ni se persiste en la base de datos — solo su URL.
+Las fotos de usuario (#170, T2-21) y los avatares de clan (#164) usan el mismo
+almacenamiento privado, `core.image_storage`. El cliente sube el archivo, pero
+nunca elige la llave del objeto. La llave siempre se genera en el backend como
+`<prefijo>/<id del dueño>/<uuid>.<ext>`.
 
-## Decisión del equipo (2026-09-26)
+## Almacenamiento
 
-- El almacenamiento acordado es **Google Cloud Storage**. La cuenta/bucket
-  **todavía no están provisionados** (P1 en `CLAUDE.md`); esta historia
-  implementa la parte que no depende de esa infraestructura.
-- La URL del objeto se persiste en Neon (Postgres), en una columna nueva:
-  `UserProfile.avatar_url` (`accounts_user_profile.avatar_url`).
+- **Desarrollo local** (`DJANGO_DEPLOYED=false`): los archivos van a
+  `MEDIA_ROOT`. Un `GCS_EVIDENCE_BUCKET` en el entorno se ignora, así que el
+  desarrollo nunca escribe en la nube por accidente.
+- **Servicio desplegado** con `GCS_EVIDENCE_BUCKET`: los archivos van a ese
+  bucket privado compartido (`greeniteso-<ambiente>-objects`, el mismo de la
+  evidencia de acciones), bajo su propio prefijo.
+- Validación: firma del archivo (JPG, PNG o WEBP), que el `Content-Type`
+  declarado coincida y un máximo de **5 MB**.
+- Al reemplazar o quitar una imagen, el archivo anterior se borra **después del
+  commit**, así que un request revertido nunca pierde la imagen actual.
 
-### El bucket, según `GreenITESO-Infra` (aún no aplicado)
+## Foto de perfil (#170)
 
-El repo de infraestructura (`GreenITESO-Proyecto-Integrador/GreenITESO-Infra`,
-`modules/storage/`) ya define el bucket que usaríamos, aunque el proyecto de
-GCP en sí no existe todavía (`project_id` no tiene default: "No project
-exists yet"). De ahí:
+| Endpoint | Quién | Respuesta |
+|---|---|---|
+| `POST /api/v1/profile/me/avatar/` (multipart, campo `avatar`) | el propio usuario | `200` con el perfil ecológico |
+| `DELETE /api/v1/profile/me/avatar/` | el propio usuario | `200` con el perfil; sin foto |
+| `GET /api/v1/avatars/<user_id>/` | cualquiera, sin token | `302` a una URL firmada (desplegado) o la imagen (local); `404` si no hay foto subida |
+| `PATCH /api/v1/profile/me/` con `avatar_url` | el propio usuario | `200`; guarda un enlace https externo |
 
-- **Nombre**: `${var.app_name}-${var.environment}-objects`, con
-  `app_name = "greeniteso"` por default → `greeniteso-dev-objects`,
-  `greeniteso-staging-objects`, `greeniteso-production-objects`.
-- **Es un solo bucket compartido por ambiente**, no uno dedicado a avatares:
-  el módulo lo describe como almacenamiento privado de objetos en general
-  ("photo evidence and other objects"). Los avatares irían ahí bajo su
-  propio prefijo (p. ej. `avatars/<user_id>.<ext>`), no en un bucket aparte.
-- **Es privado** (`uniform_bucket_level_access = true`, sin override de
-  lectura pública en ningún lado del módulo) — confirma que una URL directa
-  tipo `https://storage.googleapis.com/<bucket>/<objeto>` no serviría sin
-  más; el flujo real necesita URLs firmadas (ver más abajo), tanto para
-  subir como probablemente para servir el avatar de vuelta.
-- El nombre final no cambia el diseño de esta historia: `avatar_url` se
-  guarda tal cual venga del cliente hoy, y una vez que exista el bucket real
-  el backend simplemente empezará a emitir URLs firmadas contra
-  `greeniteso-<ambiente>-objects` en el flujo descrito abajo.
+- La llave es `avatars/<user_id>/<uuid>.<ext>` y se guarda en
+  `UserProfile.avatar_object_key`. El cliente nunca la ve.
+- **Solo hay una fuente a la vez.** Subir un archivo borra el enlace pegado
+  (`avatar_url`), y pegar un enlace borra el archivo subido.
+- `POST /profile/me/avatar/` está limitado a 10 por minuto por usuario
+  (`ScopedRateThrottle`, scope `profile_avatar`).
 
-## Flujo actual (sin bucket todavía)
+### `avatar_url` en las respuestas
 
-1. El cliente sube el archivo a donde sea que hoy resuelva ese problema
-   (fuera del alcance de este backend mientras el bucket no exista).
-2. El cliente llama `PATCH /api/v1/profile/me/` con `{"avatar_url": "..."}`.
-3. El backend valida el string (ver más abajo) y lo guarda tal cual.
+`avatar_url` es lo que el cliente pone en un `<img>`. Con una foto subida es la
+URL absoluta de `GET /api/v1/avatars/<user_id>/?v=<versión>`; con un enlace
+pegado es ese enlace; sin foto es `""`.
 
-## Qué se valida hoy, y qué no
+- La URL de `/avatars/` es **estable**: no expira, así que sirve guardada en el
+  cliente. Cada vez que se pide, el backend redirige a una URL firmada de
+  lectura que dura 10 minutos. El parámetro `v` cambia con cada subida, así que
+  una foto nueva nunca queda oculta por una imagen en caché.
+- No pide token porque un `<img>` no puede mandar el header `Authorization`, y
+  la foto se muestra dondequiera que aparece el usuario.
 
-`accounts.serializers._validate_avatar_url` rechaza:
+`avatar_url` aparece en:
 
-- Cualquier esquema que no sea `https`.
-- Cualquier extensión de archivo distinta de `.jpg`, `.jpeg`, `.png`,
-  `.webp` (case-insensitive, ignorando query string).
+- `GET/PATCH /api/v1/profile/me/`
+- el usuario de `POST /api/v1/auth/login/` y `GET /api/v1/users/me/` (navbar)
+- `members[]` de `GET /api/v1/clans/{id}/` (#191)
+- `author` de `GET /api/v1/feed/`
+- `GET /api/v1/rankings/users/`, que solo lista perfiles públicos
 
-Lo que **no** se valida server-side hoy: el tipo real de archivo ni su
-tamaño (el límite acordado con el equipo es ≤5MB). Hacerlo requeriría que
-el backend descargue la URL que el cliente le dio para inspeccionarla —
-eso es un vector de SSRF (Server-Side Request Forgery) sobre una URL
-arbitraria, así que se descartó deliberadamente en vez de agregarse sin
-salvaguardas.
+### Por qué no `POST /api/uploads/`
 
-## Flujo real, una vez que exista el bucket de GCS
+Ese endpoint (#192, feed) responde con una URL firmada de **1 hora** y de más
+de 1000 caracteres. Guardada como `avatar_url`, la foto desaparecería a la hora
+y además rebasa el límite de 500 caracteres del campo. Tampoco tiene modo local.
 
-El patrón estándar y seguro para este caso (que evita el SSRF de arriba y sí
-permite validar tipo/tamaño antes de que el archivo exista) es:
+### Enlaces pegados
 
-1. El cliente pide al backend una URL de subida firmada (*signed upload
-   URL*), declarando tipo de contenido y tamaño.
-2. El backend valida esa declaración contra los límites acordados
-   (≤5MB, jpg/jpeg/png/webp) **antes** de firmar, y solo entonces emite la
-   URL firmada de GCS.
-3. El cliente sube el archivo directamente a GCS con esa URL firmada.
-4. El cliente confirma la URL final del objeto contra
-   `PATCH /api/v1/profile/me/`, igual que hoy.
-
-Esto necesita `django-storages` (o el SDK de GCS directamente) más las
-credenciales del bucket `greeniteso-<ambiente>-objects` (ver arriba),
-ninguno de los cuales existe todavía en este repositorio. Es trabajo de una
-historia futura, una vez que `GreenITESO-Infra` aplique el módulo
-`storage` y la cuenta de GCP exista.
+`accounts.serializers._validate_avatar_url` solo acepta `https` y las
+extensiones `.jpg`, `.jpeg`, `.png` y `.webp`. El backend no descarga el
+enlace para revisar su tipo o tamaño, porque pedir una URL arbitraria del
+cliente desde el servidor sería un vector de SSRF.
 
 ## Avatar de clan (#164)
 
-A diferencia del avatar de usuario, el avatar de un clan **sí** pasa por este
-backend: el cliente nunca elige la llave del objeto.
-
-- `POST /api/v1/clans/{id}/avatar/` (multipart, campo `avatar`) — solo el
-  líder del clan. Valida la firma del archivo (JPG, PNG o WEBP), que el
-  `Content-Type` declarado coincida y el límite de 5 MB, y genera la llave
-  `clan-avatars/<clan_id>/<uuid>.<ext>`.
-- `DELETE /api/v1/clans/{id}/avatar/` — quita el avatar.
+- `POST /api/v1/clans/{id}/avatar/` (multipart, campo `avatar`): solo el líder
+  del clan. La llave es `clan-avatars/<clan_id>/<uuid>.<ext>`.
+- `DELETE /api/v1/clans/{id}/avatar/`: quita el avatar.
 - `avatar_object_key` es de solo lectura en `POST /clans/` y
   `PATCH /clans/{id}/`; un valor enviado por el cliente se ignora.
-
-El almacenamiento sigue a `actions.evidence`: en desarrollo local va a
-`MEDIA_ROOT`, y un servicio desplegado con `GCS_EVIDENCE_BUCKET` escribe en
-ese bucket privado compartido. Al reemplazar o quitar el avatar, el archivo
-anterior se borra después del commit. Servir la imagen (URL firmada de
-lectura) queda pendiente.
+- Servir la imagen del clan sigue pendiente (#203). Puede usar el mismo
+  `core.image_storage.image_response` que la foto de perfil.

@@ -12,7 +12,11 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
-from green_iteso.actions.evidence import save_action_evidence, signed_evidence_url
+from green_iteso.actions.evidence import (
+    save_action_evidence,
+    signed_evidence_url,
+    signed_read_url,
+)
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 
 from .helpers import create_admin, create_student
@@ -272,5 +276,28 @@ def test_deployed_service_stores_evidence_in_the_configured_bucket(
     assert signed_evidence_url(key) == "https://storage.example/signed-read"
     assert blobs[key].signed is not None
     assert blobs[key].signed["method"] == "GET"
+    assert blobs[key].signed["service_account_email"] == (
+        "backend@example.iam.gserviceaccount.com"
+    )
+    assert blobs[key].signed["access_token"] == "access-token"
     assert signed_evidence_url("../secret.txt") == ""
     assert signed_evidence_url("demo-only/photo.jpg") == ""
+
+
+def test_signed_read_url_returns_empty_without_signing_credentials(
+    monkeypatch: Any,
+) -> None:
+    """Do not return a URL when runtime credentials cannot sign a read."""
+
+    class ExistingBlob:
+        def exists(self) -> bool:
+            return True
+
+        def generate_signed_url(self, **kwargs: Any) -> str:
+            raise AssertionError("A URL must not be generated without credentials.")
+
+    monkeypatch.setattr(
+        "green_iteso.actions.evidence._signing_credentials", lambda: ("", "")
+    )
+
+    assert signed_read_url(ExistingBlob()) == ""

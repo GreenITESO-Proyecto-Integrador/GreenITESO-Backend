@@ -19,6 +19,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from green_iteso.actions.evidence import signed_read_url
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
 
@@ -141,11 +142,9 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(hours=1),
-                method="GET",
-            )
+            signed_url = signed_read_url(blob, expiration=timedelta(hours=1))
+            if not signed_url:
+                raise RuntimeError("Could not sign the uploaded image URL.")
             return Response({"url": signed_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")

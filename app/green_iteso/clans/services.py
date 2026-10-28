@@ -20,6 +20,18 @@ from green_iteso.accounts.models import (
 from green_iteso.accounts.services import ensure_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
+from .errors import (
+    AlreadyClanMemberError,
+    AlreadyLeadingAClanError,
+    DuplicateClanLeaderError,
+    DuplicateClanNameError,
+    InvalidClanPrivacyError,
+    InvalidInvitationCodeError,
+    InvitationLimitExceededError,
+    InvitationsNotNeededError,
+    MembershipClanMismatchError,
+    PrivateClanLimitExceededError,
+)
 from .invite_codes import (
     CODE_LENGTH,
     INVITATION_RETENTION,
@@ -30,15 +42,16 @@ from .invite_codes import (
     hash_code,
     normalize_code,
 )
+from .notifications import (
+    notify_clan_dissolved,
+    notify_join_request,
+    notify_leader_changed,
+    notify_member_joined,
+    notify_member_kicked,
+    notify_member_left,
+    notify_request_decided,
+)
 from .selectors import list_active_clan_invitations
-
-
-class DuplicateClanLeaderError(Exception):
-    """Raised when a clan would end up with more than one LEADER membership."""
-
-
-class MembershipClanMismatchError(Exception):
-    """Raised when a membership does not belong to the clan it is promoted in."""
 
 
 @transaction.atomic
@@ -154,7 +167,9 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
 
     actor_membership.role = ClanMembership.MembershipRole.MEMBER
     actor_membership.save(update_fields=["role"])
-    return assign_leader(clan=locked, membership=successor_membership)
+    new_leader = assign_leader(clan=locked, membership=successor_membership)
+    notify_leader_changed(clan=locked, new_leader=locked_successor)
+    return new_leader
 
 
 @transaction.atomic
@@ -282,22 +297,6 @@ def complete_onboarding(
 
 MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER = 5
 """BR-04: a user may belong to at most this many private clans at once."""
-
-
-class DuplicateClanNameError(ValueError):
-    """Raised when ``Clan.name`` is already taken by another alive clan."""
-
-
-class AlreadyLeadingAClanError(ValueError):
-    """Raised when BR-04's single-leadership-per-user rule would be violated."""
-
-
-class PrivateClanLimitExceededError(ValueError):
-    """Raised when BR-04's five-private-clan membership limit would be exceeded."""
-
-
-class InvalidClanPrivacyError(ValueError):
-    """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
 
 
 CLAN_NAME_UNIQUE_CONSTRAINT = "clan_name_unique_when_alive"
@@ -482,9 +481,14 @@ def join_clan(*, clan: Clan, user: User) -> ClanMembership:
     else:
         new_status = ClanMembership.Status.PENDING
 
-    return _save_membership_status(
+    membership = _save_membership_status(
         user=locked_user, clan=clan, existing=existing, status=new_status
     )
+    if new_status == ClanMembership.Status.ACCEPTED:
+        notify_member_joined(clan=clan, member=locked_user)
+    else:
+        notify_join_request(clan=clan, applicant=locked_user)
+    return membership
 
 
 @transaction.atomic
@@ -522,6 +526,7 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
 
     membership.status = ClanMembership.Status.ACCEPTED
     membership.save(update_fields=["status"])
+    notify_request_decided(clan=locked, applicant=locked_applicant, accepted=True)
     return membership
 
 
@@ -554,6 +559,7 @@ def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
 
     membership.status = ClanMembership.Status.REJECTED
     membership.save(update_fields=["status"])
+    notify_request_decided(clan=locked, applicant=applicant, accepted=False)
     return membership
 
 
@@ -595,6 +601,7 @@ def leave_clan(*, clan: Clan, user: User) -> None:
             "before leaving."
         )
     membership.delete()
+    notify_member_left(clan=locked, member=user)
 
 
 def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
@@ -649,6 +656,7 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     ClanMembership.objects.filter(clan=locked, is_active_private=True).update(
         is_active_private=False
     )
+    notify_clan_dissolved(clan=locked, actor=actor)
     return locked
 
 
@@ -777,26 +785,6 @@ def set_clan_avatar(*, clan: Clan, actor: User, uploaded: UploadedFile | None) -
         clan_id = locked.pk
         transaction.on_commit(lambda: delete_clan_avatar(clan_id, previous_key))
     return locked
-
-
-class InvitationLimitExceededError(ValueError):
-    """Raised when a clan already has the maximum number of active invite codes."""
-
-
-class InvalidInvitationCodeError(ValueError):
-    """Raised for any code that can't be redeemed (#165).
-
-    Deliberately one error for unknown, expired, used, and revoked codes, so
-    the response never tells a guesser which codes exist.
-    """
-
-
-class AlreadyClanMemberError(ValueError):
-    """Raised when the redeemer already belongs to the invitation's clan."""
-
-
-class InvitationsNotNeededError(ValueError):
-    """Raised when creating a code for a clan anyone can already join directly."""
 
 
 INVITATION_CODE_UNIQUE_CONSTRAINT = "clan_invitation_code_hash_unique"
@@ -955,6 +943,7 @@ def redeem_clan_invitation(*, code: str, user: User) -> ClanMembership:
     invitation.redeemed_by = locked_user
     invitation.redeemed_at = now
     invitation.save(update_fields=["redeemed_by", "redeemed_at"])
+    notify_member_joined(clan=locked_clan, member=locked_user)
     return membership
 
 
@@ -998,3 +987,4 @@ def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
         raise ValueError("Cannot expel a clan leader.")
 
     membership.delete()
+    notify_member_kicked(clan=locked_clan, member=target_user)

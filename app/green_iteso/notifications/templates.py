@@ -47,6 +47,38 @@ NOTIFICATION_TEMPLATES: dict[str, NotificationTemplate] = {
         title="Te invitaron a una campaña",
         message='Fuiste invitado a la campaña "{campaign_name}".',
     ),
+    NotificationType.CLAN_DISSOLVED: NotificationTemplate(
+        title="Clan disuelto",
+        message='El clan "{clan_name}" fue disuelto por su líder.',
+    ),
+    NotificationType.CLAN_JOIN_REQUEST: NotificationTemplate(
+        title="Nueva solicitud de ingreso",
+        message='{member_name} quiere unirse a tu clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_KICKED: NotificationTemplate(
+        title="Saliste de un clan",
+        message='El líder te expulsó del clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_LEADER_CHANGED: NotificationTemplate(
+        title="Nuevo líder de clan",
+        message='{leader_name} es ahora líder del clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_MEMBER_JOINED: NotificationTemplate(
+        title="Nuevo miembro en tu clan",
+        message='{member_name} se unió a tu clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_MEMBER_LEFT: NotificationTemplate(
+        title="Un miembro dejó tu clan",
+        message='{member_name} salió de tu clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_REQ_ACCEPTED: NotificationTemplate(
+        title="Solicitud aceptada",
+        message='Ya eres parte del clan "{clan_name}".',
+    ),
+    NotificationType.CLAN_REQ_REJECTED: NotificationTemplate(
+        title="Solicitud rechazada",
+        message='Tu solicitud para unirte al clan "{clan_name}" fue rechazada.',
+    ),
     NotificationType.MISSION_COMPLETED: NotificationTemplate(
         title="Misión completada",
         message='Completaste la misión "{mission_name}" de la campaña "{campaign_name}".',

@@ -13,6 +13,7 @@ from green_iteso.actions.models import ActionCategory
 from .avatars import public_avatar_url, user_avatar_url
 from .models import User, UserProfile, UserRoleAudit
 from .selectors import EcologicalProfile
+from .services import nickname_change_cost
 
 _ALLOWED_AVATAR_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 _MAX_PREFERENCES_BYTES = 10_000
@@ -133,6 +134,8 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
         default=list,
     )
     avatar_url = serializers.SerializerMethodField()
+    nickname = serializers.CharField(source="user.nickname")
+    nickname_change_cost = serializers.SerializerMethodField()
     total_points = serializers.IntegerField(source="profile.total_points")
     available_points = serializers.IntegerField(source="profile.available_points")
     current_streak = serializers.IntegerField(source="profile.current_streak")
@@ -146,6 +149,10 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
     def get_avatar_url(self, obj: EcologicalProfile) -> str:
         """The photo URL to display: the upload's serving URL or the pasted link."""
         return public_avatar_url(obj.profile, self.context.get("request"))
+
+    def get_nickname_change_cost(self, obj: EcologicalProfile) -> int:
+        """Points the next nickname change costs: 0 the first time (#175)."""
+        return nickname_change_cost(obj.profile)
 
     def get_institutional_clan(self, obj: EcologicalProfile) -> dict[str, Any] | None:
         clan = obj.profile.institutional_clan
@@ -312,3 +319,18 @@ class ProfileUpdateSerializer(serializers.Serializer):  # pylint: disable=abstra
         required=False,
         validators=[_validate_avatar_url],
     )
+
+
+class NicknameChangeSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Input payload for POST /api/v1/profile/me/nickname/ (#175)."""
+
+    nickname = serializers.CharField(max_length=50)
+
+
+class NicknameChangeResultSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Result of a nickname change: the new nickname and the balance after paying."""
+
+    nickname = serializers.CharField()
+    points_spent = serializers.IntegerField()
+    available_points = serializers.IntegerField()
+    next_change_cost = serializers.IntegerField()

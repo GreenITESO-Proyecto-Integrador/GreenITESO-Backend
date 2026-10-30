@@ -13,6 +13,7 @@ from .views import (
     ProfileAvatarImageView,
     ProfileAvatarView,
     ProfileMetricsView,
+    ProfileNicknameView,
     TokenRefreshView,
     UserViewSet,
 )
@@ -30,6 +31,11 @@ urlpatterns = [
         "avatars/<uuid:user_id>/",
         ProfileAvatarImageView.as_view(),
         name="profile-avatar",
+    ),
+    path(
+        "profile/me/nickname/",
+        ProfileNicknameView.as_view(),
+        name="profile-nickname",
     ),
     path("profile/me/metrics/", ProfileMetricsView.as_view(), name="profile-metrics"),
     path(

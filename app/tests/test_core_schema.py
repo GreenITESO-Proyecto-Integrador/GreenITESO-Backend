@@ -739,6 +739,60 @@ def test_accounts_0019_migration_defaults_nickname_changes_to_zero() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+def test_notifications_0004_migration_keeps_rows_and_accepts_clan_types() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0004 adds the clan notification types (T2-45) to the choices and to the
+    ``notification_type_valid`` check, so existing notifications must survive
+    and a clan type must be accepted only afterwards.
+    """
+    accounts_target = ("accounts", "0016_delete_friendship")
+    old_target = [accounts_target, ("notifications", "0003_notification_soft_delete")]
+    new_target = [accounts_target, ("notifications", "0004_notification_types_clan")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user = old_apps.get_model("accounts", "User").objects.create(
+        email="ana@iteso.mx"
+    )
+    old_notification_model = old_apps.get_model("notifications", "Notification")
+    old_notification_model.objects.create(
+        user_id=old_user.pk,
+        title="Hola",
+        message="Mensaje previo",
+        notification_type="SYSTEM",
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        old_notification_model.objects.create(
+            user_id=old_user.pk,
+            title="Clan",
+            message="Aún no existe el tipo",
+            notification_type="CLAN_KICKED",
+        )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_notification_model = new_apps.get_model("notifications", "Notification")
+
+        assert new_notification_model.objects.get(user_id=old_user.pk).message == (
+            "Mensaje previo"
+        )
+        created = new_notification_model.objects.create(
+            user_id=old_user.pk,
+            title="Clan",
+            message="Ya existe el tipo",
+            notification_type="CLAN_KICKED",
+        )
+        assert created.notification_type == "CLAN_KICKED"
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
 def test_campaigns_0006_migration_backfills_approved_and_enforces_constraints() -> None:
     """Upgrade test CLAUDE.md requires for campaigns.0006_campaign_approval_workflow.
 

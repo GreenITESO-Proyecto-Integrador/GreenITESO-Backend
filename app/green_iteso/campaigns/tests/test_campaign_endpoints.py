@@ -649,3 +649,110 @@ class TestCanManageField:
         assert response.status_code == 200
         assert len(response.data["results"]) == 5
         assert all(item["can_manage"] is True for item in response.data["results"])
+
+
+@pytest.mark.django_db
+class TestCampaignClanDifferentiation:
+    """Clan campaigns are labeled and can be listed per clan (#171)."""
+
+    def _clan_campaigns(
+        self, user: User, clan: Clan, other_clan: Clan
+    ) -> dict[str, Campaign]:
+        ClanMembership.objects.create(user=user, clan=clan)
+        ClanMembership.objects.create(user=user, clan=other_clan)
+        built = {
+            "global": campaign_data(title="global", creator=user),
+            "active": campaign_data(
+                title="active",
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan,
+                status=Campaign.Status.IN_PROGRESS,
+            ),
+            "upcoming": campaign_data(
+                title="upcoming",
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=clan,
+            ),
+            "elsewhere": campaign_data(
+                title="elsewhere",
+                creator=user,
+                scope=Campaign.Scope.PRIVATE,
+                target_clan=other_clan,
+                status=Campaign.Status.IN_PROGRESS,
+            ),
+        }
+        return {name: Campaign.objects.create(**data) for name, data in built.items()}
+
+    def test_campaigns_name_their_clan_and_global_ones_have_none(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        other_clan = Clan.objects.create(name="Other", type=Clan.ClanType.PRIVATE)
+        self._clan_campaigns(user, clan, other_clan)
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(reverse("campaign-list"))
+
+        names = {
+            item["title"]: item["target_clan_name"] for item in response.data["results"]
+        }
+        assert names == {
+            "global": None,
+            "active": "Test clan",
+            "upcoming": "Test clan",
+            "elsewhere": "Other",
+        }
+
+    def test_target_clan_filter_lists_only_that_clans_campaigns(
+        self, api_client: APIClient, user: User, clan: Clan
+    ) -> None:
+        other_clan = Clan.objects.create(name="Other", type=Clan.ClanType.PRIVATE)
+        self._clan_campaigns(user, clan, other_clan)
+        api_client.force_authenticate(user=user)
+
+        everything = api_client.get(reverse("campaign-list"), {"target_clan": clan.pk})
+        active = api_client.get(
+            reverse("campaign-list"), {"target_clan": clan.pk, "is_active": "true"}
+        )
+
+        assert {item["title"] for item in everything.data["results"]} == {
+            "active",
+            "upcoming",
+        }
+        assert [item["title"] for item in active.data["results"]] == ["active"]
+
+    def test_target_clan_filter_hides_a_clan_the_user_does_not_belong_to(
+        self, api_client: APIClient, user: User, other_user: User, clan: Clan
+    ) -> None:
+        other_clan = Clan.objects.create(name="Other", type=Clan.ClanType.PRIVATE)
+        self._clan_campaigns(user, clan, other_clan)
+        api_client.force_authenticate(user=other_user)
+
+        response = api_client.get(reverse("campaign-list"), {"target_clan": clan.pk})
+
+        assert response.status_code == 200
+        assert response.data["results"] == []
+
+    def test_target_clan_filter_rejects_an_invalid_id(
+        self, api_client: APIClient, user: User
+    ) -> None:
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(reverse("campaign-list"), {"target_clan": "nope"})
+
+        assert response.status_code == 400
+        assert "target_clan" in response.data
+
+    def test_detail_names_the_clan(
+        self, api_client: APIClient, user: User, private_campaign: Campaign
+    ) -> None:
+        ClanMembership.objects.create(user=user, clan=private_campaign.target_clan)
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(
+            reverse("campaign-detail", kwargs={"campaign_id": private_campaign.pk})
+        )
+
+        assert response.status_code == 200
+        assert response.data["target_clan_name"] == "Test clan"

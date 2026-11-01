@@ -49,6 +49,8 @@ from .serializers import (
     ImpactTrendPointSerializer,
     LoginRequestSerializer,
     LoginResponseSerializer,
+    NicknameChangeResultSerializer,
+    NicknameChangeSerializer,
     ProfileAvatarUploadSerializer,
     ProfileMetricsQuerySerializer,
     ProfileMetricsSerializer,
@@ -57,6 +59,9 @@ from .serializers import (
     UserSerializer,
 )
 from .services import (
+    InsufficientPointsForNicknameError,
+    NicknameUnchangedError,
+    change_nickname,
     login_with_microsoft,
     set_profile_avatar,
     update_profile,
@@ -335,6 +340,31 @@ class ProfileAvatarImageView(APIView):
             raise NotFound()
         response["Cache-Control"] = "private, max-age=300"
         return response
+
+
+class ProfileNicknameView(APIView):
+    """Change the caller's nickname: the first change is free, later ones cost points (#175)."""
+
+    @extend_schema(
+        request=NicknameChangeSerializer,
+        responses={
+            200: NicknameChangeResultSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: invalid, unchanged, or not enough points"
+            ),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """Set the nickname, charging ``available_points`` after the first change."""
+        payload = NicknameChangeSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            result = change_nickname(
+                user=request.user, nickname=payload.validated_data["nickname"]
+            )
+        except (NicknameUnchangedError, InsufficientPointsForNicknameError) as exc:
+            raise DRFValidationError({"nickname": str(exc)}) from exc
+        return Response(NicknameChangeResultSerializer(result).data)
 
 
 class ProfileMetricsView(APIView):

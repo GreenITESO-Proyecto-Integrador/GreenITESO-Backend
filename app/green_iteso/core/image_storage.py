@@ -21,6 +21,7 @@ from django.http import FileResponse, HttpResponseBase, HttpResponseRedirect
 from google.cloud import storage
 
 from green_iteso.actions.evidence import (
+    declared_image_type,
     detect_image_kind,
     gcs_evidence_enabled,
     signed_read_url,
@@ -50,8 +51,10 @@ def validate_image(uploaded: UploadedFile) -> str:
     header = uploaded.read(16)
     uploaded.seek(0)
     kind = detect_image_kind(header)
-    declared = getattr(uploaded, "content_type", "") or ""
-    if kind is None or declared not in (kind, "application/octet-stream"):
+    declared = declared_image_type(getattr(uploaded, "content_type", "") or "")
+    if kind is None or (
+        declared and declared not in (kind, "application/octet-stream")
+    ):
         raise InvalidImageError("The image must be a JPG, PNG, or WEBP file.")
     return kind
 

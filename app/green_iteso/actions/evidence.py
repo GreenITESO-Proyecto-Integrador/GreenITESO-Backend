@@ -31,6 +31,8 @@ _JPEG = "image/jpeg"
 _PNG = "image/png"
 _WEBP = "image/webp"
 _EXTENSIONS = {_JPEG: ".jpg", _PNG: ".png", _WEBP: ".webp"}
+# Phones and some browsers label a JPEG as image/jpg or image/pjpeg.
+_DECLARED_ALIASES = {"image/jpg": _JPEG, "image/pjpeg": _JPEG}
 SIGNED_URL_TTL = timedelta(minutes=10)
 
 
@@ -74,6 +76,12 @@ def _signing_credentials() -> tuple[str, str]:
     return email, token
 
 
+def declared_image_type(content_type: str) -> str:
+    """Normalize a part Content-Type before comparing it to the file signature."""
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    return _DECLARED_ALIASES.get(declared, declared)
+
+
 def detect_image_kind(header: bytes) -> str | None:
     """Return the image media type implied by the file signature."""
     if header.startswith(b"\xff\xd8\xff"):
@@ -94,7 +102,7 @@ def validate_evidence_upload(uploaded: UploadedFile) -> str:
     kind = detect_image_kind(header)
     if kind is None:
         raise ValidationError("Usa una imagen JPG, PNG o WEBP.")
-    declared = getattr(uploaded, "content_type", "") or ""
+    declared = declared_image_type(getattr(uploaded, "content_type", "") or "")
     if declared in _EXTENSIONS and declared != kind:
         raise ValidationError("Usa una imagen JPG, PNG o WEBP.")
     if (

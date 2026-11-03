@@ -8,12 +8,19 @@ from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.actions.models import ActionLog, ActionMaster
 from green_iteso.campaigns.models import Campaign, CampaignParticipant, Mission
 from green_iteso.campaigns.notifications import notify_campaign_invite
-from green_iteso.campaigns.services import apply_action_log_to_missions
+from green_iteso.campaigns.services import (
+    apply_action_log_to_missions,
+    approve_campaign,
+    finish_campaign,
+    reject_campaign,
+    start_campaign,
+)
 from green_iteso.campaigns.tests.helpers import campaign_data
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.services import BULK_CREATE_BATCH_SIZE, notify_many
@@ -139,3 +146,134 @@ def test_campaign_invite_without_recipients_sends_nothing(user: User) -> None:
     assert sent == 0
     assert not Notification.objects.exists()
     push.assert_not_called()
+
+
+def _types_for(recipient: User) -> list[str]:
+    return list(
+        Notification.objects.filter(user=recipient).values_list(
+            "notification_type", flat=True
+        )
+    )
+
+
+@pytest.mark.django_db
+def test_approving_a_proposal_notifies_its_author(
+    user: User, admin_user: User, campaign_factory: Any
+) -> None:
+    proposal = campaign_factory(approval_status=Campaign.ApprovalStatus.PENDING)
+
+    approve_campaign(admin_user, proposal.pk)
+
+    assert _types_for(user) == [Notification.NotificationType.CAMPAIGN_APPROVED]
+    assert proposal.title in Notification.objects.get(user=user).message
+
+
+@pytest.mark.django_db
+def test_rejecting_a_proposal_notifies_its_author_with_the_reason(
+    user: User, admin_user: User, campaign_factory: Any
+) -> None:
+    proposal = campaign_factory(approval_status=Campaign.ApprovalStatus.PENDING)
+
+    reject_campaign(admin_user, proposal.pk, "Fechas poco realistas")
+
+    assert _types_for(user) == [Notification.NotificationType.CAMPAIGN_REJECTED]
+    message = Notification.objects.get(user=user).message
+    assert proposal.title in message
+    assert "Fechas poco realistas" in message
+
+
+@pytest.mark.django_db
+def test_reviewing_your_own_proposal_does_not_notify_you(admin_user: User) -> None:
+    proposal = Campaign.objects.create(
+        **campaign_data(
+            creator=admin_user, approval_status=Campaign.ApprovalStatus.PENDING
+        )
+    )
+
+    reject_campaign(admin_user, proposal.pk, "Cambié de idea")
+
+    assert not Notification.objects.filter(user=admin_user).exists()
+
+
+@pytest.mark.django_db
+def test_failed_review_notifies_nobody(
+    user: User, admin_user: User, campaign_factory: Any
+) -> None:
+    proposal = campaign_factory(approval_status=Campaign.ApprovalStatus.PENDING)
+
+    with pytest.raises(ValidationError):
+        reject_campaign(admin_user, proposal.pk, "")
+
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_starting_a_campaign_notifies_only_its_participants(
+    user: User, other_user: User, admin_user: User, campaign_factory: Any
+) -> None:
+    campaign = campaign_factory()
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+    CampaignParticipant.objects.create(campaign=campaign, user=other_user)
+
+    start_campaign(campaign.pk)
+
+    assert _types_for(user) == [Notification.NotificationType.CAMPAIGN_STARTED]
+    assert _types_for(other_user) == [Notification.NotificationType.CAMPAIGN_STARTED]
+    assert not Notification.objects.filter(user=admin_user).exists()
+
+
+@pytest.mark.django_db
+def test_starting_a_campaign_without_participants_sends_nothing(
+    campaign_factory: Any,
+) -> None:
+    campaign = campaign_factory()
+
+    start_campaign(campaign.pk)
+
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_invalid_start_notifies_nobody(user: User, campaign_factory: Any) -> None:
+    now = timezone.now()
+    campaign = campaign_factory(
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=3),
+        status=Campaign.Status.IN_PROGRESS,
+    )
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+
+    with pytest.raises(ValidationError):
+        start_campaign(campaign.pk)
+
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+def test_finishing_a_campaign_notifies_its_participants(
+    user: User, other_user: User, campaign_factory: Any
+) -> None:
+    now = timezone.now()
+    campaign = campaign_factory(
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=3),
+        status=Campaign.Status.IN_PROGRESS,
+    )
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+
+    finish_campaign(campaign.pk)
+
+    assert _types_for(user) == [Notification.NotificationType.CAMPAIGN_FINISHED]
+    assert not Notification.objects.filter(user=other_user).exists()
+    assert campaign.title in Notification.objects.get(user=user).message
+
+
+@pytest.mark.django_db
+def test_invalid_finish_notifies_nobody(user: User, campaign_factory: Any) -> None:
+    campaign = campaign_factory()
+    CampaignParticipant.objects.create(campaign=campaign, user=user)
+
+    with pytest.raises(ValidationError):
+        finish_campaign(campaign.pk)
+
+    assert not Notification.objects.exists()

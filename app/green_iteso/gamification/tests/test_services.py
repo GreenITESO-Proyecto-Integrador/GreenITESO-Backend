@@ -1,5 +1,8 @@
 """Tests for gamification services."""
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 from django.contrib.auth import get_user_model
 
@@ -64,3 +67,28 @@ def test_check_and_award_badges_idempotent_on_concurrency() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_check_and_award_badges_pushes_the_notification_after_commit(
+    django_capture_on_commit_callbacks: Callable[..., Any],
+) -> None:
+    user = User.objects.create_user(
+        email="live@example.com",
+        password="password123",
+    )
+    UserProfile.objects.create(user=user, total_points=50)
+    Badge.objects.create(
+        name="Guardián del agua",
+        description="Earn 50 points",
+        points_required=50,
+        is_active=True,
+    )
+
+    with django_capture_on_commit_callbacks(execute=False) as callbacks:
+        check_and_award_badges(user)
+
+    # One callback = the WebSocket push that lets the frontend show the celebration.
+    assert len(callbacks) == 1
+    notification = Notification.objects.get(user=user)
+    assert notification.message == 'Obtuviste la insignia "Guardián del agua".'

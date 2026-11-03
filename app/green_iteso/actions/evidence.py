@@ -3,9 +3,10 @@
 The registration form sends the image as the multipart field ``evidence``.
 Local development keeps the file under MEDIA_ROOT. A deployed service that
 sets ``GCS_EVIDENCE_BUCKET`` stores the same object key in that private bucket
-and serves administrators a short-lived signed URL. The bucket name is never
-hardcoded, and this module does not contact cloud storage unless that
-deployed setting is on.
+and the evidence endpoint returns those bytes. A redirect to the bucket is
+blocked by the browser because Cloud Storage sends no CORS header. The bucket
+name is never hardcoded, and this module does not contact cloud storage unless
+that deployed setting is on.
 """
 
 from __future__ import annotations
@@ -198,6 +199,27 @@ def signed_evidence_url(object_key: str) -> str:
     if key is None or not gcs_evidence_enabled():
         return ""
     return signed_read_url(_gcs_bucket().blob(key))
+
+
+def gcs_evidence_bytes(object_key: str) -> tuple[bytes, str] | None:
+    """Read one stored photograph from the private bucket.
+
+    The audit page fetches this through the API. Returning the bytes keeps the
+    browser on our origin.
+    """
+    key = safe_object_key(object_key)
+    if key is None or not gcs_evidence_enabled():
+        return None
+    blob = _gcs_bucket().blob(key)
+    if not blob.exists():
+        return None
+    payload = blob.download_as_bytes()
+    if len(payload) > MAX_EVIDENCE_BYTES:
+        return None
+    kind = detect_image_kind(payload[:16])
+    if kind is None:
+        return None
+    return payload, kind
 
 
 def signed_read_url(blob: Any) -> str:

@@ -196,9 +196,7 @@ def test_reviewing_your_own_proposal_does_not_notify_you(admin_user: User) -> No
 
 
 @pytest.mark.django_db
-def test_failed_review_notifies_nobody(
-    user: User, admin_user: User, campaign_factory: Any
-) -> None:
+def test_failed_review_notifies_nobody(admin_user: User, campaign_factory: Any) -> None:
     proposal = campaign_factory(approval_status=Campaign.ApprovalStatus.PENDING)
 
     with pytest.raises(ValidationError):

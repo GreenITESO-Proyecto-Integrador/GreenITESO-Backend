@@ -42,11 +42,13 @@ from .selectors import (
     list_active_action_categories,
     list_active_actions,
     list_active_exchangeables,
+    list_my_action_logs,
 )
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
     ActionLogListQuerySerializer,
+    ActionLogMineSerializer,
     ActionLogQueueSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
@@ -63,6 +65,36 @@ from .services import (
     revert_mission_progress,
     revoke_awarded_points,
 )
+
+
+class ActionLogMineView(views.APIView):
+    """List the authenticated user's own action logs, newest first."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        """Return a paginated list of the caller's action logs.
+
+        Accepts an optional ``?status=`` query parameter to filter by
+        APPROVED / PENDING_AUDIT / REJECTED.
+        """
+        query = ActionLogListQuerySerializer(
+            data=request.query_params,
+            partial=True,  # status is optional; no default is injected
+        )
+        query.is_valid(raise_exception=True)
+        status_filter: str | None = query.validated_data.get("status")
+
+        qs = list_my_action_logs(user_id=request.user.pk, status=status_filter)
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        if page is None:
+            return Response(
+                ActionLogMineSerializer(qs, many=True).data
+            )
+        return paginator.get_paginated_response(
+            ActionLogMineSerializer(page, many=True).data
+        )
 
 
 def _format_error(exc: Exception) -> str:

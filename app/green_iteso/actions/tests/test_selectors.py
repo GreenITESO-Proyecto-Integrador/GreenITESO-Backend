@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from green_iteso.actions.models import ActionCategory, ActionMaster
 from green_iteso.actions.selectors import (
     list_active_action_categories,
     list_active_actions,
 )
+from green_iteso.actions.serializers import ActionMasterSerializer
 
 
 def _make_action(
@@ -45,3 +48,23 @@ def test_list_active_actions_excludes_inactive_and_is_ordered_by_code() -> None:
     codes = list(list_active_actions().values_list("code", flat=True))
 
     assert codes == ["BIKE", "WALK"]
+
+
+@pytest.mark.django_db
+def test_listing_actions_does_not_grow_queries_with_the_catalog() -> None:
+    """The nested category must not cost one query per action (N+1)."""
+    mobility = ActionCategory.objects.create(code="MOBILITY", name="Movilidad Verde")
+    energy = ActionCategory.objects.create(code="ENERGY", name="Ahorro Energético")
+    for index, category in enumerate((mobility, energy, mobility)):
+        _make_action(category, f"ACTION_{index}")
+
+    with CaptureQueriesContext(connection) as captured:
+        payload = ActionMasterSerializer(list_active_actions(), many=True).data
+
+    assert len(payload) == 3
+    assert [row["category"]["code"] for row in payload] == [
+        "MOBILITY",
+        "ENERGY",
+        "MOBILITY",
+    ]
+    assert len(captured) == 1

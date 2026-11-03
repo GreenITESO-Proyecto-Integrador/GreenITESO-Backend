@@ -44,8 +44,16 @@ def list_active_action_categories() -> QuerySet[ActionCategory]:
 
 
 def list_active_actions() -> QuerySet[ActionMaster]:
-    """Return active actions ordered by code."""
-    return ActionMaster.objects.filter(is_active=True).order_by("code")
+    """Return active actions ordered by code.
+
+    The category travels in the same query because ActionMasterSerializer
+    nests it; without this the list costs one extra query per action.
+    """
+    return (
+        ActionMaster.objects.filter(is_active=True)
+        .select_related("category")
+        .order_by("code")
+    )
 
 
 def list_active_exchangeables() -> QuerySet[ExchangeableItem]:

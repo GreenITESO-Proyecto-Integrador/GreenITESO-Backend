@@ -142,6 +142,42 @@ class ActionLogQueueSerializer(serializers.ModelSerializer):
         )
 
 
+class ActionLogMineActionSerializer(serializers.ModelSerializer):
+    """Compact action info included in the student's own history."""
+
+    class Meta:
+        model = ActionMaster
+        fields = ["id", "code", "name", "validation_type"]
+        read_only_fields = fields
+
+
+class ActionLogMineSerializer(serializers.ModelSerializer):
+    """One row in the authenticated user's action-log history."""
+
+    action = ActionLogMineActionSerializer(read_only=True)
+    has_evidence = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ActionLog
+        fields = [
+            "id",
+            "action",
+            "status",
+            "points_awarded",
+            "co2_kg_factor_snapshot",
+            "water_liters_factor_snapshot",
+            "plastic_kg_factor_snapshot",
+            "has_evidence",
+            "is_shared_publicly",
+            "rejection_reason",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_has_evidence(self, obj: ActionLog) -> bool:
+        return bool(obj.evidence_object_key)
+
+
 class ActionLogAuditSerializer(serializers.Serializer):
     """Serializer to validate action log audit data from admins."""
 

@@ -4,22 +4,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import patch
 
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from green_iteso.accounts.models import User
-from green_iteso.accounts.tests.factories import UserFactory
-from green_iteso.actions.models import ActionLog, ActionMaster
-from green_iteso.actions.selectors import list_my_action_logs
-from green_iteso.actions.tests.factories import (
-    ActionCategoryFactory,
-    ActionLogFactory,
-    ActionMasterFactory,
-)
+from green_iteso.accounts.models import User, UserProfile
+from green_iteso.actions.models import ActionLog
+from green_iteso.actions.tests.helpers import create_bike_action, create_student
 
 
 class ActionLogMineViewTest(TestCase):
@@ -27,9 +20,13 @@ class ActionLogMineViewTest(TestCase):
 
     def setUp(self) -> None:
         self.client = APIClient()
-        self.user = UserFactory.create()
+        self.user = create_student()
+        self.clan = self.user.profile.institutional_clan
         self.client.force_authenticate(user=self.user)
-        self.other_user = UserFactory.create()
+        self.other_user = User.objects.create_user(
+            email="other@iteso.mx", password="local-only"
+        )
+        UserProfile.objects.create(user=self.other_user, institutional_clan=self.clan)
 
     def test_mine_requires_authentication(self) -> None:
         """Anonymous caller gets 401."""
@@ -40,32 +37,72 @@ class ActionLogMineViewTest(TestCase):
     def test_mine_returns_only_caller_logs(self) -> None:
         """Other users' logs are not included."""
         # Create a log for other user
-        ActionLogFactory.create(user=self.other_user)
-        
-        # Create a log for the authenticated user 
-        my_log = ActionLogFactory.create(user=self.user)
+        action = create_bike_action()
+        clan = self.clan
+        ActionLog.objects.create(
+            user=self.other_user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+        )
+
+        # Create a log for the authenticated user
+        my_log = ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+        )
 
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         self.assertEqual(len(logs_data), 1)
         self.assertEqual(uuid.UUID(logs_data[0]["id"]), my_log.id)
 
     def test_mine_returns_all_statuses_by_default(self) -> None:
         """APPROVED + PENDING_AUDIT + REJECTED all appear."""
+        action = create_bike_action()
+        clan = self.clan
+
         # Create logs in different statuses
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.APPROVED)
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.PENDING_AUDIT)
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.REJECTED)
-        
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+        )
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.PENDING_AUDIT,
+        )
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.REJECTED,
+        )
+
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         logs_data = response.data["results"]
-        
+
         # Should return all 3
         self.assertEqual(len(logs_data), 3)
-        
+
         # Check that we have the correct statuses
         statuses = [log["status"] for log in logs_data]
         self.assertIn("APPROVED", statuses)
@@ -74,14 +111,38 @@ class ActionLogMineViewTest(TestCase):
 
     def test_mine_filters_by_status(self) -> None:
         """Filtering by status works correctly."""
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.APPROVED)
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.PENDING_AUDIT)
-        ActionLogFactory.create(user=self.user, status=ActionLog.Status.REJECTED)
+        action = create_bike_action()
+        clan = self.clan
+
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+        )
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.PENDING_AUDIT,
+        )
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.REJECTED,
+        )
 
         # Filter for approved
         response = self.client.get(f"{reverse('action-log-mine')}?status=APPROVED")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         self.assertEqual(len(logs_data), 1)
         self.assertEqual(logs_data[0]["status"], "APPROVED")
@@ -93,13 +154,32 @@ class ActionLogMineViewTest(TestCase):
 
     def test_mine_ordered_newest_first(self) -> None:
         """Results are ordered newest first by created_at."""
+        action = create_bike_action()
+        clan = self.clan
+
         # Create logs with different timestamps (older first)
-        old_log = ActionLogFactory.create(user=self.user, created_at=datetime(2021, 1, 1, tzinfo=UTC))
-        new_log = ActionLogFactory.create(user=self.user, created_at=datetime(2023, 1, 1, tzinfo=UTC))
+        old_log = ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+            created_at=datetime(2021, 1, 1, tzinfo=UTC)
+        )
+        new_log = ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+            created_at=datetime(2023, 1, 1, tzinfo=UTC)
+        )
 
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         # Should return newest first
         self.assertEqual(uuid.UUID(logs_data[0]["id"]), new_log.id)
@@ -107,12 +187,22 @@ class ActionLogMineViewTest(TestCase):
 
     def test_mine_paginated(self) -> None:
         """Response contains pagination fields."""
+        action = create_bike_action()
+        clan = self.clan
+
         # Create more logs than page size
         for _ in range(60):  # 60 logs should be more than default 50
-            ActionLogFactory.create(user=self.user)
-            
+            ActionLog.objects.create(
+                user=self.user,
+                action=action,
+                institutional_clan=clan,
+                idempotency_key=str(uuid.uuid4()),
+                points_awarded=50,
+                status=ActionLog.Status.APPROVED,
+            )
+
         response = self.client.get(reverse("action-log-mine"))
-        
+
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("count", response.data)
         self.assertIn("results", response.data)
@@ -120,14 +210,24 @@ class ActionLogMineViewTest(TestCase):
 
     def test_mine_serializer_fields(self) -> None:
         """Spot-check the serializer fields."""
-        log = ActionLogFactory.create(user=self.user)
-        
+        action = create_bike_action()
+        clan = self.clan
+
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+        )
+
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         self.assertEqual(len(logs_data), 1)
-        
+
         log_data = logs_data[0]
         # Check key fields are present
         self.assertIn("id", log_data)
@@ -140,20 +240,42 @@ class ActionLogMineViewTest(TestCase):
 
     def test_mine_has_evidence_true_when_key_present(self) -> None:
         """has_evidence returns True when evidence_object_key is present."""
-        log = ActionLogFactory.create(user=self.user, evidence_object_key="some-key")
-        
+        action = create_bike_action()
+        clan = self.clan
+
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+            evidence_object_key="some-key"
+        )
+
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         self.assertTrue(logs_data[0]["has_evidence"])
 
     def test_mine_has_evidence_false_when_key_absent(self) -> None:
         """has_evidence returns False when evidence_object_key is blank."""
-        log = ActionLogFactory.create(user=self.user, evidence_object_key="")
-        
+        action = create_bike_action()
+        clan = self.clan
+
+        ActionLog.objects.create(
+            user=self.user,
+            action=action,
+            institutional_clan=clan,
+            idempotency_key=str(uuid.uuid4()),
+            points_awarded=50,
+            status=ActionLog.Status.APPROVED,
+            evidence_object_key=""
+        )
+
         response = self.client.get(reverse("action-log-mine"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         logs_data = response.data["results"]
         self.assertFalse(logs_data[0]["has_evidence"])

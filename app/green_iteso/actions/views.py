@@ -61,6 +61,7 @@ from .services import (
     ItemInactiveError,
     PointsAlreadySpentError,
     notify_mission_progress,
+    recalculate_streak,
     redeem_exchangeable,
     revert_mission_progress,
     revoke_awarded_points,
@@ -339,6 +340,7 @@ class ActionLogCreateView(views.APIView):
                 )
                 check_and_award_badges(user)
                 notify_mission_progress(action_log)
+                recalculate_streak(user)
 
         return Response(
             {
@@ -440,6 +442,7 @@ class ActionLogAuditView(views.APIView):
                 )
                 # Must run after the REJECTED status is saved (campaigns rule).
                 revert_mission_progress(action_log)
+                recalculate_streak(action_log.user)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 points = action_log.points_awarded
@@ -458,6 +461,7 @@ class ActionLogAuditView(views.APIView):
                 profile.refresh_from_db(fields=["total_points", "available_points"])
                 check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
+                recalculate_streak(action_log.user)
 
                 notify(
                     action_log.user,

@@ -9,10 +9,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
-from green_iteso.actions.evidence import save_action_evidence, signed_evidence_url
+from green_iteso.actions.evidence import (
+    MAX_EVIDENCE_BYTES,
+    save_action_evidence,
+    signed_evidence_url,
+    validate_evidence_upload,
+)
 from green_iteso.actions.models import ActionCategory, ActionLog, ActionMaster
 
 from .helpers import create_admin, create_student
@@ -45,6 +52,30 @@ def _photo_action() -> ActionMaster:
 
 def _png(name: str = "evidence.png", payload: bytes = PNG_BYTES) -> SimpleUploadedFile:
     return SimpleUploadedFile(name, payload, content_type="image/png")
+
+
+def _jpeg(size: int, content_type: str = "image/jpeg") -> SimpleUploadedFile:
+    payload = b"\xff\xd8\xff" + b"\x00" * (size - 3)
+    return SimpleUploadedFile("photo.jpg", payload, content_type=content_type)
+
+
+def test_upload_limit_covers_a_five_mebibyte_photo() -> None:
+    assert settings.DATA_UPLOAD_MAX_MEMORY_SIZE >= MAX_EVIDENCE_BYTES
+
+
+def test_jpeg_labeled_image_jpg_is_accepted() -> None:
+    assert validate_evidence_upload(_jpeg(64, "image/jpg")) == "image/jpeg"
+    assert validate_evidence_upload(_jpeg(64, "image/pjpeg")) == "image/jpeg"
+    assert validate_evidence_upload(_jpeg(64, "")) == "image/jpeg"
+
+
+def test_exact_five_mebibyte_evidence_is_accepted() -> None:
+    assert validate_evidence_upload(_jpeg(MAX_EVIDENCE_BYTES)) == "image/jpeg"
+
+
+def test_one_byte_over_five_mebibytes_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        validate_evidence_upload(_jpeg(MAX_EVIDENCE_BYTES + 1))
 
 
 @pytest.mark.django_db
@@ -129,6 +160,35 @@ def test_photo_registration_rejects_a_non_image(evidence_media: Path) -> None:
     assert response.json()["evidence"] == ["Usa una imagen JPG, PNG o WEBP."]
     assert ActionLog.objects.count() == 0
     assert not list(evidence_media.iterdir())
+
+
+@pytest.mark.django_db
+def test_photo_between_the_old_parser_limit_and_five_mebibytes_is_stored(
+    evidence_media: Path,
+) -> None:
+    """A 3 MiB JPEG used to die in Django's 2.5 MiB parser before the view ran."""
+    student = create_student()
+    action = _photo_action()
+    uploaded = _jpeg(3 * 1024 * 1024, "image/jpg")
+    payload = uploaded.read()
+    uploaded.seek(0)
+    client = APIClient()
+    client.force_authenticate(student)
+
+    response = client.post(
+        LOGS_URL,
+        {
+            "action_id": str(action.id),
+            "idempotency_key": str(uuid.uuid4()),
+            "evidence": uploaded,
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 201
+    log = ActionLog.objects.get(pk=response.json()["log_id"])
+    stored = evidence_media / log.evidence_object_key
+    assert stored.read_bytes() == payload
 
 
 @pytest.mark.django_db

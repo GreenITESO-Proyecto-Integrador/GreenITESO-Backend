@@ -219,6 +219,66 @@ def test_local_development_ignores_a_cloud_bucket_name(
     assert (tmp_path / key).read_bytes() == PNG_BYTES
 
 
+@pytest.mark.django_db
+def test_admin_reads_bucket_evidence_as_image_bytes(
+    settings: Any, monkeypatch: Any
+) -> None:
+    settings.DEPLOYED = True
+    settings.GCS_EVIDENCE_BUCKET = "unit-test-objects"
+    blobs: dict[str, Any] = {}
+
+    class FakeBlob:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.payload = b""
+            self.content_type = ""
+
+        def upload_from_string(self, payload: bytes, content_type: str = "") -> None:
+            self.payload = payload
+            self.content_type = content_type
+
+        def exists(self) -> bool:
+            return bool(self.payload)
+
+        def download_as_bytes(self) -> bytes:
+            return self.payload
+
+        def delete(self) -> None:
+            self.payload = b""
+
+    class FakeBucket:
+        def blob(self, name: str) -> FakeBlob:
+            blob = blobs.get(name)
+            if blob is None:
+                blob = FakeBlob(name)
+                blobs[name] = blob
+            return blob
+
+    monkeypatch.setattr("green_iteso.actions.evidence._gcs_bucket", FakeBucket)
+    student = create_student()
+    action = _photo_action()
+    client = APIClient()
+    client.force_authenticate(student)
+    created = client.post(
+        LOGS_URL,
+        {
+            "action_id": str(action.id),
+            "idempotency_key": str(uuid.uuid4()),
+            "evidence": _png(),
+        },
+        format="multipart",
+    )
+    assert created.status_code == 201
+
+    client.force_authenticate(create_admin())
+    image = client.get(f"{LOGS_URL}{created.json()['log_id']}/evidence/")
+
+    assert image.status_code == 200
+    assert image["Content-Type"] == "image/png"
+    assert image.getvalue() == PNG_BYTES
+    assert "Location" not in image
+
+
 def test_deployed_service_stores_evidence_in_the_configured_bucket(
     settings: Any, monkeypatch: Any
 ) -> None:

@@ -436,7 +436,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0019_userprofile_nickname_changes"),
+        ("accounts", "0020_account_deactivation"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -787,6 +787,43 @@ def test_notifications_0004_migration_keeps_rows_and_accepts_clan_types() -> Non
             notification_type="CLAN_KICKED",
         )
         assert created.notification_type == "CLAN_KICKED"
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0020_migration_leaves_existing_accounts_active() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0020 only adds nullable columns, so every account that exists before it must
+    stay active, with no deactivation date and no progress reset.
+    """
+    old_target = [("accounts", "0019_userprofile_nickname_changes")]
+    new_target = [("accounts", "0020_account_deactivation")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_profile_model = old_apps.get_model("accounts", "UserProfile")
+    ana = old_user_model.objects.create(email="ana@iteso.mx", nickname="Ana")
+    old_profile_model.objects.create(user_id=ana.pk, total_points=70)
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        migrated_user = new_apps.get_model("accounts", "User").objects.get(pk=ana.pk)
+        migrated_profile = new_apps.get_model("accounts", "UserProfile").objects.get(
+            user_id=ana.pk
+        )
+
+        assert migrated_user.is_active is True
+        assert migrated_user.deactivated_at is None
+        assert migrated_user.nickname == "Ana"
+        assert migrated_profile.progress_reset_at is None
+        assert migrated_profile.total_points == 70
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

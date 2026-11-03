@@ -13,7 +13,18 @@ from django.contrib.auth.models import update_last_login
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from green_iteso.actions.models import ActionLog
+from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
+from green_iteso.feed.models import Post
+from green_iteso.gamification.models import UserBadge
+from green_iteso.notifications.models import Notification
 
 from .avatars import delete_profile_avatar, save_profile_avatar
 from .exceptions import (
@@ -25,7 +36,7 @@ from .exceptions import (
     RequestValidationError,
 )
 from .identity import ExternalIdentity, IdentityProvider, get_identity_provider
-from .models import User, UserProfile, UserRoleAudit
+from .models import ClanMembership, User, UserProfile, UserRoleAudit
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +196,7 @@ class LoginResult:
     access: str
     refresh: str
     created: bool
+    reactivated: bool = False
 
 
 def is_institutional_email(email: str) -> bool:
@@ -211,7 +223,7 @@ def login_with_microsoft(
             f"Solo se permiten cuentas institucionales @{settings.ALLOWED_EMAIL_DOMAIN}."
         )
 
-    user, created = _upsert_user(identity, email)
+    user, created, reactivated = _upsert_user(identity, email)
     update_last_login(None, user)
     refresh = RefreshToken.for_user(user)
     return LoginResult(
@@ -219,10 +231,11 @@ def login_with_microsoft(
         access=str(refresh.access_token),
         refresh=str(refresh),
         created=created,
+        reactivated=reactivated,
     )
 
 
-def _upsert_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
+def _upsert_user(identity: ExternalIdentity, email: str) -> tuple[User, bool, bool]:
     # Two first logins can race on the unique oid/email; the loser retries and
     # finds the winner's row.
     for attempt in range(2):
@@ -281,7 +294,25 @@ def _normalize_job_title(job_title: str | None) -> str:
     return " ".join(without_accents.upper().split())
 
 
-def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, bool]:
+def _reactivate_if_self_deactivated(user: User) -> bool:
+    """Bring a self-deactivated account back; return whether it was one (#176).
+
+    Only an account the user deactivated themselves may come back; one an admin
+    disabled stays locked. Its progress was already wiped when it was
+    deactivated, so signing in again is a fresh start.
+    """
+    if user.is_active:
+        return False
+    if user.deactivated_at is None:
+        raise AccountDisabledError()
+    user.is_active = True
+    user.deactivated_at = None
+    return True
+
+
+def _get_or_create_user(
+    identity: ExternalIdentity, email: str
+) -> tuple[User, bool, bool]:
     oid = uuid.UUID(identity.oid)
     user = User.objects.select_for_update().filter(microsoft_oid=oid).first()
     created = False
@@ -298,8 +329,7 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
         user = User(email=email, microsoft_oid=oid, role=initial_role)
         user.set_unusable_password()
         created = True
-    if not user.is_active:
-        raise AccountDisabledError()
+    reactivated = _reactivate_if_self_deactivated(user)
 
     # Reconcile the role from directory data on every login. Preserve ADMIN
     # because it is an application-managed role; Django's is_staff/is_superuser
@@ -325,7 +355,109 @@ def _get_or_create_user(identity: ExternalIdentity, email: str) -> tuple[User, b
     user.save()
 
     _sync_profile(user, identity)
-    return user, created
+    return user, created, reactivated
+
+
+class AccountDeactivationBlockedError(ValueError):
+    """Raised when an account cannot be deactivated yet: it leads a clan or is the last admin."""
+
+
+@transaction.atomic
+def deactivate_account(*, user: User) -> User:
+    """Soft-delete ``user``'s own account and wipe their progress (#176).
+
+    The row stays (action logs, clan totals and audits still reference it), but
+    the person starts from zero if they ever sign back in: points, streak,
+    cosmetics, badges, profile text, profile photo (the stored file too),
+    nickname, clan memberships (including the institutional one), campaign
+    participation and progress, notifications and feed posts are removed. Approved action logs stay as audit and clan
+    history, but ``progress_reset_at`` keeps them out of the user's impact
+    metrics. Clan totals are not reduced: like leaving a clan, deactivating
+    leaves the points the person already earned for it. Pending action logs are
+    rejected so a later approval cannot credit a profile that was reset.
+    Outstanding refresh tokens are blacklisted, and ``is_active`` cuts off
+    access tokens immediately.
+
+    Raises:
+        AccountDeactivationBlockedError: If the user leads a clan (they must
+            transfer leadership or dissolve it first) or is the last active admin.
+    """
+    # NO KEY UPDATE keeps the user-before-profile order shared with onboarding
+    # without blocking the KEY SHARE that notification foreign keys need.
+    locked_users = list(
+        User.objects.select_for_update(no_key=True)
+        .filter(Q(role=User.Role.ADMIN, is_active=True) | Q(pk=user.pk))
+        .order_by("pk")
+    )
+    locked = next(candidate for candidate in locked_users if candidate.pk == user.pk)
+    active_admins = [
+        candidate
+        for candidate in locked_users
+        if candidate.role == User.Role.ADMIN and candidate.is_active
+    ]
+    if locked.role == User.Role.ADMIN and len(active_admins) <= 1:
+        raise AccountDeactivationBlockedError(
+            "You are the last administrator; promote another admin first."
+        )
+    leads_a_clan = ClanMembership.objects.filter(
+        user=locked,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+        clan__deleted_at__isnull=True,
+    ).exists()
+    if leads_a_clan:
+        raise AccountDeactivationBlockedError(
+            "You lead a clan; transfer its leadership or dissolve it first."
+        )
+
+    now = timezone.now()
+    ClanMembership.objects.filter(user=locked).delete()
+    CampaignParticipant.objects.filter(user=locked).delete()
+    UserMissionProgress.objects.filter(user=locked).delete()
+    UserBadge.objects.filter(user=locked).delete()
+    Notification.all_objects.filter(user=locked).delete()
+    Post.objects.filter(author=locked).delete()
+    ActionLog.objects.filter(user=locked, status=ActionLog.Status.PENDING_AUDIT).update(
+        status=ActionLog.Status.REJECTED,
+        reviewed_at=now,
+        rejection_reason="The account was deactivated.",
+    )
+
+    profile = ensure_profile(locked)
+    previous_avatar_key = profile.avatar_object_key
+    profile.bio = ""
+    profile.preferences = {}
+    profile.unlocked_cosmetics = []
+    profile.avatar_url = ""
+    profile.avatar_object_key = ""
+    profile.total_points = 0
+    profile.available_points = 0
+    profile.current_streak = 0
+    profile.last_action_date = None
+    profile.visibility = UserProfile.Visibility.PUBLIC
+    profile.institutional_clan = None
+    profile.career = ""
+    profile.onboarding_completed_at = None
+    profile.nickname_changes = 0
+    profile.progress_reset_at = now
+    profile.save()
+    if previous_avatar_key:
+        user_id = locked.pk
+        # Only once the deactivation commits, so a rollback keeps the photo.
+        transaction.on_commit(
+            lambda: delete_profile_avatar(user_id, previous_avatar_key)
+        )
+
+    locked.nickname = ""
+    locked.is_active = False
+    locked.deactivated_at = now
+    locked.save(update_fields=["nickname", "is_active", "deactivated_at"])
+
+    for token in OutstandingToken.objects.filter(user=locked):
+        BlacklistedToken.objects.get_or_create(token=token)
+
+    logger.info("Account deactivated: user_id=%s", locked.pk)
+    return locked
 
 
 def update_user_role(*, admin_user: User | None, user: User, new_role: str) -> User:

@@ -8,23 +8,13 @@ from typing import Any
 
 import pytest
 from django.db import close_old_connections, connection
-from rest_framework.test import APIRequestFactory, force_authenticate
 
 from green_iteso.accounts.models import Clan, User, UserProfile
 from green_iteso.accounts.services import change_nickname, ensure_profile
+from green_iteso.accounts.tests.lock_helpers import ApprovalRace, run_workers
 from green_iteso.actions.models import ActionLog
 from green_iteso.actions.tests.helpers import create_pending_photo_audit_log
-from green_iteso.actions.views import ActionLogAuditView
 from green_iteso.clans.services import complete_onboarding
-
-
-def _run_workers(workers: list[threading.Thread]) -> None:
-    """Start concurrent workers and ensure each finishes within the test."""
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=20)
-    assert not any(worker.is_alive() for worker in workers)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -111,7 +101,7 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
             connection.close()
 
     workers = [threading.Thread(target=change), threading.Thread(target=onboard)]
-    _run_workers(workers)
+    run_workers(workers)
     assert not errors, errors
     user.refresh_from_db()
     profile = ensure_profile(user)
@@ -133,75 +123,11 @@ def test_nickname_change_does_not_deadlock_with_action_approval() -> None:
     clan = Clan.objects.create(name="Audit clan", type=Clan.ClanType.INSTITUTIONAL)
     UserProfile.objects.create(user=user, institutional_clan=clan)
     log = create_pending_photo_audit_log(user, clan)
-    nickname_user_locked = threading.Event()
-    approval_profile_updated = threading.Event()
-    errors: list[Exception] = []
-    statuses: list[int] = []
 
-    def change() -> None:
-        close_old_connections()
+    ApprovalRace(admin=admin, log=log).run(
+        lambda: change_nickname(user=User.objects.get(pk=user.pk), nickname="Changed")
+    )
 
-        def coordinate_after_user_lock(
-            execute: Callable[..., Any],
-            sql: str,
-            params: Any,
-            many: bool,
-            context: dict[str, Any],
-        ) -> Any:
-            result = execute(sql, params, many, context)
-            normalized_sql = sql.upper()
-            if 'FROM "ACCOUNTS_USER"' in normalized_sql and " FOR " in normalized_sql:
-                nickname_user_locked.set()
-                assert approval_profile_updated.wait(10), (
-                    "Approval did not update the profile before notification"
-                )
-            return result
-
-        try:
-            with connection.execute_wrapper(coordinate_after_user_lock):
-                change_nickname(user=User.objects.get(pk=user.pk), nickname="Changed")
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            connection.close()
-
-    def approve() -> None:
-        close_old_connections()
-
-        def observe_profile_update(
-            execute: Callable[..., Any],
-            sql: str,
-            params: Any,
-            many: bool,
-            context: dict[str, Any],
-        ) -> Any:
-            result = execute(sql, params, many, context)
-            normalized_sql = sql.lstrip().upper()
-            if (
-                normalized_sql.startswith("UPDATE")
-                and "ACCOUNTS_USER_PROFILE" in normalized_sql
-            ):
-                approval_profile_updated.set()
-            return result
-
-        try:
-            assert nickname_user_locked.wait(10), "Nickname change did not lock User"
-            request = APIRequestFactory().patch(
-                "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
-            )
-            force_authenticate(request, user=admin)
-            with connection.execute_wrapper(observe_profile_update):
-                response = ActionLogAuditView.as_view()(request, log_id=str(log.pk))
-            statuses.append(response.status_code)
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            connection.close()
-
-    workers = [threading.Thread(target=change), threading.Thread(target=approve)]
-    _run_workers(workers)
-    assert not errors, errors
-    assert statuses == [200]
     log.refresh_from_db()
     user.refresh_from_db()
     profile = ensure_profile(user)

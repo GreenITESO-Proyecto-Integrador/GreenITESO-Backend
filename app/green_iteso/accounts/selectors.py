@@ -99,9 +99,16 @@ class EcologicalProfile:
     finished_campaigns: list[FinishedCampaign]
 
 
-def _approved_action_logs(user: User) -> QuerySet[ActionLog]:
-    """Return ``user``'s own approved action logs, the only ones that count as impact."""
-    return ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
+def _approved_action_logs(user: User, profile: UserProfile) -> QuerySet[ActionLog]:
+    """Return ``user``'s own approved action logs, the only ones that count as impact.
+
+    Logs from before the account was deactivated (``progress_reset_at``, #176)
+    are history, not part of the fresh start, so they are left out.
+    """
+    logs = ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
+    if profile.progress_reset_at is not None:
+        logs = logs.filter(created_at__gte=profile.progress_reset_at)
+    return logs
 
 
 def _sum_impact(logs: QuerySet[ActionLog]) -> ImpactMetrics:
@@ -141,7 +148,7 @@ def get_ecological_profile(user: User) -> EcologicalProfile:
     )
     active_private_clan = active_membership.clan if active_membership else None
 
-    metrics = _sum_impact(_approved_action_logs(user))
+    metrics = _sum_impact(_approved_action_logs(user, profile))
 
     finished_campaigns = [
         FinishedCampaign(
@@ -258,7 +265,7 @@ def get_profile_metrics(user: User, filters: MetricsFilters) -> ProfileMetrics:
     """
     profile = ensure_profile(user)
 
-    logs = _approved_action_logs(user)
+    logs = _approved_action_logs(user, profile)
     badges = UserBadge.objects.filter(user=user)
     campaigns = Campaign.objects.filter(
         participants__user=user, status=Campaign.Status.FINISHED
@@ -353,11 +360,8 @@ def get_impact_trend(
     ]
 
     rows = (
-        ActionLog.objects.filter(
-            user=user,
-            status=ActionLog.Status.APPROVED,
-            created_at__date__gte=week_starts[0],
-        )
+        _approved_action_logs(user, ensure_profile(user))
+        .filter(created_at__date__gte=week_starts[0])
         .annotate(week=TruncWeek("created_at"))
         .values("week")
         .annotate(

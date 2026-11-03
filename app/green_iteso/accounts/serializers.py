@@ -81,12 +81,17 @@ class LoginUserSerializer(UserAvatarMixin, serializers.ModelSerializer):
 
 
 class LoginResponseSerializer(serializers.Serializer):  # pylint: disable=abstract-method
-    """JWT pair plus the account; ``created`` is true on the first login."""
+    """JWT pair plus the account.
+
+    ``created`` is true on the first login; ``reactivated`` is true when the
+    login brought a self-deactivated account back, which starts from zero (#176).
+    """
 
     access = serializers.CharField()
     refresh = serializers.CharField()
     user = LoginUserSerializer()
     created = serializers.BooleanField()
+    reactivated = serializers.BooleanField()
 
 
 class ClanSummarySerializer(serializers.Serializer):  # pylint: disable=abstract-method
@@ -334,3 +339,17 @@ class NicknameChangeResultSerializer(serializers.Serializer):  # pylint: disable
     points_spent = serializers.IntegerField()
     available_points = serializers.IntegerField()
     next_change_cost = serializers.IntegerField()
+
+
+class DeactivateAccountSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Input payload for POST /api/v1/profile/me/deactivate/ (#176)."""
+
+    confirm = serializers.BooleanField()
+
+    def validate_confirm(self, value: bool) -> bool:
+        """Require an explicit ``true``: deactivating wipes the user's progress."""
+        if value is not True:
+            raise serializers.ValidationError(
+                "Confirm that you want to deactivate your account."
+            )
+        return value

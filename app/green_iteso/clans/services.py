@@ -2,20 +2,56 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from uuid import UUID
+
 from django.core.exceptions import PermissionDenied
+from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.accounts.models import (
+    Clan,
+    ClanInvitation,
+    ClanMembership,
+    User,
+    UserProfile,
+)
 from green_iteso.accounts.services import ensure_profile
 
-
-class DuplicateClanLeaderError(Exception):
-    """Raised when a clan would end up with more than one LEADER membership."""
-
-
-class MembershipClanMismatchError(Exception):
-    """Raised when a membership does not belong to the clan it is promoted in."""
+from .avatars import delete_clan_avatar, save_clan_avatar
+from .errors import (
+    AlreadyClanMemberError,
+    AlreadyLeadingAClanError,
+    DuplicateClanLeaderError,
+    DuplicateClanNameError,
+    InvalidClanPrivacyError,
+    InvalidInvitationCodeError,
+    InvitationLimitExceededError,
+    InvitationsNotNeededError,
+    MembershipClanMismatchError,
+    PrivateClanLimitExceededError,
+)
+from .invite_codes import (
+    CODE_LENGTH,
+    INVITATION_RETENTION,
+    INVITATION_TTL,
+    MAX_ACTIVE_INVITATIONS_PER_CLAN,
+    code_hint,
+    generate_code,
+    hash_code,
+    normalize_code,
+)
+from .notifications import (
+    notify_clan_dissolved,
+    notify_join_request,
+    notify_leader_changed,
+    notify_member_joined,
+    notify_member_kicked,
+    notify_member_left,
+    notify_request_decided,
+)
+from .selectors import list_active_clan_invitations
 
 
 @transaction.atomic
@@ -131,7 +167,9 @@ def transfer_leadership(*, clan: Clan, actor: User, successor: User) -> ClanMemb
 
     actor_membership.role = ClanMembership.MembershipRole.MEMBER
     actor_membership.save(update_fields=["role"])
-    return assign_leader(clan=locked, membership=successor_membership)
+    new_leader = assign_leader(clan=locked, membership=successor_membership)
+    notify_leader_changed(clan=locked, new_leader=locked_successor)
+    return new_leader
 
 
 @transaction.atomic
@@ -186,13 +224,16 @@ def _get_or_create_institutional_clan(career: str) -> Clan:
 
 
 @transaction.atomic
-def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
+def assign_institutional_clan(
+    *, user: User, career: str, visibility: str | None = None
+) -> UserProfile:
     """Declare ``career`` and auto-assign its institutional clan (FR T2-30).
 
     Re-running with the same career is idempotent; re-running with a
     different career reassigns the profile and removes the stale membership
     in the previous institutional clan, so the user always ends up a member
-    of exactly one institutional clan.
+    of exactly one institutional clan. ``visibility``, when given, is saved
+    in the same profile update (onboarding, #163).
     """
     career = career.strip()
     if not career:
@@ -206,9 +247,11 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
     profile.institutional_clan = clan
     if profile.onboarding_completed_at is None:
         profile.onboarding_completed_at = timezone.now()
-    profile.save(
-        update_fields=["career", "institutional_clan", "onboarding_completed_at"]
-    )
+    update_fields = ["career", "institutional_clan", "onboarding_completed_at"]
+    if visibility is not None:
+        profile.visibility = visibility
+        update_fields.append("visibility")
+    profile.save(update_fields=update_fields)
 
     if previous_clan is not None and previous_clan.pk != clan.pk:
         ClanMembership.objects.filter(
@@ -225,24 +268,59 @@ def assign_institutional_clan(*, user: User, career: str) -> UserProfile:
     return profile
 
 
+@transaction.atomic
+def complete_onboarding(
+    *,
+    user: User,
+    career: str,
+    nickname: str | None = None,
+    visibility: str | None = None,
+) -> UserProfile:
+    """Run the first-login onboarding in one transaction (#163).
+
+    Assigns the institutional clan exactly like ``assign_institutional_clan``
+    and optionally sets the profile visibility in that same profile update.
+    ``nickname`` only fills an empty nickname: this is the free first choice,
+    and changing an existing one belongs to the nickname-change flow (#175),
+    not to onboarding. If the clan assignment fails, the nickname is rolled
+    back with it.
+    """
+    if nickname is not None:
+        nickname = nickname.strip()
+        locked_user = User.objects.select_for_update().get(pk=user.pk)
+        if nickname and not locked_user.nickname:
+            locked_user.nickname = nickname
+            locked_user.save(update_fields=["nickname"])
+            user.nickname = nickname
+    return assign_institutional_clan(user=user, career=career, visibility=visibility)
+
+
 MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER = 5
 """BR-04: a user may belong to at most this many private clans at once."""
 
 
-class DuplicateClanNameError(ValueError):
-    """Raised when ``Clan.name`` is already taken by another alive clan."""
+CLAN_NAME_UNIQUE_CONSTRAINT = "clan_name_unique_when_alive"
 
 
-class AlreadyLeadingAClanError(ValueError):
-    """Raised when BR-04's single-leadership-per-user rule would be violated."""
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """Return the constraint PostgreSQL reported, rather than parsing the message."""
+    diag = getattr(exc.__cause__, "diag", None)
+    return getattr(diag, "constraint_name", None)
 
 
-class PrivateClanLimitExceededError(ValueError):
-    """Raised when BR-04's five-private-clan membership limit would be exceeded."""
+def _is_clan_leader(*, clan: Clan, user: User) -> bool:
+    """Return whether ``user`` holds ``clan``'s accepted LEADER membership.
 
-
-class InvalidClanPrivacyError(ValueError):
-    """Raised when ``privacy`` is not one of ``Clan.Privacy``'s values."""
+    Callers lock ``clan`` with ``select_for_update`` first, so the answer
+    reflects committed leadership rather than a snapshot a concurrent
+    ``transfer_leadership`` could invalidate.
+    """
+    return ClanMembership.objects.filter(
+        clan=clan,
+        user=user,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+    ).exists()
 
 
 def _is_already_leading_a_clan(user: User) -> bool:
@@ -279,13 +357,44 @@ def _count_private_clan_memberships(user: User) -> int:
     ).count()
 
 
+def _ensure_private_clan_capacity(user: User) -> None:
+    """Enforce BR-04's cap before ``user`` becomes a member of one more private clan.
+
+    The caller must hold ``user``'s row lock, so two concurrent joins can't
+    both pass the check before either membership exists.
+
+    Raises:
+        PrivateClanLimitExceededError: If ``user`` already belongs to
+            ``MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER`` private clans.
+    """
+    if _count_private_clan_memberships(user) >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER:
+        raise PrivateClanLimitExceededError(
+            "User already belongs to "
+            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
+        )
+
+
+def _save_membership_status(
+    *, user: User, clan: Clan, existing: ClanMembership | None, status: str
+) -> ClanMembership:
+    """Set the (user, clan) membership to ``status``, reusing an existing row.
+
+    ``membership_user_clan_unique`` allows one row per pair, so a PENDING or
+    REJECTED row is updated in place instead of inserting a new one.
+    """
+    if existing is None:
+        return ClanMembership.objects.create(user=user, clan=clan, status=status)
+    existing.status = status
+    existing.save(update_fields=["status"])
+    return existing
+
+
 @transaction.atomic
 def create_private_clan(
     *,
     name: str,
     created_by: User,
     description: str = "",
-    avatar_object_key: str = "",
     privacy: str = Clan.Privacy.PUBLIC,
 ) -> Clan:
     """Create a private clan and grant its creator the LEADER membership (T2-31).
@@ -308,26 +417,18 @@ def create_private_clan(
         raise AlreadyLeadingAClanError(
             "User already leads a clan; BR-04 allows a single leadership at a time."
         )
-    if (
-        _count_private_clan_memberships(locked_user)
-        >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
-    ):
-        raise PrivateClanLimitExceededError(
-            "User already belongs to "
-            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
-        )
+    _ensure_private_clan_capacity(locked_user)
 
     try:
         clan = Clan.objects.create(
             name=name,
             type=Clan.ClanType.PRIVATE,
             description=description,
-            avatar_object_key=avatar_object_key,
             privacy=privacy,
             created_by=locked_user,
         )
     except IntegrityError as exc:
-        if "clan_name_unique_when_alive" not in str(exc):
+        if _violated_constraint(exc) != CLAN_NAME_UNIQUE_CONSTRAINT:
             raise
         raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
 
@@ -375,23 +476,19 @@ def join_clan(*, clan: Clan, user: User) -> ClanMembership:
         raise ValueError(f"User already has {state} for this clan.")
 
     if clan.privacy == Clan.Privacy.PUBLIC:
-        if (
-            _count_private_clan_memberships(locked_user)
-            >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
-        ):
-            raise PrivateClanLimitExceededError(
-                "User already belongs to "
-                f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
-            )
+        _ensure_private_clan_capacity(locked_user)
         new_status = ClanMembership.Status.ACCEPTED
     else:
         new_status = ClanMembership.Status.PENDING
 
-    if existing is not None:
-        existing.status = new_status
-        existing.save(update_fields=["status"])
-        return existing
-    return ClanMembership.objects.create(user=locked_user, clan=clan, status=new_status)
+    membership = _save_membership_status(
+        user=locked_user, clan=clan, existing=existing, status=new_status
+    )
+    if new_status == ClanMembership.Status.ACCEPTED:
+        notify_member_joined(clan=clan, member=locked_user)
+    else:
+        notify_join_request(clan=clan, applicant=locked_user)
+    return membership
 
 
 @transaction.atomic
@@ -414,13 +511,7 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
             5-clan cap.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
-    is_leader = ClanMembership.objects.filter(
-        clan=locked,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=locked, user=actor):
         raise PermissionDenied("Only the clan's leader can accept join requests.")
 
     locked_applicant = User.objects.select_for_update().get(pk=applicant.pk)
@@ -431,17 +522,11 @@ def accept_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
     except ClanMembership.DoesNotExist as exc:
         raise ValueError("No pending join request from this user.") from exc
 
-    if (
-        _count_private_clan_memberships(locked_applicant)
-        >= MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER
-    ):
-        raise PrivateClanLimitExceededError(
-            "User already belongs to "
-            f"{MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER} private clans (BR-04)."
-        )
+    _ensure_private_clan_capacity(locked_applicant)
 
     membership.status = ClanMembership.Status.ACCEPTED
     membership.save(update_fields=["status"])
+    notify_request_decided(clan=locked, applicant=locked_applicant, accepted=True)
     return membership
 
 
@@ -462,13 +547,7 @@ def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
         ValueError: If there is no PENDING request from ``applicant``.
     """
     locked = Clan.objects.select_for_update().get(pk=clan.pk)
-    is_leader = ClanMembership.objects.filter(
-        clan=locked,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=locked, user=actor):
         raise PermissionDenied("Only the clan's leader can reject join requests.")
 
     try:
@@ -480,6 +559,7 @@ def reject_join_request(*, clan: Clan, actor: User, applicant: User) -> ClanMemb
 
     membership.status = ClanMembership.Status.REJECTED
     membership.save(update_fields=["status"])
+    notify_request_decided(clan=locked, applicant=applicant, accepted=False)
     return membership
 
 
@@ -521,6 +601,7 @@ def leave_clan(*, clan: Clan, user: User) -> None:
             "before leaving."
         )
     membership.delete()
+    notify_member_left(clan=locked, member=user)
 
 
 def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
@@ -532,13 +613,7 @@ def _assert_can_dissolve(*, clan: Clan, actor: User) -> None:
     """
     if clan.type != Clan.ClanType.PRIVATE:
         raise PermissionDenied("Only private clans can be dissolved.")
-    is_leader = ClanMembership.objects.filter(
-        clan=clan,
-        user=actor,
-        role=ClanMembership.MembershipRole.LEADER,
-        status=ClanMembership.Status.ACCEPTED,
-    ).exists()
-    if not is_leader:
+    if not _is_clan_leader(clan=clan, user=actor):
         raise PermissionDenied("Only the clan leader can dissolve the clan.")
 
 
@@ -581,4 +656,335 @@ def dissolve_clan(*, clan: Clan, actor: User) -> Clan:
     ClanMembership.objects.filter(clan=locked, is_active_private=True).update(
         is_active_private=False
     )
+    notify_clan_dissolved(clan=locked, actor=actor)
     return locked
+
+
+def _lock_clan_for_leader(
+    *, clan: Clan, actor: User, not_leader: str, not_private: str
+) -> Clan:
+    """Lock ``clan`` and require ``actor`` to be its current LEADER (#164).
+
+    Locks through ``all_objects`` so a clan dissolved after the view fetched
+    it surfaces as ``Clan.DoesNotExist`` (a 404) instead of an unhandled
+    error. Leadership is checked before the clan type so a non-leader gets
+    the same answer for institutional and private clans. ``not_leader`` and
+    ``not_private`` are the caller's own messages for those two refusals.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+    """
+    locked = Clan.all_objects.select_for_update().get(pk=clan.pk)
+    if locked.deleted_at is not None:
+        raise Clan.DoesNotExist("This clan was dissolved.")
+    if not _is_clan_leader(clan=locked, user=actor):
+        raise PermissionDenied(not_leader)
+    if locked.type != Clan.ClanType.PRIVATE:
+        raise PermissionDenied(not_private)
+    return locked
+
+
+def _lock_clan_for_leader_edit(*, clan: Clan, actor: User) -> Clan:
+    """``_lock_clan_for_leader`` for editing the clan itself (#164)."""
+    return _lock_clan_for_leader(
+        clan=clan,
+        actor=actor,
+        not_leader="Only the clan leader can edit the clan.",
+        not_private="Only private clans can be edited.",
+    )
+
+
+def _lock_clan_for_invitations(*, clan: Clan, actor: User) -> Clan:
+    """``_lock_clan_for_leader`` for managing invite codes (#165)."""
+    return _lock_clan_for_leader(
+        clan=clan,
+        actor=actor,
+        not_leader="Only the clan leader can manage invitation codes.",
+        not_private="Only private clans have invitation codes.",
+    )
+
+
+@transaction.atomic
+def update_clan(
+    *,
+    clan: Clan,
+    actor: User,
+    name: str | None = None,
+    description: str | None = None,
+    privacy: str | None = None,
+) -> Clan:
+    """Edit a private clan's name, description, or privacy (#164).
+
+    Only the clan's current LEADER may edit it, not even a global ADMIN.
+    ``None`` leaves a field unchanged. The avatar is changed through
+    ``set_clan_avatar`` instead, so the client never picks an object key.
+    Switching from PRIVATE_INVITE to PUBLIC leaves PENDING join requests
+    untouched: the leader still accepts or rejects them.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            the clan is institutional.
+        InvalidClanPrivacyError: If ``privacy`` is not a ``Clan.Privacy`` value.
+        DuplicateClanNameError: If another alive clan already uses ``name``.
+    """
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
+    if privacy is not None and privacy not in Clan.Privacy.values:
+        raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+
+    changes = {"name": name, "description": description, "privacy": privacy}
+    changed_fields = [
+        field
+        for field, value in changes.items()
+        if value is not None and value != getattr(locked, field)
+    ]
+    if not changed_fields:
+        return locked
+    for field in changed_fields:
+        setattr(locked, field, changes[field])
+
+    try:
+        locked.save(update_fields=changed_fields)
+    except IntegrityError as exc:
+        if _violated_constraint(exc) != CLAN_NAME_UNIQUE_CONSTRAINT:
+            raise
+        raise DuplicateClanNameError(f"A clan named '{name}' already exists.") from exc
+    return locked
+
+
+@transaction.atomic
+def set_clan_avatar(*, clan: Clan, actor: User, uploaded: UploadedFile | None) -> Clan:
+    """Replace, or with ``uploaded=None`` remove, a private clan's avatar (#164).
+
+    Authorizes before touching storage, so a non-leader's upload is never
+    written. The new key is generated by ``avatars.save_clan_avatar`` and is
+    scoped to this clan. The previous image is deleted only once the change
+    commits, so a rolled-back request never loses the current avatar.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            the clan is institutional.
+        InvalidClanAvatarError: If the upload is not a JPG/PNG/WEBP of at
+            most 5 MB.
+    """
+    locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
+    previous_key = locked.avatar_object_key
+    new_key = save_clan_avatar(locked.pk, uploaded) if uploaded is not None else ""
+
+    try:
+        locked.avatar_object_key = new_key
+        locked.save(update_fields=["avatar_object_key"])
+    except Exception:
+        if new_key:
+            delete_clan_avatar(locked.pk, new_key)
+        raise
+    if previous_key and previous_key != new_key:
+        clan_id = locked.pk
+        transaction.on_commit(lambda: delete_clan_avatar(clan_id, previous_key))
+    return locked
+
+
+INVITATION_CODE_UNIQUE_CONSTRAINT = "clan_invitation_code_hash_unique"
+_MAX_CODE_ATTEMPTS = 5
+
+
+@transaction.atomic
+def create_clan_invitation(*, clan: Clan, actor: User) -> tuple[ClanInvitation, str]:
+    """Create a single-use invite code for a private clan; return it once (#165).
+
+    Only the clan's current LEADER may create codes, and only for
+    PRIVATE_INVITE clans: anyone can already join a PUBLIC clan directly.
+    The plain code is returned to the caller and never stored: the row keeps
+    its HMAC and the last four characters. A hash collision (about 1 in a
+    trillion per code) is retried with a fresh code. Creating a code also
+    deletes this clan's codes that expired more than
+    ``INVITATION_RETENTION`` ago, so the table stays bounded per clan.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+        InvitationsNotNeededError: If the clan is PUBLIC.
+        InvitationLimitExceededError: If the clan already has
+            ``MAX_ACTIVE_INVITATIONS_PER_CLAN`` active codes.
+    """
+    locked = _lock_clan_for_invitations(clan=clan, actor=actor)
+    if locked.privacy != Clan.Privacy.PRIVATE_INVITE:
+        raise InvitationsNotNeededError(
+            "Public clans don't need invitation codes; anyone can join directly."
+        )
+    now = timezone.now()
+    ClanInvitation.objects.filter(
+        clan=locked, expires_at__lt=now - INVITATION_RETENTION
+    ).delete()
+    if list_active_clan_invitations(clan=locked).count() >= (
+        MAX_ACTIVE_INVITATIONS_PER_CLAN
+    ):
+        raise InvitationLimitExceededError(
+            f"A clan can have at most {MAX_ACTIVE_INVITATIONS_PER_CLAN} active "
+            "invitation codes. Revoke one first."
+        )
+
+    for _ in range(_MAX_CODE_ATTEMPTS):
+        code = generate_code()
+        try:
+            with transaction.atomic():
+                invitation = ClanInvitation.objects.create(
+                    clan=locked,
+                    created_by=actor,
+                    code_hash=hash_code(code),
+                    code_hint=code_hint(code),
+                    expires_at=now + INVITATION_TTL,
+                )
+        except IntegrityError as exc:
+            if _violated_constraint(exc) != INVITATION_CODE_UNIQUE_CONSTRAINT:
+                raise
+            continue
+        return invitation, code
+    raise RuntimeError("Could not generate a unique invitation code.")
+
+
+@transaction.atomic
+def revoke_clan_invitation(*, clan: Clan, actor: User, invitation_id: str) -> None:
+    """Revoke one of ``clan``'s invite codes as its LEADER (#165).
+
+    Idempotent: revoking an already revoked or redeemed code is a no-op.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        ClanInvitation.DoesNotExist: If the code doesn't belong to ``clan``.
+        PermissionDenied: If ``actor`` is not the LEADER, or the clan is
+            institutional.
+    """
+    locked = _lock_clan_for_invitations(clan=clan, actor=actor)
+    invitation = ClanInvitation.objects.select_for_update().get(
+        pk=invitation_id, clan=locked
+    )
+    if invitation.revoked_at is None and invitation.redeemed_at is None:
+        invitation.revoked_at = timezone.now()
+        invitation.save(update_fields=["revoked_at"])
+
+
+def _invitation_clan_id(code_hash: str) -> UUID | None:
+    """Return the clan id of the invitation with ``code_hash``, or None."""
+    return (
+        ClanInvitation.objects.filter(code_hash=code_hash)
+        .values_list("clan_id", flat=True)
+        .first()
+    )
+
+
+def _invalid_code() -> InvalidInvitationCodeError:
+    return InvalidInvitationCodeError("Invalid or expired invitation code.")
+
+
+def _is_redeemable(invitation: ClanInvitation, clan: Clan, now: datetime) -> bool:
+    """Return whether a locked invitation and its locked clan accept a redemption."""
+    clan_is_open = clan.deleted_at is None and clan.type == Clan.ClanType.PRIVATE
+    unused = invitation.redeemed_at is None and invitation.revoked_at is None
+    return clan_is_open and unused and invitation.expires_at > now
+
+
+@transaction.atomic
+def redeem_clan_invitation(*, code: str, user: User) -> ClanMembership:
+    """Join a private clan with a single-use invite code (#165).
+
+    The code is the leader's pre-approval, so the membership is ACCEPTED on
+    the spot, still subject to BR-04's 5-private-clan cap. Locks the clan row
+    first, then the invitation, then the user: the same order as
+    ``accept_join_request``, so the two can't deadlock. A PENDING or REJECTED
+    row for the pair is reused, as in ``join_clan``. The code is only
+    consumed when the join succeeds.
+
+    Raises:
+        InvalidInvitationCodeError: If the code is unknown, expired, used,
+            revoked, or its clan was dissolved.
+        AlreadyClanMemberError: If ``user`` already belongs to the clan.
+        PrivateClanLimitExceededError: If joining would exceed BR-04's cap.
+    """
+    normalized = normalize_code(code)
+    if len(normalized) != CODE_LENGTH:
+        raise _invalid_code()
+    code_hash = hash_code(normalized)
+    clan_id = _invitation_clan_id(code_hash)
+    if clan_id is None:
+        raise _invalid_code()
+
+    # The clan id was read unlocked, so the row may be gone by now: that is
+    # an unusable code like any other, not a server error.
+    locked_clan = Clan.all_objects.select_for_update().filter(pk=clan_id).first()
+    if locked_clan is None:
+        raise _invalid_code()
+    invitation = (
+        ClanInvitation.objects.select_for_update().filter(code_hash=code_hash).first()
+    )
+    now = timezone.now()
+    if invitation is None or not _is_redeemable(invitation, locked_clan, now):
+        raise _invalid_code()
+
+    locked_user = User.objects.select_for_update().get(pk=user.pk)
+    membership = ClanMembership.objects.filter(
+        user=locked_user, clan=locked_clan
+    ).first()
+    if membership is not None and membership.status == ClanMembership.Status.ACCEPTED:
+        raise AlreadyClanMemberError("You are already a member of this clan.")
+    _ensure_private_clan_capacity(locked_user)
+
+    membership = _save_membership_status(
+        user=locked_user,
+        clan=locked_clan,
+        existing=membership,
+        status=ClanMembership.Status.ACCEPTED,
+    )
+
+    invitation.redeemed_by = locked_user
+    invitation.redeemed_at = now
+    invitation.save(update_fields=["redeemed_by", "redeemed_at"])
+    notify_member_joined(clan=locked_clan, member=locked_user)
+    return membership
+
+
+@transaction.atomic
+def kick_member(*, clan: Clan, actor: User, target_user: User) -> None:
+    """Expel ``target_user`` from ``clan`` (T2-41).
+
+    Only the clan's current LEADER may expel members.
+    Expulsion is only permitted for private clans; institutional clans cannot
+    have members expelled individually.
+    Preserves points history contributed to ``clan.total_points`` (BR-08).
+    A leader cannot expel themselves.
+
+    Raises:
+        Clan.DoesNotExist: If the clan was dissolved.
+        PermissionDenied: If ``actor`` is not the clan's current LEADER, or
+            if the clan is institutional.
+        ValueError: If ``target_user`` is ``actor``, or if ``target_user``
+            is not an accepted member of the clan.
+    """
+    locked_clan = _lock_clan_for_leader(
+        clan=clan,
+        actor=actor,
+        not_leader="Only the clan leader can expel members.",
+        not_private="Only private clans allow expelling members.",
+    )
+
+    if actor.pk == target_user.pk:
+        raise ValueError("Leaders cannot expel themselves from the clan.")
+
+    try:
+        membership = ClanMembership.objects.get(
+            clan=locked_clan,
+            user=target_user,
+            status=ClanMembership.Status.ACCEPTED,
+        )
+    except ClanMembership.DoesNotExist as exc:
+        raise ValueError("User is not an accepted member of this clan.") from exc
+
+    if membership.role == ClanMembership.MembershipRole.LEADER:
+        raise ValueError("Cannot expel a clan leader.")
+
+    membership.delete()
+    notify_member_kicked(clan=locked_clan, member=target_user)

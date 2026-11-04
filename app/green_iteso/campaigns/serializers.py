@@ -18,6 +18,9 @@ from .services import (
     can_manage_campaign_for_user,
     compute_campaign_status,
     create_campaign_with_missions,
+    date_changed,
+    ensure_campaign_dates_allowed,
+    ensure_end_date_allowed,
 )
 
 
@@ -78,6 +81,7 @@ class CampaignSerializer(serializers.ModelSerializer):
         allow_null=True,
         error_messages={"does_not_exist": "Clan does not exist or was deleted."},
     )
+    target_clan_name = serializers.SerializerMethodField()
     is_participant = serializers.SerializerMethodField()
     can_manage = serializers.SerializerMethodField()
 
@@ -91,6 +95,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "status",
             "creator",
             "target_clan",
+            "target_clan_name",
             "start_date",
             "end_date",
             "created_at",
@@ -120,15 +125,11 @@ class CampaignSerializer(serializers.ModelSerializer):
         """Validate campaign dates and scope-specific clan requirements."""
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
         end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
-        if start_date is not None and end_date is not None and start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
-        if self.instance is None and end_date is not None:
-            if end_date <= timezone.now():
-                raise serializers.ValidationError(
-                    {"end_date": "End date must be in the future."}
-                )
+        if start_date is not None and end_date is not None:
+            if self.instance is None:
+                ensure_campaign_dates_allowed(start_date, end_date)
+            else:
+                ensure_end_date_allowed(start_date, end_date)
 
         scope = attrs.get("scope", getattr(self.instance, "scope", None))
         target_clan = attrs.get(
@@ -201,6 +202,13 @@ class CampaignSerializer(serializers.ModelSerializer):
             return False
         return instance.participants.filter(user=user).exists()
 
+    def get_target_clan_name(self, instance: Campaign) -> str | None:
+        """Return the targeted clan's name, or ``None`` for a global campaign.
+
+        Lets clients label a clan campaign (#171) without fetching the clan.
+        """
+        return instance.target_clan.name if instance.target_clan_id else None
+
     def get_can_manage(self, instance: Campaign) -> bool:
         """Return whether the request user may manage this campaign.
 
@@ -235,16 +243,26 @@ class CampaignUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {field: "This field cannot be edited." for field in unknown}
             )
+        # Only re-validate dates the client actually changes, so a campaign
+        # that predates these rules can still have its title or description
+        # edited, even when the client resends the stored dates. Unchanged
+        # dates (compared at millisecond precision) are left out of the result
+        # so they are not rewritten, and truncated, when only the title is
+        # edited.
+        unchanged = {
+            field
+            for field in ("start_date", "end_date")
+            if field in attrs
+            and not date_changed(attrs[field], getattr(self.instance, field))
+        }
+        attrs = {key: value for key, value in attrs.items() if key not in unchanged}
+        if "start_date" not in attrs and "end_date" not in attrs:
+            return attrs
         start_date = attrs.get("start_date", self.instance.start_date)
         end_date = attrs.get("end_date", self.instance.end_date)
-        if start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
-        if end_date <= timezone.now():
-            raise serializers.ValidationError(
-                {"end_date": "End date must be in the future."}
-            )
+        ensure_campaign_dates_allowed(
+            start_date, end_date, check_start="start_date" in attrs
+        )
         return attrs
 
     def update(self, instance: Campaign, validated_data: dict[str, Any]) -> Campaign:
@@ -306,14 +324,8 @@ class CampaignProposalSerializer(serializers.ModelSerializer):
         """Validate the proposed campaign's dates."""
         start_date = attrs.get("start_date")
         end_date = attrs.get("end_date")
-        if start_date is not None and end_date is not None and start_date >= end_date:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date."}
-            )
-        if end_date is not None and end_date <= timezone.now():
-            raise serializers.ValidationError(
-                {"end_date": "End date must be in the future."}
-            )
+        if start_date is not None and end_date is not None:
+            ensure_campaign_dates_allowed(start_date, end_date)
         if not attrs.get("missions"):
             raise serializers.ValidationError(
                 {"missions": "A campaign must have at least one mission."}

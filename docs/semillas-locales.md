@@ -167,7 +167,7 @@ institucional ni sustituye la revisión/merge de este PR.
 
 Estos registros sirven para consultar relaciones y estados, pero no permiten
 iniciar sesión como esos usuarios: no se crea un bypass de autenticación en
-Neon dev. Los flujos Admin/Staff, amistades y propuestas de campaña necesitarán
+Neon dev. Los flujos Admin/Staff y propuestas de campaña necesitarán
 escenarios adicionales cuando se integren sus PRs de modelo y API; este
 dataset no acredita esas historias por sí solo.
 

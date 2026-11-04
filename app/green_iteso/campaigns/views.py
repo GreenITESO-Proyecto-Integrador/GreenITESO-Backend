@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from functools import cached_property
 from typing import Any
+from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -37,9 +39,11 @@ from .serializers import (
 from .services import (
     approve_campaign,
     can_manage_campaign,
+    finish_campaign,
     is_clan_leader,
     propose_global_campaign,
     reject_campaign,
+    start_campaign,
     sync_campaign_statuses,
 )
 
@@ -168,6 +172,15 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
                 description="Filter by campaign status.",
             ),
             OpenApiParameter(
+                "target_clan",
+                OpenApiTypes.UUID,
+                description=(
+                    "Only campaigns targeting this clan id, e.g. a clan's active "
+                    "campaigns together with is_active=true. Visibility still "
+                    "applies, so a non-member gets an empty list."
+                ),
+            ),
+            OpenApiParameter(
                 "is_active", bool, description="If true, only IN_PROGRESS campaigns."
             ),
             OpenApiParameter(
@@ -210,6 +223,14 @@ class CampaignListCreateView(CampaignStatusSyncMixin, generics.ListCreateAPIView
             if value.strip()
         ]
         campaign_status = self.request.query_params.get("status")
+        target_clan = self.request.query_params.get("target_clan")
+        if target_clan:
+            try:
+                queryset = queryset.filter(target_clan_id=UUID(target_clan))
+            except ValueError as exc:
+                raise ValidationError(
+                    {"target_clan": "Enter a valid clan id."}
+                ) from exc
         if scope:
             queryset = queryset.filter(scope=scope)
         if scopes:
@@ -255,9 +276,13 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
     lookup_url_kwarg = "campaign_id"
 
     def get_queryset(self) -> QuerySet[Campaign]:
-        return _annotate_is_participant(
-            _visible_campaigns(self.request.user), self.request.user
-        ).prefetch_related("missions__action", "participants")
+        return (
+            _annotate_is_participant(
+                _visible_campaigns(self.request.user), self.request.user
+            )
+            .select_related("target_clan")
+            .prefetch_related("missions__action", "participants")
+        )
 
     @extend_schema(
         operation_id="campaigns_retrieve",
@@ -323,6 +348,80 @@ class CampaignDetailView(CampaignStatusSyncMixin, generics.RetrieveAPIView):
             "leader_clan_ids": _leader_clan_ids(request.user),
         }
         return Response(CampaignSerializer(campaign, context=context).data)
+
+
+class CampaignTransitionView(CampaignStatusSyncMixin, APIView):
+    """Base for manager-only lifecycle transitions on a single campaign."""
+
+    permission_classes = [IsAuthenticated]
+    denied_message = "You cannot manage this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        raise NotImplementedError
+
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        visible = get_object_or_404(
+            _visible_campaigns(request.user).select_related("target_clan"),
+            pk=campaign_id,
+        )
+        if not can_manage_campaign(request.user, visible):
+            raise PermissionDenied(self.denied_message)
+        campaign = self.transition(visible.pk)
+        context = {
+            "request": request,
+            "leader_clan_ids": _leader_clan_ids(request.user),
+        }
+        return Response(CampaignSerializer(campaign, context=context).data)
+
+
+class CampaignStartView(CampaignTransitionView):
+    """Start a campaign in promotion immediately."""
+
+    denied_message = "You cannot start this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        return start_campaign(campaign_id)
+
+    @extend_schema(
+        operation_id="campaigns_start",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            200: CampaignSerializer,
+            400: OpenApiResponse(description="Campaign is not in PROMOTION"),
+            403: OpenApiResponse(description="User cannot manage this campaign"),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        return super().post(request, campaign_id)
+
+
+class CampaignFinishView(CampaignTransitionView):
+    """Finish an in-progress campaign immediately."""
+
+    denied_message = "You cannot finish this campaign."
+
+    def transition(self, campaign_id: Any) -> Campaign:
+        return finish_campaign(campaign_id)
+
+    @extend_schema(
+        operation_id="campaigns_finish",
+        tags=["campaigns"],
+        request=None,
+        responses={
+            200: CampaignSerializer,
+            400: OpenApiResponse(description="Campaign is not IN_PROGRESS"),
+            403: OpenApiResponse(description="User cannot manage this campaign"),
+            404: OpenApiResponse(
+                description="Campaign does not exist or is not visible"
+            ),
+        },
+    )
+    def post(self, request: Request, campaign_id: Any) -> Response:
+        return super().post(request, campaign_id)
 
 
 class CampaignMissionListCreateView(

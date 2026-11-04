@@ -56,7 +56,7 @@ def campaign_data(**overrides: Any) -> dict[str, Any]:
         "description": "Campaign description",
         "scope": Campaign.Scope.GLOBAL,
         "status": Campaign.Status.PROMOTION,
-        "start_date": current_time + timedelta(hours=1),
+        "start_date": current_time + timedelta(days=2),
         "end_date": current_time + timedelta(days=7),
     }
     data.update(overrides)

@@ -72,7 +72,10 @@ class TestCampaignSerializer:
         )
 
         assert not serializer.is_valid()
-        assert serializer.errors["end_date"][0] == "End date must be after start date."
+        assert (
+            serializer.errors["end_date"][0]
+            == "End date must be at least one day after start date."
+        )
 
     def test_partial_end_date_update_uses_existing_start_date(
         self, campaign: Campaign

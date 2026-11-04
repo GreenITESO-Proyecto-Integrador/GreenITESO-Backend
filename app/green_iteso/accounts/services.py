@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth.models import update_last_login
+from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .avatars import delete_profile_avatar, save_profile_avatar
 from .exceptions import (
     AccountConflictError,
     AccountDisabledError,
@@ -26,6 +28,9 @@ from .identity import ExternalIdentity, IdentityProvider, get_identity_provider
 from .models import User, UserProfile, UserRoleAudit
 
 logger = logging.getLogger(__name__)
+
+# Points charged for every nickname change after the first, which is free (#175).
+NICKNAME_CHANGE_COST_POINTS = 50
 
 
 def ensure_profile(user: User) -> UserProfile:
@@ -61,12 +66,117 @@ def update_profile(
     if visibility is not None:
         profile.visibility = visibility
         update_fields.append("visibility")
+    previous_key = ""
     if avatar_url is not None:
+        # A pasted link replaces an uploaded photo, so only one source is live.
+        previous_key = profile.avatar_object_key
         profile.avatar_url = avatar_url
-        update_fields.append("avatar_url")
+        profile.avatar_object_key = ""
+        update_fields += ["avatar_url", "avatar_object_key"]
     if update_fields:
         profile.save(update_fields=update_fields)
+    if previous_key:
+        user_id = user.pk
+        transaction.on_commit(lambda: delete_profile_avatar(user_id, previous_key))
     return profile
+
+
+@transaction.atomic
+def set_profile_avatar(*, user: User, uploaded: UploadedFile | None) -> UserProfile:
+    """Replace, or with ``uploaded=None`` remove, ``user``'s profile photo (#170).
+
+    An upload also clears any pasted ``avatar_url``. The new key is generated
+    by ``avatars.save_profile_avatar`` and is scoped to this user. The
+    previous file is deleted only once the change commits, so a rolled-back
+    request never loses the current photo.
+
+    Raises:
+        InvalidImageError: If the upload is not a JPG/PNG/WEBP of at most 5 MB.
+    """
+    ensure_profile(user)
+    profile = UserProfile.objects.select_for_update().get(user=user)
+    previous_key = profile.avatar_object_key
+    new_key = save_profile_avatar(user.pk, uploaded) if uploaded is not None else ""
+
+    try:
+        profile.avatar_object_key = new_key
+        profile.avatar_url = ""
+        profile.save(update_fields=["avatar_object_key", "avatar_url"])
+    except Exception:
+        if new_key:
+            delete_profile_avatar(user.pk, new_key)
+        raise
+    if previous_key and previous_key != new_key:
+        user_id = user.pk
+        transaction.on_commit(lambda: delete_profile_avatar(user_id, previous_key))
+    return profile
+
+
+class NicknameUnchangedError(ValueError):
+    """Raised when the requested nickname is the one the user already has."""
+
+
+class InsufficientPointsForNicknameError(ValueError):
+    """Raised when ``available_points`` cannot cover a nickname change."""
+
+
+@dataclass(frozen=True)
+class NicknameChange:
+    """Outcome of ``change_nickname``, enough for a client to refresh its balance."""
+
+    nickname: str
+    points_spent: int
+    available_points: int
+    next_change_cost: int
+
+
+def nickname_change_cost(profile: UserProfile) -> int:
+    """Return what the user's next nickname change costs: 0 the first time."""
+    return 0 if profile.nickname_changes == 0 else NICKNAME_CHANGE_COST_POINTS
+
+
+@transaction.atomic
+def change_nickname(*, user: User, nickname: str) -> NicknameChange:
+    """Set ``user``'s nickname; the first change is free, later ones cost points (#175).
+
+    Locks the user before the profile, matching onboarding's lock order, so
+    overlapping onboarding and nickname changes cannot deadlock.
+    Locks the profile row so two concurrent changes cannot both pass the
+    balance check or both count as "the first". Points come out of
+    ``available_points`` only: ``total_points`` (ranking) is untouched, the
+    same as buying from the store. The caller validates the nickname's shape.
+
+    Raises:
+        NicknameUnchangedError: If ``nickname`` is already the user's nickname;
+            nothing is charged.
+        InsufficientPointsForNicknameError: If the balance is below the cost.
+    """
+    # A NO KEY UPDATE lock preserves the user-before-profile ordering shared
+    # with onboarding without blocking notification FK checks (KEY SHARE).
+    User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    profile = UserProfile.objects.select_for_update().get(pk=ensure_profile(user).pk)
+    user.refresh_from_db(fields=["nickname"])
+    if nickname == user.nickname:
+        raise NicknameUnchangedError("That is already your nickname.")
+
+    cost = nickname_change_cost(profile)
+    if profile.available_points < cost:
+        raise InsufficientPointsForNicknameError(
+            f"Changing your nickname costs {cost} points "
+            f"and you have {profile.available_points}."
+        )
+
+    user.nickname = nickname
+    user.save(update_fields=["nickname"])
+    profile.available_points -= cost
+    profile.nickname_changes += 1
+    profile.save(update_fields=["available_points", "nickname_changes"])
+    return NicknameChange(
+        nickname=nickname,
+        points_spent=cost,
+        available_points=profile.available_points,
+        next_change_cost=nickname_change_cost(profile),
+    )
 
 
 @dataclass(frozen=True)

@@ -19,3 +19,4 @@ channels
 pytest-asyncio==1.4.0
 daphne==4.2.3
 google-cloud-storage==3.17.0
+Pillow>=10.0.0

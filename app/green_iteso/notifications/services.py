@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
+from itertools import batched
 from typing import TYPE_CHECKING
 
 from asgiref.sync import async_to_sync
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NOTIFICATION_EVENT = "notification.created"
+BULK_CREATE_BATCH_SIZE = 500
 
 
 def user_group_name(user_id: object) -> str:
@@ -43,6 +46,45 @@ def notify(user: User, notification_type: str, **context: object) -> Notificatio
     )
     transaction.on_commit(lambda: push_notification(notification))
     return notification
+
+
+def notify_many(
+    users: Iterable[User], notification_type: str, **context: object
+) -> list[Notification]:
+    """Persist the same templated notification for every user in one pass.
+
+    The template is rendered once and the rows are inserted in batches of
+    ``BULK_CREATE_BATCH_SIZE``. A single ``on_commit`` callback pushes the whole
+    batch, so a rollback announces nothing. The inserts are atomic: if a later
+    batch fails, no row is kept. ``users`` may be a lazy iterator, which keeps
+    large audiences out of memory until they are inserted.
+    """
+    title, message = render_notification(notification_type, **context)
+    notifications: list[Notification] = []
+    with transaction.atomic():
+        for chunk in batched(users, BULK_CREATE_BATCH_SIZE):
+            notifications.extend(
+                Notification.objects.bulk_create(
+                    [
+                        Notification(
+                            user=user,
+                            title=title,
+                            message=message,
+                            notification_type=notification_type,
+                        )
+                        for user in chunk
+                    ]
+                )
+            )
+        if notifications:
+            transaction.on_commit(lambda: push_notifications(notifications))
+    return notifications
+
+
+def push_notifications(notifications: Iterable[Notification]) -> None:
+    """Push each notification to its owner; one failure never stops the rest."""
+    for notification in notifications:
+        push_notification(notification)
 
 
 def push_notification(notification: Notification) -> None:

@@ -184,6 +184,7 @@ jobs:
           CLOUD_RUN_MAX_INSTANCES: ${{ secrets.CLOUD_RUN_MAX_INSTANCES }}
           CLOUD_RUN_CONCURRENCY: ${{ secrets.CLOUD_RUN_CONCURRENCY }}
           GCS_EVIDENCE_BUCKET: ${{ secrets.GCS_EVIDENCE_BUCKET }}
+          DJANGO_NUM_PROXIES: ${{ secrets.DJANGO_NUM_PROXIES }}
         run: scripts/release.sh
 
       - name: Record successful release digest

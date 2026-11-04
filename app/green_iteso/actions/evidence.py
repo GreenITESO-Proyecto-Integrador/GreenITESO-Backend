@@ -3,9 +3,10 @@
 The registration form sends the image as the multipart field ``evidence``.
 Local development keeps the file under MEDIA_ROOT. A deployed service that
 sets ``GCS_EVIDENCE_BUCKET`` stores the same object key in that private bucket
-and serves administrators a short-lived signed URL. The bucket name is never
-hardcoded, and this module does not contact cloud storage unless that
-deployed setting is on.
+and the evidence endpoint returns those bytes. A redirect to the bucket is
+blocked by the browser because Cloud Storage sends no CORS header. The bucket
+name is never hardcoded, and this module does not contact cloud storage unless
+that deployed setting is on.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ _JPEG = "image/jpeg"
 _PNG = "image/png"
 _WEBP = "image/webp"
 _EXTENSIONS = {_JPEG: ".jpg", _PNG: ".png", _WEBP: ".webp"}
+# Phones and some browsers label a JPEG as image/jpg or image/pjpeg.
+_DECLARED_ALIASES = {"image/jpg": _JPEG, "image/pjpeg": _JPEG}
 SIGNED_URL_TTL = timedelta(minutes=10)
 
 
@@ -73,6 +76,12 @@ def _signing_credentials() -> tuple[str, str]:
     return email, token
 
 
+def declared_image_type(content_type: str) -> str:
+    """Normalize a part Content-Type before comparing it to the file signature."""
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    return _DECLARED_ALIASES.get(declared, declared)
+
+
 def detect_image_kind(header: bytes) -> str | None:
     """Return the image media type implied by the file signature."""
     if header.startswith(b"\xff\xd8\xff"):
@@ -93,7 +102,7 @@ def validate_evidence_upload(uploaded: UploadedFile) -> str:
     kind = detect_image_kind(header)
     if kind is None:
         raise ValidationError("Usa una imagen JPG, PNG o WEBP.")
-    declared = getattr(uploaded, "content_type", "") or ""
+    declared = declared_image_type(getattr(uploaded, "content_type", "") or "")
     if declared in _EXTENSIONS and declared != kind:
         raise ValidationError("Usa una imagen JPG, PNG o WEBP.")
     if (
@@ -197,7 +206,35 @@ def signed_evidence_url(object_key: str) -> str:
     key = safe_object_key(object_key)
     if key is None or not gcs_evidence_enabled():
         return ""
+    return signed_read_url(_gcs_bucket().blob(key))
+
+
+def gcs_evidence_bytes(object_key: str) -> tuple[bytes, str] | None:
+    """Read one stored photograph from the private bucket.
+
+    The audit page fetches this through the API. Returning the bytes keeps the
+    browser on our origin.
+    """
+    key = safe_object_key(object_key)
+    if key is None or not gcs_evidence_enabled():
+        return None
     blob = _gcs_bucket().blob(key)
+    if not blob.exists():
+        return None
+    payload = blob.download_as_bytes()
+    if len(payload) > MAX_EVIDENCE_BYTES:
+        return None
+    kind = detect_image_kind(payload[:16])
+    if kind is None:
+        return None
+    return payload, kind
+
+
+def signed_read_url(blob: Any) -> str:
+    """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
+
+    Shared with ``core.image_storage``, which serves avatars from the same bucket.
+    """
     if not blob.exists():
         return ""
     try:

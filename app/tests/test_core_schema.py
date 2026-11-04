@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from green_iteso.accounts.models import (
     Clan,
+    ClanInvitation,
     ClanMembership,
     User,
     UserProfile,
@@ -35,6 +36,7 @@ DOMAIN_TABLES = {
     Clan: "accounts_clan",
     UserProfile: "accounts_user_profile",
     ClanMembership: "accounts_clan_membership",
+    ClanInvitation: "accounts_clan_invitation",
     ActionCategory: "actions_action_category",
     ActionMaster: "actions_action_master",
     ActionLog: "actions_action_log",
@@ -83,7 +85,7 @@ def test_custom_user_table_replaces_default_auth_user_table() -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_domain_models_use_canonical_tables_and_preserve_auth_m2m_names() -> None:
-    assert len(DOMAIN_TABLES) == 12
+    assert len(DOMAIN_TABLES) == 13
     assert {model._meta.db_table for model in DOMAIN_TABLES} == set(
         DOMAIN_TABLES.values()
     )
@@ -320,6 +322,35 @@ def test_profile_visibility_check_is_a_database_constraint() -> None:
 
 
 @pytest.mark.django_db
+def test_clan_invitation_code_hash_is_unique_at_db_level() -> None:
+    clan = Clan.objects.create(name="Invite Clan", type=Clan.ClanType.PRIVATE)
+    expires_at = timezone.now()
+    ClanInvitation.objects.create(
+        clan=clan, code_hash="a" * 64, code_hint="AAAA", expires_at=expires_at
+    )
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            ClanInvitation.objects.create(
+                clan=clan, code_hash="a" * 64, code_hint="AAAA", expires_at=expires_at
+            )
+
+
+@pytest.mark.django_db
+def test_clan_invitation_redeemer_requires_a_redemption_time() -> None:
+    clan = Clan.objects.create(name="Invite Clan", type=Clan.ClanType.PRIVATE)
+    redeemer = User.objects.create_user(email="redeemer@iteso.mx")
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            ClanInvitation.objects.create(
+                clan=clan,
+                code_hash="b" * 64,
+                code_hint="BBBB",
+                expires_at=timezone.now(),
+                redeemed_by=redeemer,
+            )
+
+
+@pytest.mark.django_db
 def test_profile_available_points_check_is_a_database_constraint() -> None:
     user = User.objects.create_user(email="available-points@iteso.mx")
     profile = UserProfile.objects.create(user=user)
@@ -405,7 +436,7 @@ def test_legacy_action_validation_value_migrates_to_approved_none_enum() -> None
     forward_target = [
         # Pinned to the accounts leaf so this actions-focused rehearsal leaves
         # accounts untouched; bump this whenever accounts gains a migration.
-        ("accounts", "0016_delete_friendship"),
+        ("accounts", "0019_userprofile_nickname_changes"),
         ("actions", "0005_alter_actioncategory_table_alter_actionlog_table_and_more"),
         (
             "campaigns",
@@ -588,6 +619,174 @@ def test_accounts_0016_migration_drops_the_friendship_table_and_keeps_users() ->
         assert migrated_ana.first_name == "Ana"
         assert new_user_model.objects.filter(pk=beto.pk).exists()
         assert "accounts_friendship" not in connection.introspection.table_names()
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0017_migration_adds_clan_invitations_and_keeps_clans() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0017 only adds the clan invitation table (#165), so existing clans and
+    memberships from 0016 must survive and accept invitations right away.
+    """
+    old_target = [("accounts", "0016_delete_friendship")]
+    new_target = [("accounts", "0017_clan_invitation")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_clan_model = old_apps.get_model("accounts", "Clan")
+    old_membership_model = old_apps.get_model("accounts", "ClanMembership")
+
+    leader = old_user_model.objects.create(email="lead@iteso.mx")
+    clan = old_clan_model.objects.create(name="Pre-invite Clan", type="PRIVATE")
+    old_membership_model.objects.create(user=leader, clan=clan, role="LEADER")
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_clan_model = new_apps.get_model("accounts", "Clan")
+        new_membership_model = new_apps.get_model("accounts", "ClanMembership")
+        new_invitation_model = new_apps.get_model("accounts", "ClanInvitation")
+
+        assert new_clan_model.objects.get(pk=clan.pk).name == "Pre-invite Clan"
+        assert new_membership_model.objects.filter(clan_id=clan.pk).count() == 1
+        invitation = new_invitation_model.objects.create(
+            clan_id=clan.pk,
+            created_by_id=leader.pk,
+            code_hash="c" * 64,
+            code_hint="CCCC",
+            expires_at=timezone.now(),
+        )
+        assert invitation.redeemed_at is None
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0018_migration_adds_avatar_object_key_and_keeps_links() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0018 adds ``UserProfile.avatar_object_key`` for uploaded photos (#170).
+    A profile from 0017 keeps its pasted ``avatar_url`` and starts with no
+    uploaded key.
+    """
+    old_target = [("accounts", "0017_clan_invitation")]
+    new_target = [("accounts", "0018_userprofile_avatar_object_key")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user = old_apps.get_model("accounts", "User").objects.create(
+        email="pre-upload@iteso.mx"
+    )
+    old_apps.get_model("accounts", "UserProfile").objects.create(
+        user=old_user, avatar_url="https://example.com/me.jpg"
+    )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        profile = new_apps.get_model("accounts", "UserProfile").objects.get(
+            user_id=old_user.pk
+        )
+        assert profile.avatar_url == "https://example.com/me.jpg"
+        assert profile.avatar_object_key == ""
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_accounts_0019_migration_defaults_nickname_changes_to_zero() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0019 only adds ``nickname_changes``; profiles that exist before it must keep
+    their data and start at 0, so their first nickname change is still free.
+    """
+    old_target = [("accounts", "0018_userprofile_avatar_object_key")]
+    new_target = [("accounts", "0019_userprofile_nickname_changes")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user_model = old_apps.get_model("accounts", "User")
+    old_profile_model = old_apps.get_model("accounts", "UserProfile")
+    ana = old_user_model.objects.create(email="ana@iteso.mx", nickname="Ana")
+    old_profile_model.objects.create(user_id=ana.pk, available_points=40)
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        migrated = new_apps.get_model("accounts", "UserProfile").objects.get(
+            user_id=ana.pk
+        )
+
+        assert migrated.nickname_changes == 0
+        assert migrated.available_points == 40
+        migrated_user = new_apps.get_model("accounts", "User").objects.get(pk=ana.pk)
+        assert migrated_user.nickname == "Ana"
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_notifications_0004_migration_keeps_rows_and_accepts_clan_types() -> None:
+    """Upgrade test CLAUDE.md requires for every PR that changes models.
+
+    0004 adds the clan notification types (T2-45) to the choices and to the
+    ``notification_type_valid`` check, so existing notifications must survive
+    and a clan type must be accepted only afterwards.
+    """
+    accounts_target = ("accounts", "0016_delete_friendship")
+    old_target = [accounts_target, ("notifications", "0003_notification_soft_delete")]
+    new_target = [accounts_target, ("notifications", "0004_notification_types_clan")]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user = old_apps.get_model("accounts", "User").objects.create(
+        email="ana@iteso.mx"
+    )
+    old_notification_model = old_apps.get_model("notifications", "Notification")
+    old_notification_model.objects.create(
+        user_id=old_user.pk,
+        title="Hola",
+        message="Mensaje previo",
+        notification_type="SYSTEM",
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        old_notification_model.objects.create(
+            user_id=old_user.pk,
+            title="Clan",
+            message="Aún no existe el tipo",
+            notification_type="CLAN_KICKED",
+        )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_notification_model = new_apps.get_model("notifications", "Notification")
+
+        assert new_notification_model.objects.get(user_id=old_user.pk).message == (
+            "Mensaje previo"
+        )
+        created = new_notification_model.objects.create(
+            user_id=old_user.pk,
+            title="Clan",
+            message="Ya existe el tipo",
+            notification_type="CLAN_KICKED",
+        )
+        assert created.notification_type == "CLAN_KICKED"
     finally:
         cleanup_executor = MigrationExecutor(connection)
         cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())

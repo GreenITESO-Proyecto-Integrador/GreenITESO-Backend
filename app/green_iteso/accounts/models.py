@@ -61,6 +61,33 @@ class User(AbstractUser):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    ANONYMOUS_DISPLAY_NAME = "Usuario GreenITESO"
+
+    @property
+    def public_display_name(self) -> str:
+        """Name other users see: nickname, else full name, never the email.
+
+        Shared by the user ranking, clan rosters and join requests, so a person
+        is labeled the same way everywhere.
+        """
+        return (
+            self.nickname.strip()
+            or self.get_full_name().strip()
+            or self.ANONYMOUS_DISPLAY_NAME
+        )
+
+    def name_shown_to_others(self) -> str:
+        """``public_display_name``, without the real name for PRIVATE profiles.
+
+        The one rule for naming a person to someone else (clan rosters and
+        clan notifications): a PRIVATE profile shows only its nickname, the
+        same way the ranking hides it, and falls back to the anonymous label.
+        """
+        profile = getattr(self, "profile", None)
+        if profile is not None and profile.visibility == UserProfile.Visibility.PRIVATE:
+            return self.nickname.strip() or self.ANONYMOUS_DISPLAY_NAME
+        return self.public_display_name
+
     class Meta:
         db_table = "accounts_user"
         constraints = [
@@ -193,11 +220,15 @@ class UserProfile(models.Model):
     bio = models.CharField(max_length=500, blank=True)
     preferences = models.JSONField(default=dict, blank=True)
     unlocked_cosmetics = models.JSONField(default=list, blank=True)
-    # The object itself lives in Cloud Storage (T2-21); only its URL is
-    # persisted here, never the binary. The GCS bucket/account is not
-    # provisioned yet (see docs/avatar-upload.md), so this is populated by
-    # whatever the client uploaded the file to in the meantime.
+    # A profile photo is either an external https link the user pasted
+    # (``avatar_url``, T2-21) or a file uploaded through
+    # /profile/me/avatar/ and stored privately under ``avatar_object_key``
+    # (#170). Setting one clears the other; see docs/avatar-upload.md.
     avatar_url = models.URLField(max_length=500, blank=True)
+    avatar_object_key = models.CharField(max_length=500, blank=True)
+    # How many times the user has changed their nickname. The first change is
+    # free; later ones cost points (#175), see ``services.change_nickname``.
+    nickname_changes = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         db_table = "accounts_user_profile"
@@ -286,6 +317,65 @@ class ClanMembership(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user.email} @ {self.clan.name}"
+
+
+class ClanInvitation(models.Model):
+    """Single-use invite code for joining a private clan (#165).
+
+    Only an HMAC of the code is stored (``code_hash``): the plain code is
+    shown to the leader once, when it is created. ``code_hint`` keeps the last
+    four characters so the leader can tell active codes apart. A code is
+    usable while it is not expired, redeemed, or revoked; see
+    ``clans.services.redeem_clan_invitation``.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clan = models.ForeignKey(
+        "accounts.Clan", on_delete=models.CASCADE, related_name="invitations"
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_clan_invitations",
+    )
+    code_hash = models.CharField(max_length=64)
+    code_hint = models.CharField(max_length=4)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    redeemed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="redeemed_clan_invitations",
+    )
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_clan_invitation"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["code_hash"], name="clan_invitation_code_hash_unique"
+            ),
+            # A redeemer always has a redemption time. The reverse can't be
+            # enforced: SET_NULL clears redeemed_by if that user is deleted.
+            models.CheckConstraint(
+                condition=Q(redeemed_by__isnull=True) | Q(redeemed_at__isnull=False),
+                name="clan_invitation_redeemed_at_set",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["clan", "expires_at"], name="clan_invitation_clan_exp_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Invitation ••••{self.code_hint} @ {self.clan_id}"
 
 
 class UserRoleAudit(models.Model):

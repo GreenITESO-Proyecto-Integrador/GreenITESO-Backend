@@ -10,19 +10,30 @@ from rest_framework import serializers
 
 from green_iteso.actions.models import ActionCategory
 
+from .avatars import public_avatar_url, user_avatar_url
 from .models import User, UserProfile, UserRoleAudit
 from .selectors import EcologicalProfile
+from .services import nickname_change_cost
 
 _ALLOWED_AVATAR_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 _MAX_PREFERENCES_BYTES = 10_000
 
 
-class UserSerializer(serializers.ModelSerializer):
+class UserAvatarMixin(serializers.Serializer):  # pylint: disable=abstract-method
+    """Adds the user's profile photo URL (#170); "" when there is none."""
+
+    avatar_url = serializers.SerializerMethodField()
+
+    def get_avatar_url(self, user: User) -> str:
+        return user_avatar_url(user, self.context.get("request"))
+
+
+class UserSerializer(UserAvatarMixin, serializers.ModelSerializer):
     """Read-only representation of an institutional account."""
 
     class Meta:
         model = User
-        fields = ["id", "email", "role", "date_joined"]
+        fields = ["id", "email", "role", "date_joined", "avatar_url"]
         read_only_fields = fields
 
 
@@ -60,12 +71,12 @@ class LoginRequestSerializer(serializers.Serializer):  # pylint: disable=abstrac
     )
 
 
-class LoginUserSerializer(serializers.ModelSerializer):
+class LoginUserSerializer(UserAvatarMixin, serializers.ModelSerializer):
     """The account summary returned next to the JWT pair."""
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name", "role"]
+        fields = ["id", "email", "first_name", "last_name", "role", "avatar_url"]
         read_only_fields = fields
 
 
@@ -122,7 +133,9 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
         child=serializers.CharField(),
         default=list,
     )
-    avatar_url = serializers.CharField(source="profile.avatar_url")
+    avatar_url = serializers.SerializerMethodField()
+    nickname = serializers.CharField(source="user.nickname")
+    nickname_change_cost = serializers.SerializerMethodField()
     total_points = serializers.IntegerField(source="profile.total_points")
     available_points = serializers.IntegerField(source="profile.available_points")
     current_streak = serializers.IntegerField(source="profile.current_streak")
@@ -132,6 +145,14 @@ class EcologicalProfileSerializer(serializers.Serializer):  # pylint: disable=ab
     finished_campaigns = FinishedCampaignSerializer(many=True)
     institutional_clan = serializers.SerializerMethodField()
     active_private_clan = serializers.SerializerMethodField()
+
+    def get_avatar_url(self, obj: EcologicalProfile) -> str:
+        """The photo URL to display: the upload's serving URL or the pasted link."""
+        return public_avatar_url(obj.profile, self.context.get("request"))
+
+    def get_nickname_change_cost(self, obj: EcologicalProfile) -> int:
+        """Points the next nickname change costs: 0 the first time (#175)."""
+        return nickname_change_cost(obj.profile)
 
     def get_institutional_clan(self, obj: EcologicalProfile) -> dict[str, Any] | None:
         clan = obj.profile.institutional_clan
@@ -260,6 +281,16 @@ def _validate_avatar_url(value: str) -> None:
         )
 
 
+class ProfileAvatarUploadSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Multipart input for POST /api/v1/profile/me/avatar/ (#170).
+
+    Only checks that a file was sent; ``core.image_storage`` validates the
+    image itself (signature, type, and size).
+    """
+
+    avatar = serializers.FileField()
+
+
 def _validate_preferences(value: object) -> None:
     if not isinstance(value, dict):
         raise serializers.ValidationError("preferences must be a JSON object.")
@@ -288,3 +319,18 @@ class ProfileUpdateSerializer(serializers.Serializer):  # pylint: disable=abstra
         required=False,
         validators=[_validate_avatar_url],
     )
+
+
+class NicknameChangeSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Input payload for POST /api/v1/profile/me/nickname/ (#175)."""
+
+    nickname = serializers.CharField(max_length=50)
+
+
+class NicknameChangeResultSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Result of a nickname change: the new nickname and the balance after paying."""
+
+    nickname = serializers.CharField()
+    points_spent = serializers.IntegerField()
+    available_points = serializers.IntegerField()
+    next_change_cost = serializers.IntegerField()

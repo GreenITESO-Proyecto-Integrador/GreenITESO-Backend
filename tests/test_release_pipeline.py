@@ -53,6 +53,7 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "EXPECTED_IMAGE_DIGEST": "sha256:" + "a" * 64,
         "RELEASE_RECORD_PATH": str(tmp_path / "release-record.txt"),
         "BUILD_IMAGE": "false",
+        "DJANGO_NUM_PROXIES": "2",
     }
 
 
@@ -348,6 +349,51 @@ def test_evidence_bucket_is_optional_and_validated(tmp_path: Path) -> None:
     assert not bad_log.exists()
 
 
+def test_num_proxies_survives_the_service_deploy(tmp_path: Path) -> None:
+    """Set by hand on Cloud Run it would be dropped by the next release (#186)."""
+    env = _production_build_env(tmp_path)
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode == 0, result.stderr
+    lines = log.read_text().splitlines()
+    deploy = next(line for line in lines if "run deploy" in line)
+    assert "DJANGO_NUM_PROXIES=2" in deploy
+    migration = next(
+        line
+        for line in lines
+        if "run jobs create greeniteso-migrate-production " in line
+        or "run jobs deploy greeniteso-migrate-production " in line
+    )
+    assert "DJANGO_NUM_PROXIES" not in migration
+
+
+def test_num_proxies_is_required_for_staging_and_production(tmp_path: Path) -> None:
+    for environment in ("staging", "production"):
+        case_dir = tmp_path / environment
+        case_dir.mkdir()
+        env = (
+            _production_build_env(case_dir)
+            if environment == "production"
+            else _base_env(case_dir)
+        )
+        env.pop("DJANGO_NUM_PROXIES")
+        log = _fake_building_commands(case_dir)
+        result = _run_script(env)
+        assert result.returncode != 0
+        assert f"DJANGO_NUM_PROXIES is required for {environment}" in result.stderr
+        assert not log.exists()
+
+
+def test_num_proxies_must_be_an_integer(tmp_path: Path) -> None:
+    env = _production_build_env(tmp_path)
+    env["DJANGO_NUM_PROXIES"] = "two"
+    log = _fake_building_commands(tmp_path)
+    result = _run_script(env)
+    assert result.returncode != 0
+    assert "DJANGO_NUM_PROXIES must be a non-negative integer" in result.stderr
+    assert not log.exists()
+
+
 def test_production_release_builds_and_skips_staging_provenance() -> None:
     production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
     staging = (ROOT / ".github/workflows/deploy-staging.yml").read_text()
@@ -363,6 +409,7 @@ def test_production_release_builds_and_skips_staging_provenance() -> None:
         .endswith("if: inputs.environment == 'staging'")
     )
     assert "GCS_EVIDENCE_BUCKET: ${{ secrets.GCS_EVIDENCE_BUCKET }}" in reusable
+    assert "DJANGO_NUM_PROXIES: ${{ secrets.DJANGO_NUM_PROXIES }}" in reusable
     required_list = reusable.split("for name in GCP_PROJECT_ID", 1)[1].split("; do", 1)[
         0
     ]

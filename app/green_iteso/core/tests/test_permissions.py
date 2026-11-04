@@ -77,11 +77,11 @@ def test_is_clan_leader_allows_leader_of_the_clan() -> None:
 
 
 @pytest.mark.django_db
-def test_is_clan_leader_allows_admin_regardless_of_membership() -> None:
+def test_is_clan_leader_denies_admin_who_does_not_lead_the_clan() -> None:
     admin = User.objects.create_user(email="admin@iteso.mx", role=User.Role.ADMIN)
     clan = Clan.objects.create(name="Green Team", type=Clan.ClanType.PRIVATE)
 
-    assert IsClanLeader().has_object_permission(_request(admin), None, clan) is True
+    assert IsClanLeader().has_object_permission(_request(admin), None, clan) is False
 
 
 @pytest.mark.django_db

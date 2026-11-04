@@ -179,6 +179,11 @@ release, so there is no staging release record to reuse. In this mode:
   service deploy. `gcloud run deploy --set-env-vars` replaces every variable on
   the service, so any runtime variable must be listed in `scripts/release.sh`
   or a release would silently drop it.
+- `DJANGO_NUM_PROXIES` (GitHub Environment secret) is passed the same way. It is
+  the number of proxies that append to `X-Forwarded-For` before the app
+  (frontend nginx → Cloud Run → backend) and the auth throttles use it to read
+  the real client IP (#186). Measure the chain before setting it. Releases to
+  `staging` and `production` fail without it; dev may omit it.
 
 To go back to the staging-first flow: uncomment both evidence blocks, restore
 `if: inputs.environment != 'dev'` on the provenance step in `_deploy.yml`, and

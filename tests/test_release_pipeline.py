@@ -19,6 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release.sh"
 PROVENANCE = ROOT / "scripts" / "verify-source-release.sh"
+PRODUCTION_SOURCE = ROOT / "scripts" / "verify-production-source.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "_deploy.yml"
 PROMOTE = ROOT / ".github" / "workflows" / "promote.yml"
 DATABASE_MIGRATIONS = ROOT / ".github" / "workflows" / "database-migrations.yml"
@@ -414,6 +415,119 @@ def test_production_release_builds_and_skips_staging_provenance() -> None:
         0
     ]
     assert "GCS_EVIDENCE_BUCKET" not in required_list
+
+
+REPOSITORY = "GreenITESO-Proyecto-Integrador/GreenITESO-Backend"
+PROD_SHA = "f" * 40
+
+
+def _promotion_pr(**overrides: object) -> dict[str, object]:
+    pull: dict[str, object] = {
+        "number": 255,
+        "merged_at": "2026-11-05T14:35:08Z",
+        "merge_commit_sha": PROD_SHA,
+        "base": {"ref": "prod"},
+        "head": {"ref": "preprod", "repo": {"full_name": REPOSITORY}},
+    }
+    pull.update(overrides)
+    return pull
+
+
+def _run_production_source(
+    tmp_path: Path,
+    *,
+    response: str | None = None,
+    api_status: int = 0,
+    sha: str = PROD_SHA,
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    payload = tmp_path / "response.json"
+    payload.write_text(response if response is not None else "[]")
+    gh = fake_bin / "gh"
+    gh.write_text(
+        f'#!/bin/sh\ncase "$2" in\n'
+        f"  */commits/*/pulls) cat {payload}; exit {api_status} ;;\n"
+        "esac\nexit 99\n"
+    )
+    gh.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "RELEASE_SHA": sha,
+    }
+    return subprocess.run(
+        [str(PRODUCTION_SOURCE)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_production_source_accepts_a_merged_preprod_promotion(tmp_path: Path) -> None:
+    result = _run_production_source(tmp_path, response=json.dumps([_promotion_pr()]))
+    assert result.returncode == 0, result.stderr
+    assert "Verified promotion PR #255" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "pull",
+    [
+        _promotion_pr(merged_at=None),
+        _promotion_pr(merge_commit_sha="e" * 40),
+        _promotion_pr(base={"ref": "preprod"}),
+        _promotion_pr(head={"ref": "dev", "repo": {"full_name": REPOSITORY}}),
+        _promotion_pr(
+            head={
+                "ref": "preprod",
+                "repo": {"full_name": "attacker/GreenITESO-Backend"},
+            }
+        ),
+        _promotion_pr(head={"ref": "preprod", "repo": None}),
+    ],
+    ids=[
+        "not-merged",
+        "different-merge-commit",
+        "wrong-base",
+        "not-from-preprod",
+        "fork",
+        "deleted-fork",
+    ],
+)
+def test_production_source_rejects_anything_but_a_preprod_promotion(
+    tmp_path: Path, pull: dict[str, object]
+) -> None:
+    result = _run_production_source(tmp_path, response=json.dumps([pull]))
+    assert result.returncode != 0
+    assert "refusing production release" in result.stderr
+
+
+def test_production_source_rejects_a_commit_without_a_pull_request(
+    tmp_path: Path,
+) -> None:
+    result = _run_production_source(tmp_path, response="[]")
+    assert result.returncode != 0
+    assert "refusing production release" in result.stderr
+
+
+def test_production_source_fails_closed_on_api_or_shape_errors(tmp_path: Path) -> None:
+    api_down = _run_production_source(tmp_path, response="[]", api_status=1)
+    assert api_down.returncode != 0
+
+    for name, body in (("html", "<html>"), ("object", json.dumps({"pulls": []}))):
+        directory = tmp_path / name
+        directory.mkdir()
+        result = _run_production_source(directory, response=body)
+        assert result.returncode != 0, name
+
+
+def test_production_source_rejects_malformed_inputs(tmp_path: Path) -> None:
+    result = _run_production_source(tmp_path, response="[]", sha="abc")
+    assert result.returncode == 2
+    assert "40-character" in result.stderr
 
 
 def test_source_provenance_without_successful_run_fails(tmp_path: Path) -> None:
@@ -847,13 +961,14 @@ def test_workflows_use_three_environments_and_no_token_push() -> None:
 def test_production_release_is_tied_to_prod_without_branch_bypass() -> None:
     production = (ROOT / ".github/workflows/deploy-production.yml").read_text()
     promote = PROMOTE.read_text()
-    assert "branches: [prod]" in production
+    # A push to prod runs on refs/heads/prod, which the production Environment
+    # allows; a pull_request run uses refs/pull/<n>/merge, which it rejects.
+    assert "\n  push:\n    branches: [prod]\n" in production
+    assert "\n  pull_request:" not in production
     assert "release_ref: prod" in production
     assert "source_ref: preprod" in production
-    assert "source_release_sha: ${{ github.event.pull_request.head.sha }}" in production
-    assert (
-        "release_sha: ${{ github.event.pull_request.merge_commit_sha }}" in production
-    )
+    assert "release_sha: ${{ github.sha }}" in production
+    assert "github.event.pull_request" not in production.split("\njobs:", 1)[1]
     assert "github_environment: production" in production
     assert "      environment: production\n" in production
     assert "prod" in promote
@@ -1253,13 +1368,24 @@ def test_release_callers_are_opt_in_until_cloud_is_enabled() -> None:
     ).read_text()
     assert "vars.CLOUD_DEPLOYMENT_ENABLED" not in production_caller
 
-    for filename in ("deploy-staging.yml", "deploy-production.yml"):
-        caller = (ROOT / ".github" / "workflows" / filename).read_text()
-        assert "types: [closed]" in caller
-        assert "pull_request.merged == true" in caller
-        assert "pull_request.head.repo.full_name == github.repository" in caller
-        assert "release_sha:" in caller
-        assert "workflow_dispatch:" not in caller
+    staging_caller = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+    assert "types: [closed]" in staging_caller
+    assert "pull_request.merged == true" in staging_caller
+    assert "pull_request.head.repo.full_name == github.repository" in staging_caller
+    assert "release_sha:" in staging_caller
+    assert "workflow_dispatch:" not in staging_caller
+
+    # Production releases on a push to prod and re-verifies the promotion first.
+    assert "workflow_dispatch:" not in production_caller
+    assert "release_sha: ${{ github.sha }}" in production_caller
+    assert "needs: verify-source" in production_caller
+    assert "scripts/verify-production-source.sh" in production_caller
+    for job in ("verify-source:", "release:"):
+        section = production_caller.split(job, 1)[1]
+        assert (
+            "vars.CLOUD_PRODUCTION_DEPLOY_ENABLED == 'true'"
+            in section.split("uses:", 1)[0]
+        )
 
     reusable = WORKFLOW.read_text()
     assert "Validate release configuration" in reusable

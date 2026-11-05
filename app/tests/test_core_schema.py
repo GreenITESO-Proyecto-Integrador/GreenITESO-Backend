@@ -793,6 +793,69 @@ def test_notifications_0004_migration_keeps_rows_and_accepts_clan_types() -> Non
 
 
 @pytest.mark.django_db(transaction=True)
+def test_notifications_0005_migration_keeps_rows_and_accepts_campaign_types() -> None:
+    """Upgrade test CLAUDE.md requires for notifications.0005.
+
+    0005 adds the campaign lifecycle types (#177) to the choices and to the
+    ``notification_type_valid`` check, so existing notifications must survive
+    and a campaign type must be accepted only afterwards.
+    """
+    accounts_target = ("accounts", "0016_delete_friendship")
+    old_target = [accounts_target, ("notifications", "0004_notification_types_clan")]
+    new_target = [
+        accounts_target,
+        ("notifications", "0005_notification_types_campaign"),
+    ]
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    old_user = old_apps.get_model("accounts", "User").objects.create(
+        email="ana@iteso.mx"
+    )
+    old_notification_model = old_apps.get_model("notifications", "Notification")
+    old_notification_model.objects.create(
+        user_id=old_user.pk,
+        title="Hola",
+        message="Mensaje previo",
+        notification_type="CLAN_KICKED",
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        old_notification_model.objects.create(
+            user_id=old_user.pk,
+            title="Campaña",
+            message="Aún no existe el tipo",
+            notification_type="CAMPAIGN_STARTED",
+        )
+
+    try:
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(new_target)
+        new_apps = forward_executor.loader.project_state(new_target).apps
+        new_notification_model = new_apps.get_model("notifications", "Notification")
+
+        assert new_notification_model.objects.get(user_id=old_user.pk).message == (
+            "Mensaje previo"
+        )
+        for notification_type in (
+            "CAMPAIGN_APPROVED",
+            "CAMPAIGN_REJECTED",
+            "CAMPAIGN_STARTED",
+            "CAMPAIGN_FINISHED",
+        ):
+            created = new_notification_model.objects.create(
+                user_id=old_user.pk,
+                title="Campaña",
+                message="Ya existe el tipo",
+                notification_type=notification_type,
+            )
+            assert created.notification_type == notification_type
+    finally:
+        cleanup_executor = MigrationExecutor(connection)
+        cleanup_executor.migrate(cleanup_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
 def test_campaigns_0006_migration_backfills_approved_and_enforces_constraints() -> None:
     """Upgrade test CLAUDE.md requires for campaigns.0006_campaign_approval_workflow.
 

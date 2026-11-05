@@ -6,6 +6,7 @@ import logging
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
@@ -20,11 +21,13 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
 from green_iteso.feed.models import Post
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import close_user_sockets
 
 from .avatars import delete_profile_avatar, save_profile_avatar
 from .exceptions import (
@@ -50,6 +53,32 @@ def ensure_profile(user: User) -> UserProfile:
     return profile
 
 
+def ensure_account_writable(user: User, *, requested_at: datetime | None = None) -> None:
+    """Reject a write queued behind a deactivation (#176).
+
+    Call while holding the user row lock, so the check sees a deactivation
+    that has already committed. When ``requested_at`` is given, a request that
+    started before the profile's progress was last reset is rejected too: it
+    was made for the account's old state.
+
+    Raises:
+        AccountDisabledError: If the account is inactive or was reset after
+            ``requested_at``.
+    """
+    if not user.is_active:
+        raise AccountDisabledError()
+    if requested_at is None:
+        return
+    reset_at = (
+        UserProfile.objects.filter(user_id=user.pk)
+        .values_list("progress_reset_at", flat=True)
+        .first()
+    )
+    if reset_at is not None and reset_at > requested_at:
+        raise AccountDisabledError()
+
+
+@transaction.atomic
 def update_profile(
     *,
     user: User,
@@ -66,6 +95,10 @@ def update_profile(
     no-op. Input validation (choices, URL shape, size limits) is the
     caller's (serializer's) job; this only decides what changed.
     """
+    # Lock the user row first, as the other profile writers do, so a
+    # deactivation that commits first is seen here.
+    locked = User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    ensure_account_writable(locked)
     profile = ensure_profile(user)
     update_fields = []
     if bio is not None:
@@ -104,6 +137,8 @@ def set_profile_avatar(*, user: User, uploaded: UploadedFile | None) -> UserProf
     Raises:
         InvalidImageError: If the upload is not a JPG/PNG/WEBP of at most 5 MB.
     """
+    locked = User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    ensure_account_writable(locked)
     ensure_profile(user)
     profile = UserProfile.objects.select_for_update().get(user=user)
     previous_key = profile.avatar_object_key
@@ -164,7 +199,8 @@ def change_nickname(*, user: User, nickname: str) -> NicknameChange:
     """
     # A NO KEY UPDATE lock preserves the user-before-profile ordering shared
     # with onboarding without blocking notification FK checks (KEY SHARE).
-    User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    locked = User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    ensure_account_writable(locked)
     profile = UserProfile.objects.select_for_update().get(pk=ensure_profile(user).pk)
     user.refresh_from_db(fields=["nickname"])
     if nickname == user.nickname:
@@ -417,11 +453,24 @@ def deactivate_account(*, user: User) -> User:
     UserBadge.objects.filter(user=locked).delete()
     Notification.all_objects.filter(user=locked).delete()
     Post.objects.filter(author=locked).delete()
-    ActionLog.objects.filter(user=locked, status=ActionLog.Status.PENDING_AUDIT).update(
+    pending_logs = ActionLog.objects.filter(
+        user=locked, status=ActionLog.Status.PENDING_AUDIT
+    )
+    pending_evidence_keys = list(
+        pending_logs.exclude(evidence_object_key="").values_list(
+            "evidence_object_key", flat=True
+        )
+    )
+    # ``reviewed_by`` stays NULL: the system rejects these, not an admin.
+    pending_logs.update(
         status=ActionLog.Status.REJECTED,
         reviewed_at=now,
         rejection_reason="The account was deactivated.",
     )
+    for evidence_key in pending_evidence_keys:
+        transaction.on_commit(
+            lambda object_key=evidence_key: delete_action_evidence(object_key)
+        )
 
     profile = ensure_profile(locked)
     previous_avatar_key = profile.avatar_object_key
@@ -455,6 +504,10 @@ def deactivate_account(*, user: User) -> User:
 
     for token in OutstandingToken.objects.filter(user=locked):
         BlacklistedToken.objects.get_or_create(token=token)
+
+    # Only after the commit, so open sockets close once the deactivation is real.
+    deactivated_user_id = locked.pk
+    transaction.on_commit(lambda: close_user_sockets(deactivated_user_id))
 
     logger.info("Account deactivated: user_id=%s", locked.pk)
     return locked

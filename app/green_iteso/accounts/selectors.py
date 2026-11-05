@@ -99,14 +99,17 @@ class EcologicalProfile:
     finished_campaigns: list[FinishedCampaign]
 
 
-def _approved_action_logs(user: User, profile: UserProfile) -> QuerySet[ActionLog]:
+def _approved_action_logs(
+    user: User, profile: UserProfile | None
+) -> QuerySet[ActionLog]:
     """Return ``user``'s own approved action logs, the only ones that count as impact.
 
     Logs from before the account was deactivated (``progress_reset_at``, #176)
-    are history, not part of the fresh start, so they are left out.
+    are history, not part of the fresh start, so they are left out. A missing
+    profile means the user never had one, so nothing was reset.
     """
     logs = ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
-    if profile.progress_reset_at is not None:
+    if profile is not None and profile.progress_reset_at is not None:
         logs = logs.filter(created_at__gte=profile.progress_reset_at)
     return logs
 
@@ -359,8 +362,10 @@ def get_impact_trend(
         for offset in range(weeks - 1, -1, -1)
     ]
 
+    # Read-only lookup: this GET must not create a profile as a side effect.
+    profile = UserProfile.objects.filter(user=user).first()
     rows = (
-        _approved_action_logs(user, ensure_profile(user))
+        _approved_action_logs(user, profile)
         .filter(created_at__date__gte=week_starts[0])
         .annotate(week=TruncWeek("created_at"))
         .values("week")

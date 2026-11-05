@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NOTIFICATION_EVENT = "notification.created"
+# Channels routes this group message type to the consumer's ``account_deactivated``.
+ACCOUNT_DEACTIVATED_EVENT = "account.deactivated"
 BULK_CREATE_BATCH_SIZE = 500
 
 
@@ -104,3 +106,21 @@ def push_notification(notification: Notification) -> None:
         # The notification is already stored and listed by the REST API, so a
         # failed live push must not break the action that triggered it.
         logger.exception("Could not push notification %s", notification.pk)
+
+
+def close_user_sockets(user_id: object) -> None:
+    """Ask the owner's open sockets to close, never raising (#176).
+
+    Run after a deactivation commits, so a deactivated user stops receiving
+    pushes now instead of when the access token expires.
+    """
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    try:
+        async_to_sync(channel_layer.group_send)(
+            user_group_name(user_id),
+            {"type": ACCOUNT_DEACTIVATED_EVENT},
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Could not close sockets for user %s", user_id)

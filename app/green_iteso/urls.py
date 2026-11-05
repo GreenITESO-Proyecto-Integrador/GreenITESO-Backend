@@ -6,7 +6,7 @@ from django.http import HttpRequest, HttpResponse
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
-from green_iteso.feed.views import ImageUploadView
+from green_iteso.feed.views import FeedImageView, ImageUploadView
 
 
 def index_view(request: HttpRequest) -> HttpResponse:  # pylint: disable=unused-argument
@@ -34,6 +34,7 @@ urlpatterns = [
     path("", index_view, name="index"),
     path("api/", include(api_patterns)),
     path("api/uploads/", ImageUploadView.as_view(), name="image-upload"),
+    path("api/uploads/<str:key>/", FeedImageView.as_view(), name="feed-image"),
 ]
 
 if settings.DEBUG:

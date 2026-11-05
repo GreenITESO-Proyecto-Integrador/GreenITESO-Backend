@@ -1,17 +1,19 @@
 # pylint: disable=no-member,too-many-instance-attributes, too-many-public-methods,line-too-long
 """Integration tests for feed REST API endpoints."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.signing import TimestampSigner
 from django.test import override_settings
 from django.utils import timezone
 from google.cloud.exceptions import GoogleCloudError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from green_iteso.accounts.models import UserProfile
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
 
@@ -77,6 +79,97 @@ class PostAPITests(APITestCase):
         author_data = response.data.get("author")
         self.assertIsNotNone(author_data)
         self.assertNotIn("email", author_data)
+
+    def test_public_feed_author_uses_nickname_before_real_name(self) -> None:
+        self.author.nickname = "Eco"
+        self.author.save(update_fields=["nickname"])
+        UserProfile.objects.create(user=self.author)
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Eco")
+        # Preserve the fields currently consumed by the frontend, but return
+        # the safe display label instead of a conflicting real name.
+        self.assertEqual(author_data["first_name"], "Eco")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("email", author_data)
+
+    def test_public_feed_author_falls_back_to_full_name(self) -> None:
+        self.author.last_name = "Ríos"
+        self.author.save(update_fields=["last_name"])
+        UserProfile.objects.create(user=self.author)
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Author Ríos")
+        self.assertEqual(author_data["first_name"], "Author Ríos")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("email", author_data)
+
+    def test_private_feed_author_shows_nickname_without_real_name(self) -> None:
+        self.author.nickname = "Bici"
+        self.author.save(update_fields=["nickname"])
+        UserProfile.objects.create(
+            user=self.author, visibility=UserProfile.Visibility.PRIVATE
+        )
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Bici")
+        self.assertEqual(author_data["first_name"], "Bici")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("Author", str(author_data))
+        self.assertNotIn("email", author_data)
+
+    def test_private_feed_author_without_nickname_uses_generic_name(self) -> None:
+        self.author.last_name = "Privado"
+        self.author.save(update_fields=["last_name"])
+        UserProfile.objects.create(
+            user=self.author, visibility=UserProfile.Visibility.PRIVATE
+        )
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Usuario GreenITESO")
+        self.assertEqual(author_data["first_name"], "Usuario GreenITESO")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("Author", str(author_data))
+        self.assertNotIn("Privado", str(author_data))
+        self.assertNotIn("email", author_data)
+
+    def test_feed_author_profile_is_prefetched_for_multiple_posts(self) -> None:
+        UserProfile.objects.create(user=self.author)
+        UserProfile.objects.create(user=self.other_user)
+        Post.objects.create(
+            author=self.other_user,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Otra publicación.",
+        )
+        third_author = User.objects.create_user(
+            email="third@iteso.mx", first_name="Third"
+        )
+        UserProfile.objects.create(user=third_author)
+        Post.objects.create(
+            author=third_author,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Tercera publicación.",
+        )
+
+        # One count query plus one posts query, independent of the number of
+        # distinct author profiles in the page.
+        with self.assertNumQueries(2):
+            response = self.client.get(self.base_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 3)
 
     def test_create_post_authenticated(self) -> None:
         """Ensure logged-in users can successfully publish posts."""
@@ -379,20 +472,18 @@ class ImageUploadViewTests(APITestCase):
         )
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        mock_blob.delete.assert_not_called()
 
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
         self, mock_storage_client: MagicMock
     ) -> None:
-        """Ensure a successful upload returns a 200 OK and the signed URL."""
+        """Return a stable first-party URL that fits the post URL field."""
         self.client.force_authenticate(user=self.user)
         mock_instance = mock_storage_client.return_value
         mock_bucket = mock_instance.bucket.return_value
         mock_blob = mock_bucket.blob.return_value
-        mock_blob.generate_signed_url.return_value = (
-            "https://storage.googleapis.com/test-bucket/"
-            "uploads/test.png?X-Goog-Signature=mock"
-        )
+
         valid_png = SimpleUploadedFile(
             "sample.png", VALID_PNG_BYTES, content_type="image/png"
         )
@@ -400,9 +491,133 @@ class ImageUploadViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("url", response.data)
-        self.assertIn("X-Goog-Signature", response.data["url"])
+        self.assertRegex(
+            response.data["url"],
+            r"^http://testserver/api/uploads/[0-9a-f-]{36}\.png/\?token=.+$",
+        )
+        self.assertLessEqual(len(response.data["url"]), 500)
         mock_blob.upload_from_file.assert_called_once()
-        mock_blob.generate_signed_url.assert_called_once()
+        mock_blob.generate_signed_url.assert_not_called()
+        mock_blob.delete.assert_not_called()
+
+    @override_settings(ALLOWED_HOSTS=["api.greeniteso.mx"])
+    @patch("google.cloud.storage.Client")
+    def test_upload_url_can_be_used_to_create_a_post(
+        self, mock_storage_client: MagicMock
+    ) -> None:
+        """Ensure the URL returned by upload passes feed serializer validation."""
+        self.client.force_authenticate(user=self.user)
+        mock_blob = (
+            mock_storage_client.return_value.bucket.return_value.blob.return_value
+        )
+        valid_png = SimpleUploadedFile(
+            "sample.png", VALID_PNG_BYTES, content_type="image/png"
+        )
+        upload_response = self.client.post(
+            self.url,
+            {"image": valid_png},
+            format="multipart",
+            HTTP_HOST="api.greeniteso.mx",
+        )
+        self.assertEqual(upload_response.status_code, status.HTTP_200_OK)
+
+        post_response = self.client.post(
+            "/api/v1/feed/",
+            {
+                "post_type": "COMMUNITY_MILESTONE",
+                "content": "Publicación con imagen recién cargada",
+                "image_url": upload_response.data["url"],
+            },
+            format="json",
+            HTTP_HOST="api.greeniteso.mx",
+        )
+
+        self.assertEqual(
+            post_response.status_code,
+            status.HTTP_201_CREATED,
+            post_response.data,
+        )
+        self.assertEqual(post_response.data["image_url"], upload_response.data["url"])
+        self.assertEqual(mock_blob.upload_from_file.call_count, 1)
+
+    @patch(
+        "green_iteso.feed.views.signed_read_url",
+        return_value="https://storage.googleapis.com/test-bucket/uploads/fresh?signature=one",
+    )
+    @patch("google.cloud.storage.Client")
+    def test_resolver_redirects_with_fresh_signed_url(
+        self, mock_storage_client: MagicMock, mock_sign: MagicMock
+    ) -> None:
+        """Resolve the expiring app URL to a fresh GCS URL without caching it."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign_object(
+            {"key": key, "issued_at": int(timezone.now().timestamp())}
+        )
+
+        response = self.client.get(f"/api/uploads/{key}/", {"token": token})
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(
+            response["Location"],
+            "https://storage.googleapis.com/test-bucket/uploads/fresh?signature=one",
+        )
+        self.assertEqual(response["Cache-Control"], "no-store")
+        mock_sign.assert_called_once()
+        self.assertEqual(
+            mock_sign.call_args.args[0],
+            mock_storage_client.return_value.bucket.return_value.blob(f"uploads/{key}"),
+        )
+        expiration = mock_sign.call_args.kwargs["expiration"]
+        self.assertLessEqual(expiration, timezone.now() + timedelta(minutes=10))
+        self.assertGreater(expiration, timezone.now())
+
+    @patch("green_iteso.feed.views.TimestampSigner.unsign_object")
+    @patch(
+        "green_iteso.feed.views.signed_read_url",
+        return_value="https://storage.googleapis.com/image",
+    )
+    @patch("google.cloud.storage.Client")
+    def test_resolver_bounds_gcs_url_to_remaining_app_url_lifetime(
+        self,
+        mock_storage_client: MagicMock,
+        mock_sign: MagicMock,
+        mock_unsign: MagicMock,
+    ) -> None:
+        """A late resolver request must not extend access beyond the upload URL."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        mock_unsign.return_value = {
+            "key": key,
+            "issued_at": int(timezone.now().timestamp()) - 3590,
+        }
+
+        response = self.client.get(f"/api/uploads/{key}/", {"token": "valid"})
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        mock_storage_client.assert_called_once()
+        mock_sign.assert_called_once()
+        expiration = mock_sign.call_args.kwargs["expiration"]
+        expected_expiry = datetime.fromtimestamp(
+            mock_unsign.return_value["issued_at"] + 3600, tz=UTC
+        )
+        self.assertEqual(expiration, expected_expiry)
+
+    @patch("green_iteso.feed.views.FEED_IMAGE_URL_TTL_SECONDS", -1)
+    @patch("green_iteso.feed.views.signed_read_url")
+    def test_resolver_rejects_expired_or_malformed_uploads(
+        self, mock_sign: MagicMock
+    ) -> None:
+        """Reject expired, unsigned and malformed URLs without touching GCS."""
+        key = "12345678-1234-5678-1234-567812345678.png"
+        token = TimestampSigner(salt="greeniteso.feed.upload").sign_object(
+            {"key": key, "issued_at": int(timezone.now().timestamp())}
+        )
+        expired = self.client.get(f"/api/uploads/{key}/", {"token": token})
+        unsigned = self.client.get(f"/api/uploads/{key}/")
+        malformed_key = self.client.get("/api/uploads/../../secrets/")
+        self.assertEqual(expired.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(unsigned.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(malformed_key.status_code, status.HTTP_404_NOT_FOUND)
+        mock_sign.assert_not_called()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

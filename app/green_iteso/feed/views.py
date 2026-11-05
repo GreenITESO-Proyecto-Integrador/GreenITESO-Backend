@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from django.conf import settings
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.db.models import QuerySet
+from django.http import HttpResponseRedirect
+from django.utils import timezone
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from PIL import Image, UnidentifiedImageError
@@ -18,6 +22,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from green_iteso.actions.evidence import SIGNED_URL_TTL, signed_read_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -32,6 +37,8 @@ MIME_TO_EXT = {
     "image/png": "png",
     "image/webp": "webp",
 }
+FEED_IMAGE_URL_TTL_SECONDS = 60 * 60
+FEED_IMAGE_SIGNER_SALT = "greeniteso.feed.upload"
 
 
 def detect_image_mime(file_obj: Any) -> str | None:
@@ -45,6 +52,35 @@ def detect_image_mime(file_obj: Any) -> str | None:
     if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+def _feed_image_url(request: Request, key: str) -> str:
+    """Create a short first-party capability URL for one uploaded image."""
+    token = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).sign_object(
+        {"key": key, "issued_at": int(timezone.now().timestamp())}
+    )
+    return request.build_absolute_uri(f"/api/uploads/{key}/?token={token}")
+
+
+def _verified_feed_image_timestamp(key: str, token: str) -> int | None:
+    """Return the signed upload time only when this capability is valid."""
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}\.(?:jpg|png|webp)", key):
+        return None
+
+    try:
+        payload = TimestampSigner(salt=FEED_IMAGE_SIGNER_SALT).unsign_object(
+            token, max_age=FEED_IMAGE_URL_TTL_SECONDS
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("key") != key
+        or not isinstance(payload.get("issued_at"), int)
+    ):
+        return None
+    return payload["issued_at"]
 
 
 class IsAuthorOrReadOnly(permissions.BasePermission):
@@ -135,12 +171,10 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(hours=1),
-                method="GET",
+            key = blob_name.rsplit("/", 1)[1]
+            return Response(
+                {"url": _feed_image_url(request, key)}, status=status.HTTP_200_OK
             )
-            return Response({"url": signed_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
@@ -155,3 +189,41 @@ class ImageUploadView(APIView):
                 {"error": "Ocurrió un error inesperado al procesar la imagen."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class FeedImageView(APIView):
+    """Resolve a short-lived signed feed-upload URL to a fresh GCS URL."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(
+        self, request: Request, key: str, *_args: Any, **_kwargs: Any
+    ) -> HttpResponseRedirect | Response:
+        """Validate the time-limited capability before signing a private object."""
+        issued_at = _verified_feed_image_timestamp(
+            key, request.query_params.get("token", "")
+        )
+        if issued_at is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
+        if not bucket_name:
+            return Response(
+                {"error": "El servicio de almacenamiento no está configurado."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        blob = storage.Client().bucket(bucket_name).blob(f"uploads/{key}")
+        absolute_expiry = datetime.fromtimestamp(
+            issued_at + FEED_IMAGE_URL_TTL_SECONDS, tz=UTC
+        )
+        expiration = min(timezone.now() + SIGNED_URL_TTL, absolute_expiry)
+        if expiration <= timezone.now():
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        signed_url = signed_read_url(blob, expiration=expiration)
+        if not signed_url:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        response = HttpResponseRedirect(signed_url)
+        response["Cache-Control"] = "no-store"
+        return response

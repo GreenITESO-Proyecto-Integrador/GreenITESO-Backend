@@ -17,6 +17,8 @@ from green_iteso.campaigns.services import earliest_allowed_start
 
 FROZEN_NOW = datetime(2030, 1, 10, 15, 0, tzinfo=UTC)
 
+FROZEN_NOW = datetime(2030, 1, 10, 15, 0, tzinfo=UTC)
+
 
 def _url(campaign: Campaign) -> str:
     return reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})

@@ -13,6 +13,7 @@ from google.cloud.exceptions import GoogleCloudError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from green_iteso.accounts.models import UserProfile
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
 
@@ -78,6 +79,97 @@ class PostAPITests(APITestCase):
         author_data = response.data.get("author")
         self.assertIsNotNone(author_data)
         self.assertNotIn("email", author_data)
+
+    def test_public_feed_author_uses_nickname_before_real_name(self) -> None:
+        self.author.nickname = "Eco"
+        self.author.save(update_fields=["nickname"])
+        UserProfile.objects.create(user=self.author)
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Eco")
+        # Preserve the fields currently consumed by the frontend, but return
+        # the safe display label instead of a conflicting real name.
+        self.assertEqual(author_data["first_name"], "Eco")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("email", author_data)
+
+    def test_public_feed_author_falls_back_to_full_name(self) -> None:
+        self.author.last_name = "Ríos"
+        self.author.save(update_fields=["last_name"])
+        UserProfile.objects.create(user=self.author)
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Author Ríos")
+        self.assertEqual(author_data["first_name"], "Author Ríos")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("email", author_data)
+
+    def test_private_feed_author_shows_nickname_without_real_name(self) -> None:
+        self.author.nickname = "Bici"
+        self.author.save(update_fields=["nickname"])
+        UserProfile.objects.create(
+            user=self.author, visibility=UserProfile.Visibility.PRIVATE
+        )
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Bici")
+        self.assertEqual(author_data["first_name"], "Bici")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("Author", str(author_data))
+        self.assertNotIn("email", author_data)
+
+    def test_private_feed_author_without_nickname_uses_generic_name(self) -> None:
+        self.author.last_name = "Privado"
+        self.author.save(update_fields=["last_name"])
+        UserProfile.objects.create(
+            user=self.author, visibility=UserProfile.Visibility.PRIVATE
+        )
+
+        response = self.client.get(self.detail_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], "Usuario GreenITESO")
+        self.assertEqual(author_data["first_name"], "Usuario GreenITESO")
+        self.assertEqual(author_data["last_name"], "")
+        self.assertNotIn("Author", str(author_data))
+        self.assertNotIn("Privado", str(author_data))
+        self.assertNotIn("email", author_data)
+
+    def test_feed_author_profile_is_prefetched_for_multiple_posts(self) -> None:
+        UserProfile.objects.create(user=self.author)
+        UserProfile.objects.create(user=self.other_user)
+        Post.objects.create(
+            author=self.other_user,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Otra publicación.",
+        )
+        third_author = User.objects.create_user(
+            email="third@iteso.mx", first_name="Third"
+        )
+        UserProfile.objects.create(user=third_author)
+        Post.objects.create(
+            author=third_author,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Tercera publicación.",
+        )
+
+        # One count query plus one posts query, independent of the number of
+        # distinct author profiles in the page.
+        with self.assertNumQueries(2):
+            response = self.client.get(self.base_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 3)
 
     def test_create_post_authenticated(self) -> None:
         """Ensure logged-in users can successfully publish posts."""

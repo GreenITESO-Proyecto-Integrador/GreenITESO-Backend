@@ -58,6 +58,54 @@ def notify_campaign_invite(campaign: Campaign) -> int:
     )
 
 
+def notify_proposal_reviewed(campaign: Campaign, *, reviewer: Any) -> None:
+    """Tell a proposal's author that an admin approved or rejected it.
+
+    Silent when the author reviewed their own proposal: they already know.
+    """
+    if campaign.creator_id == reviewer.pk:
+        return
+    if campaign.approval_status == Campaign.ApprovalStatus.APPROVED:
+        notify(
+            campaign.creator,
+            Notification.NotificationType.CAMPAIGN_APPROVED,
+            campaign_name=campaign.title,
+        )
+    else:
+        notify(
+            campaign.creator,
+            Notification.NotificationType.CAMPAIGN_REJECTED,
+            campaign_name=campaign.title,
+            reason=campaign.rejection_reason,
+        )
+
+
+def _participants(campaign: Campaign) -> QuerySet[Any]:
+    return get_user_model().objects.filter(campaign_participations__campaign=campaign)
+
+
+def notify_campaign_started(campaign: Campaign) -> int:
+    """Tell everyone enrolled that ``campaign`` is now in progress."""
+    return len(
+        notify_many(
+            _participants(campaign).iterator(),
+            Notification.NotificationType.CAMPAIGN_STARTED,
+            campaign_name=campaign.title,
+        )
+    )
+
+
+def notify_campaign_finished(campaign: Campaign) -> int:
+    """Tell everyone enrolled that ``campaign`` has finished."""
+    return len(
+        notify_many(
+            _participants(campaign).iterator(),
+            Notification.NotificationType.CAMPAIGN_FINISHED,
+            campaign_name=campaign.title,
+        )
+    )
+
+
 def notify_mission_completed(user: Any, mission: Mission) -> Notification:
     """Tell ``user`` that they just reached ``mission``'s target."""
     return notify(

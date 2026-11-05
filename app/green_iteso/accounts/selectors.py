@@ -20,6 +20,28 @@ from .models import Clan, ClanMembership, User, UserProfile
 from .services import ensure_profile
 
 
+def get_active_private_clan(user: User) -> Clan | None:
+    """Return the private clan currently credited for ``user``, if any.
+
+    ClanMembership allows at most one membership flagged ``is_active_private``
+    per user, so this reads it from there instead of from a column on the
+    profile. Shared by get_profile_clans and get_ecological_profile so both
+    resolve the active clan the same way.
+
+    Args:
+        user: Account whose active private clan is read.
+
+    Returns:
+        The clan, or None when the user has not selected one.
+    """
+    membership = (
+        ClanMembership.objects.select_related("clan")
+        .filter(user=user, is_active_private=True)
+        .first()
+    )
+    return membership.clan if membership else None
+
+
 class ProfileClans(NamedTuple):
     """The profile of a user together with the clans their points credit."""
 
@@ -46,15 +68,10 @@ def get_profile_clans(user: User) -> ProfileClans:
         UserProfile.DoesNotExist: If the account has no profile yet.
     """
     profile = UserProfile.objects.select_related("institutional_clan").get(user=user)
-    membership = (
-        ClanMembership.objects.select_related("clan")
-        .filter(user=user, is_active_private=True)
-        .first()
-    )
     return ProfileClans(
         profile=profile,
         institutional_clan=profile.institutional_clan,
-        active_private_clan=membership.clan if membership else None,
+        active_private_clan=get_active_private_clan(user),
     )
 
 
@@ -144,12 +161,7 @@ def get_ecological_profile(user: User) -> EcologicalProfile:
     placeholder is the correct behavior today, not a workaround.
     """
     profile = ensure_profile(user)
-    active_membership = (
-        ClanMembership.objects.filter(user=user, is_active_private=True)
-        .select_related("clan")
-        .first()
-    )
-    active_private_clan = active_membership.clan if active_membership else None
+    active_private_clan = get_active_private_clan(user)
 
     metrics = _sum_impact(_approved_action_logs(user, profile))
 

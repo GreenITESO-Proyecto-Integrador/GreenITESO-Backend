@@ -143,9 +143,13 @@ environment branch rules against the workflow run's `GITHUB_REF`; for
 `workflow_run.head_branch` is `preprod`. The current `preprod` Environment has
 no branch rule, so the credential-free gate above must enforce the tested
 target branch and merged-PR provenance before the job can access its secrets.
-The staging/production Cloud Run promotion paths instead use merged
-`pull_request` events, whose refs are the destination branches. Recheck all
-release paths if the default branch, trigger, or environment policy changes.
+The staging Cloud Run promotion path uses merged `pull_request` events. A
+`pull_request` run executes on `refs/pull/<n>/merge`, **not** on the destination
+branch, so it only works against an Environment with no branch rule (as
+`preprod` has). The production Environment is limited to the `prod` branch, so
+production releases on a **push to `prod`** instead (see "Production-only mode").
+Recheck all release paths if the default branch, trigger, or environment policy
+changes.
 
 ## Release behavior
 
@@ -160,6 +164,15 @@ rebuild the image.
 While only production is deployed to the cloud, preprod has no Cloud Run
 release, so there is no staging release record to reuse. In this mode:
 
+- `deploy-production.yml` runs on a **push to `prod`** (not on PR close). A
+  `pull_request` run uses `refs/pull/<n>/merge`, which the production
+  Environment's `prod`-only branch rule rejects, so the first real release was
+  refused before any GCP step. A first job, `verify-source`
+  (`scripts/verify-production-source.sh`), then confirms through the API that the
+  pushed commit is the merge commit of a merged, same-repository `preprod` to
+  `prod` pull request before the release job may use the Environment's secrets.
+  `prod` only changes through such a PR (branch protection and the
+  promotion-chain check).
 - `deploy-production.yml` runs on its **own** switch, the repository variable
   `CLOUD_PRODUCTION_DEPLOY_ENABLED`, and passes `build: true`. Production then
   builds and pushes the image for the merged `prod` commit and releases that

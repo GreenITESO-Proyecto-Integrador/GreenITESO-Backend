@@ -16,7 +16,13 @@ from green_iteso.actions.selectors import local_day_utc_bounds
 from green_iteso.core.roles import ClanRole, GlobalRole
 
 from .models import Campaign, CampaignParticipant, Mission, UserMissionProgress
-from .notifications import notify_campaign_invite, notify_mission_completed
+from .notifications import (
+    notify_campaign_finished,
+    notify_campaign_invite,
+    notify_campaign_started,
+    notify_mission_completed,
+    notify_proposal_reviewed,
+)
 
 MIN_CAMPAIGN_DURATION = timedelta(days=1)
 
@@ -268,6 +274,7 @@ def approve_campaign(admin: Any, campaign_id: UUID) -> Campaign:
         campaign.save(
             update_fields=["approval_status", "reviewed_by", "reviewed_at", "status"]
         )
+        notify_proposal_reviewed(campaign, reviewer=admin)
         if _is_open_for_enrollment(campaign):
             notify_campaign_invite(campaign)
     return campaign
@@ -293,6 +300,7 @@ def reject_campaign(admin: Any, campaign_id: UUID, reason: str) -> Campaign:
                 "rejection_reason",
             ]
         )
+        notify_proposal_reviewed(campaign, reviewer=admin)
     return campaign
 
 
@@ -314,6 +322,7 @@ def start_campaign(campaign_id: UUID) -> Campaign:
         campaign.start_date = timezone.now()
         campaign.status = Campaign.Status.IN_PROGRESS
         campaign.save(update_fields=["start_date", "status"])
+        notify_campaign_started(campaign)
     return campaign
 
 
@@ -336,6 +345,7 @@ def finish_campaign(campaign_id: UUID) -> Campaign:
         )
         campaign.status = Campaign.Status.FINISHED
         campaign.save(update_fields=["end_date", "status"])
+        notify_campaign_finished(campaign)
     return campaign
 
 
@@ -419,15 +429,20 @@ def apply_action_log_to_missions(action_log: Any) -> list[UserMissionProgress]:
 
     Precondition: must be called inside the caller's transaction, at the same
     point the log's points are credited. Does nothing if the log is REJECTED.
+
+    Eligibility is decided by when the log was registered (``created_at``)
+    against the campaign window, not by the campaign's current status, so a
+    log approved after the campaign finished still counts (BR-07 holds: a log
+    created at or after ``end_date`` never does).
     """
     if action_log.status == action_log.Status.REJECTED:
         return []
 
-    sync_campaign_statuses()
     missions = Mission.objects.filter(
         action=action_log.action,
         campaign__approval_status=Campaign.ApprovalStatus.APPROVED,
-        campaign__status=Campaign.Status.IN_PROGRESS,
+        campaign__start_date__lte=action_log.created_at,
+        campaign__end_date__gt=action_log.created_at,
         campaign__participants__user=action_log.user,
     ).distinct()
 

@@ -1,4 +1,4 @@
-"""User notification feed: audits, badges, campaign invites and missions."""
+"""User notification feed: audits, badges, campaigns, missions and clans."""
 
 from __future__ import annotations
 
@@ -13,7 +13,19 @@ class NotificationType(models.TextChoices):
     AUDIT_APPROVED = "AUDIT_APPROVED", "Photo audit approved"
     AUDIT_REJECT = "AUDIT_REJECT", "Photo audit rejected"
     BADGE_EARNED = "BADGE_EARNED", "Badge earned"
+    CAMPAIGN_APPROVED = "CAMPAIGN_APPROVED", "Campaign proposal approved"
+    CAMPAIGN_FINISHED = "CAMPAIGN_FINISHED", "Campaign finished"
     CAMPAIGN_INVITE = "CAMPAIGN_INVITE", "Campaign invitation"
+    CAMPAIGN_REJECTED = "CAMPAIGN_REJECTED", "Campaign proposal rejected"
+    CAMPAIGN_STARTED = "CAMPAIGN_STARTED", "Campaign started"
+    CLAN_DISSOLVED = "CLAN_DISSOLVED", "Clan dissolved"
+    CLAN_JOIN_REQUEST = "CLAN_JOIN_REQUEST", "Clan join request"
+    CLAN_KICKED = "CLAN_KICKED", "Expelled from a clan"
+    CLAN_LEADER_CHANGED = "CLAN_LEADER_CHANGED", "Clan leader changed"
+    CLAN_MEMBER_JOINED = "CLAN_MEMBER_JOINED", "Member joined a clan"
+    CLAN_MEMBER_LEFT = "CLAN_MEMBER_LEFT", "Member left a clan"
+    CLAN_REQ_ACCEPTED = "CLAN_REQ_ACCEPTED", "Clan join request accepted"
+    CLAN_REQ_REJECTED = "CLAN_REQ_REJECTED", "Clan join request rejected"
     MISSION_COMPLETED = "MISSION_COMPLETED", "Mission completed"
     SOCIAL_FOLLOW = "SOCIAL_FOLLOW", "New follower"
     SYSTEM = "SYSTEM", "System announcement"

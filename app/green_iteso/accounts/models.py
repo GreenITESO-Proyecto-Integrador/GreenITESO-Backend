@@ -76,6 +76,18 @@ class User(AbstractUser):
             or self.ANONYMOUS_DISPLAY_NAME
         )
 
+    def name_shown_to_others(self) -> str:
+        """``public_display_name``, without the real name for PRIVATE profiles.
+
+        The one rule for naming a person to someone else (clan rosters and
+        clan notifications): a PRIVATE profile shows only its nickname, the
+        same way the ranking hides it, and falls back to the anonymous label.
+        """
+        profile = getattr(self, "profile", None)
+        if profile is not None and profile.visibility == UserProfile.Visibility.PRIVATE:
+            return self.nickname.strip() or self.ANONYMOUS_DISPLAY_NAME
+        return self.public_display_name
+
     class Meta:
         db_table = "accounts_user"
         constraints = [
@@ -214,6 +226,9 @@ class UserProfile(models.Model):
     # (#170). Setting one clears the other; see docs/avatar-upload.md.
     avatar_url = models.URLField(max_length=500, blank=True)
     avatar_object_key = models.CharField(max_length=500, blank=True)
+    # How many times the user has changed their nickname. The first change is
+    # free; later ones cost points (#175), see ``services.change_nickname``.
+    nickname_changes = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         db_table = "accounts_user_profile"

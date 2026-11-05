@@ -28,7 +28,11 @@ from green_iteso.clans.services import dissolve_clan
 from green_iteso.gamification.models import Badge
 from green_iteso.notifications.models import Notification
 
-from .helpers import assert_single_badge_award
+from .helpers import (
+    assert_single_badge_award,
+    create_pending_audit_log,
+    create_pending_photo_audit_log,
+)
 
 
 @pytest.mark.django_db
@@ -159,23 +163,7 @@ def test_pending_audit_can_be_decided_only_once() -> None:
     )
     clan = Clan.objects.create(name="Audit test clan", type=Clan.ClanType.INSTITUTIONAL)
     profile = UserProfile.objects.create(user=user, institutional_clan=clan)
-    category = ActionCategory.objects.create(code="AUDIT", name="Audit")
-    action = ActionMaster.objects.create(
-        code="PHOTO_AUDIT",
-        category=category,
-        name="Photo audit",
-        description="Evidence requiring review",
-        points=10,
-        validation_type=ActionMaster.ValidationType.PHOTO,
-    )
-    log = ActionLog.objects.create(
-        user=user,
-        action=action,
-        institutional_clan=clan,
-        idempotency_key=str(uuid.uuid4()),
-        points_awarded=10,
-        status=ActionLog.Status.PENDING_AUDIT,
-    )
+    log = create_pending_photo_audit_log(user, clan)
     factory = APIRequestFactory()
     view = ActionLogAuditView.as_view()
 
@@ -592,14 +580,7 @@ def test_action_crossing_points_threshold_awards_badge(operation: str) -> None:
         response = ActionLogCreateView.as_view()(request)
         assert response.status_code == 201
     else:
-        log = ActionLog.objects.create(
-            user=user,
-            action=action,
-            institutional_clan=clan,
-            idempotency_key=str(uuid.uuid4()),
-            points_awarded=10,
-            status=ActionLog.Status.PENDING_AUDIT,
-        )
+        log = create_pending_audit_log(user, clan, action)
         request = factory.patch(
             "/api/v1/action-logs/audit/", {"status": "APPROVED"}, format="json"
         )

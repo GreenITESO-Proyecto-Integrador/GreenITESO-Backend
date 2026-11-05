@@ -11,7 +11,6 @@ from green_iteso.accounts.models import (
     Clan,
     ClanInvitation,
     ClanMembership,
-    User,
     UserProfile,
 )
 
@@ -171,12 +170,8 @@ class ClanMemberSerializer(serializers.Serializer):
     joined_at = serializers.DateTimeField(read_only=True)
 
     def get_display_name(self, membership: ClanMembership) -> str:
-        """``public_display_name``, without the real name for PRIVATE profiles."""
-        user = membership.user
-        profile = getattr(user, "profile", None)
-        if profile is not None and profile.visibility == UserProfile.Visibility.PRIVATE:
-            return user.nickname.strip() or User.ANONYMOUS_DISPLAY_NAME
-        return user.public_display_name
+        """``User.name_shown_to_others``: no real name for PRIVATE profiles."""
+        return membership.user.name_shown_to_others()
 
     def get_avatar_url(self, membership: ClanMembership) -> str:
         """The member's profile photo URL (#170), or "" when there is none."""

@@ -1,4 +1,5 @@
 """Serializers for the feed module."""
+# pylint: disable=no-member,missing-class-docstring,too-few-public-methods
 
 from __future__ import annotations
 
@@ -8,8 +9,10 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone, translation
 from django.utils.timesince import timesince
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
+from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge
 
@@ -26,7 +29,7 @@ class PostAuthorSerializer(serializers.ModelSerializer):
         fields = ["id", "first_name", "last_name", "avatar_url"]
         read_only_fields = ["id", "email", "first_name", "last_name", "avatar_url"]
 
-    def get_avatar_url(self, user: User) -> str:
+    def get_avatar_url(self, user: Any) -> str:
         """The author's profile photo URL (#170), or "" when there is none."""
         return user_avatar_url(user, self.context.get("request"))
 
@@ -117,11 +120,20 @@ class PostSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Content cannot be empty.")
         return value.strip()
 
-    def validate_post_type(self, value: str) -> str:
-        """Ensure post_type belongs to valid choices."""
-        if value not in PostType.values:
-            raise serializers.ValidationError(f"Invalid post type: {value}")
-        return value
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        request = self.context.get("request")
+        is_admin = request is not None and IsAdmin().has_permission(request, None)
+
+        is_currently_official = (
+            getattr(self.instance, "post_type", None) == PostType.OFFICIAL_ANNOUNCEMENT
+        )
+        is_becoming_official = attrs.get("post_type") == PostType.OFFICIAL_ANNOUNCEMENT
+
+        if (is_currently_official or is_becoming_official) and not is_admin:
+            raise PermissionDenied(
+                "Solo los administradores pueden crear o editar anuncios oficiales."
+            )
+        return attrs
 
     def validate_image_url(self, value: str) -> str:
         """Ensure valid URL formatting if provided."""

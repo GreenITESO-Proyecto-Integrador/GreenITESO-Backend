@@ -13,12 +13,22 @@ from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.campaigns.models import Campaign
+from green_iteso.campaigns.services import earliest_allowed_start
 
 FROZEN_NOW = datetime(2030, 1, 10, 15, 0, tzinfo=UTC)
 
 
 def _url(campaign: Campaign) -> str:
     return reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+
+
+def _start_still_today() -> Any:
+    """A start that is still today in Mexico City, including the last hour.
+
+    ``now + 1 hour`` falls on tomorrow after 23:00 and then passes the rule
+    that a start must be tomorrow or later.
+    """
+    return earliest_allowed_start() - timedelta(seconds=1)
 
 
 @pytest.mark.django_db

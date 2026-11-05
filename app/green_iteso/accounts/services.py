@@ -29,6 +29,9 @@ from .models import User, UserProfile, UserRoleAudit
 
 logger = logging.getLogger(__name__)
 
+# Points charged for every nickname change after the first, which is free (#175).
+NICKNAME_CHANGE_COST_POINTS = 50
+
 
 def ensure_profile(user: User) -> UserProfile:
     """Return the user's profile, creating an empty one on first access."""
@@ -107,6 +110,73 @@ def set_profile_avatar(*, user: User, uploaded: UploadedFile | None) -> UserProf
         user_id = user.pk
         transaction.on_commit(lambda: delete_profile_avatar(user_id, previous_key))
     return profile
+
+
+class NicknameUnchangedError(ValueError):
+    """Raised when the requested nickname is the one the user already has."""
+
+
+class InsufficientPointsForNicknameError(ValueError):
+    """Raised when ``available_points`` cannot cover a nickname change."""
+
+
+@dataclass(frozen=True)
+class NicknameChange:
+    """Outcome of ``change_nickname``, enough for a client to refresh its balance."""
+
+    nickname: str
+    points_spent: int
+    available_points: int
+    next_change_cost: int
+
+
+def nickname_change_cost(profile: UserProfile) -> int:
+    """Return what the user's next nickname change costs: 0 the first time."""
+    return 0 if profile.nickname_changes == 0 else NICKNAME_CHANGE_COST_POINTS
+
+
+@transaction.atomic
+def change_nickname(*, user: User, nickname: str) -> NicknameChange:
+    """Set ``user``'s nickname; the first change is free, later ones cost points (#175).
+
+    Locks the user before the profile, matching onboarding's lock order, so
+    overlapping onboarding and nickname changes cannot deadlock.
+    Locks the profile row so two concurrent changes cannot both pass the
+    balance check or both count as "the first". Points come out of
+    ``available_points`` only: ``total_points`` (ranking) is untouched, the
+    same as buying from the store. The caller validates the nickname's shape.
+
+    Raises:
+        NicknameUnchangedError: If ``nickname`` is already the user's nickname;
+            nothing is charged.
+        InsufficientPointsForNicknameError: If the balance is below the cost.
+    """
+    # A NO KEY UPDATE lock preserves the user-before-profile ordering shared
+    # with onboarding without blocking notification FK checks (KEY SHARE).
+    User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    profile = UserProfile.objects.select_for_update().get(pk=ensure_profile(user).pk)
+    user.refresh_from_db(fields=["nickname"])
+    if nickname == user.nickname:
+        raise NicknameUnchangedError("That is already your nickname.")
+
+    cost = nickname_change_cost(profile)
+    if profile.available_points < cost:
+        raise InsufficientPointsForNicknameError(
+            f"Changing your nickname costs {cost} points "
+            f"and you have {profile.available_points}."
+        )
+
+    user.nickname = nickname
+    user.save(update_fields=["nickname"])
+    profile.available_points -= cost
+    profile.nickname_changes += 1
+    profile.save(update_fields=["available_points", "nickname_changes"])
+    return NicknameChange(
+        nickname=nickname,
+        points_spent=cost,
+        available_points=profile.available_points,
+        next_change_cost=nickname_change_cost(profile),
+    )
 
 
 @dataclass(frozen=True)

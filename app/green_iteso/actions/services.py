@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import F
+from django.db.models.functions import TruncDate
+from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.accounts.services import ensure_profile
@@ -21,6 +24,54 @@ from .models import ActionLog, ExchangeableItem
 
 if TYPE_CHECKING:
     from green_iteso.accounts.models import User
+
+
+# A streak is read from the day the action happened, so only this many days of
+# history can ever contribute to it. The window keeps the query cheap no matter
+# how many logs an account accumulates.
+STREAK_WINDOW_DAYS = 400
+
+
+def recalculate_streak(user: User) -> int:
+    """Recompute the user's consecutive-day streak from their approved logs.
+
+    The streak is derived from the days that actually have approved activity
+    instead of being incremented in place, so it is idempotent and repairs
+    itself: a later rejection, a backfill or a bad write is corrected by the
+    next call. Days are resolved in the project timezone, and the streak stays
+    alive while the last active day is today or yesterday.
+
+    Args:
+        user: Account whose streak is recomputed.
+
+    Returns:
+        The streak in days, zero when the last activity is older than yesterday.
+    """
+    today = timezone.localdate()
+    active_days = set(
+        ActionLog.objects.filter(
+            user=user,
+            status=ActionLog.Status.APPROVED,
+            created_at__date__gte=today - timedelta(days=STREAK_WINDOW_DAYS),
+        )
+        .annotate(day=TruncDate("created_at"))
+        .values_list("day", flat=True)
+        .distinct()
+    )
+
+    cursor = today if today in active_days else today - timedelta(days=1)
+    streak = 0
+    while cursor in active_days:
+        streak += 1
+        cursor -= timedelta(days=1)
+
+    last_action_date = max(active_days) if active_days else None
+    profile = ensure_profile(user)
+    if profile.current_streak != streak or profile.last_action_date != last_action_date:
+        profile.current_streak = streak
+        profile.last_action_date = last_action_date
+        profile.save(update_fields=["current_streak", "last_action_date"])
+    return streak
 
 
 class InsufficientPointsError(ValidationError):

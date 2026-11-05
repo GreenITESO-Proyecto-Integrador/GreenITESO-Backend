@@ -1,20 +1,43 @@
 name: Release - production
 
+# Runs on a push to prod, not on pull_request: GitHub matches the production
+# Environment's deployment-branch rule against the run's ref, and a pull_request
+# run uses refs/pull/<n>/merge, which that rule (prod only) rejects. prod only
+# changes through a merged preprod -> prod pull request, and the first job
+# re-verifies that before the release job can use the Environment's secrets.
 on:
-  pull_request:
+  push:
     branches: [prod]
-    types: [closed]
 
 jobs:
-  release:
+  verify-source:
     # Production has its own switch so it can be enabled without turning on the
     # dev and preprod cloud releases (which also disable the standalone Neon
     # migrations those environments still rely on).
-    if: >-
-      vars.CLOUD_PRODUCTION_DEPLOY_ENABLED == 'true' &&
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.head.ref == 'preprod' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: vars.CLOUD_PRODUCTION_DEPLOY_ENABLED == 'true'
+    name: Verify the push is a merged preprod promotion
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require a merged same-repository preprod pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: scripts/verify-production-source.sh
+
+  release:
+    needs: verify-source
+    if: vars.CLOUD_PRODUCTION_DEPLOY_ENABLED == 'true'
     permissions:
       contents: read
       actions: read
@@ -23,10 +46,9 @@ jobs:
     with:
       environment: production
       github_environment: production
-      release_sha: ${{ github.event.pull_request.merge_commit_sha }}
+      release_sha: ${{ github.sha }}
       release_ref: prod
       source_ref: preprod
-      source_release_sha: ${{ github.event.pull_request.head.sha }}
       # Production builds its own image for now (no staging release to reuse).
       # Set back to false, and restore the provenance step in _deploy.yml, once
       # preprod is released to Cloud Run.

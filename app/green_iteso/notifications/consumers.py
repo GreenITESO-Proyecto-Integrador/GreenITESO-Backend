@@ -58,7 +58,7 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
             {"type": NOTIFICATION_EVENT, "notification": event["notification"]}
         )
 
-    async def account_deactivated(self, event: dict[str, Any]) -> None:
+    async def account_deactivated(self, _event: dict[str, Any]) -> None:
         """Close the socket when the user deactivates their account (#176)."""
         await self.close(code=CLOSE_UNAUTHORIZED)
 

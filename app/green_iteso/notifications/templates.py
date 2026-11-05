@@ -43,9 +43,27 @@ NOTIFICATION_TEMPLATES: dict[str, NotificationTemplate] = {
         title="¡Nueva insignia desbloqueada!",
         message='Obtuviste la insignia "{badge_name}".',
     ),
+    NotificationType.CAMPAIGN_APPROVED: NotificationTemplate(
+        title="Tu propuesta fue aprobada",
+        message='Tu propuesta de campaña "{campaign_name}" fue aprobada.',
+    ),
+    NotificationType.CAMPAIGN_FINISHED: NotificationTemplate(
+        title="Campaña finalizada",
+        message='La campaña "{campaign_name}" terminó.',
+    ),
     NotificationType.CAMPAIGN_INVITE: NotificationTemplate(
         title="Te invitaron a una campaña",
         message='Fuiste invitado a la campaña "{campaign_name}".',
+    ),
+    NotificationType.CAMPAIGN_REJECTED: NotificationTemplate(
+        title="Tu propuesta fue rechazada",
+        message=(
+            'Tu propuesta de campaña "{campaign_name}" fue rechazada. Motivo: {reason}'
+        ),
+    ),
+    NotificationType.CAMPAIGN_STARTED: NotificationTemplate(
+        title="Campaña iniciada",
+        message='La campaña "{campaign_name}" ya comenzó.',
     ),
     NotificationType.CLAN_DISSOLVED: NotificationTemplate(
         title="Clan disuelto",

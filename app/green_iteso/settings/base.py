@@ -316,5 +316,8 @@ STATIC_URL = "static/"
 # The directory is gitignored and is not served as public media.
 MEDIA_ROOT = BASE_DIR.parent / "media"
 GCS_EVIDENCE_BUCKET = os.environ.get("GCS_EVIDENCE_BUCKET", "").strip()
+# Photos may be 5 MiB. Multipart framing adds a little more, and Django's
+# default of 2.5 MiB rejects the request before the view's own limit runs.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"

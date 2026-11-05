@@ -27,7 +27,7 @@ def local_day_utc_bounds(now: datetime | None = None) -> tuple[datetime, datetim
 
 def count_user_action_logs_for_local_day(
     user_id: UUID, action_id: UUID, *, now: datetime | None = None
-) -> int:
+ ) -> int:
     """Count submitted logs for one action in the current local calendar day."""
     start, end = local_day_utc_bounds(now)
     return ActionLog.objects.filter(
@@ -44,8 +44,16 @@ def list_active_action_categories() -> QuerySet[ActionCategory]:
 
 
 def list_active_actions() -> QuerySet[ActionMaster]:
-    """Return active actions ordered by code."""
-    return ActionMaster.objects.filter(is_active=True).order_by("code")
+    """Return active actions ordered by code.
+
+    The category travels in the same query because ActionMasterSerializer
+    nests it; without this the list costs one extra query per action.
+    """
+    return (
+        ActionMaster.objects.filter(is_active=True)
+        .select_related("category")
+        .order_by("code")
+    )
 
 
 def list_active_exchangeables() -> QuerySet[ExchangeableItem]:
@@ -66,3 +74,21 @@ def list_action_logs_by_status(status: str) -> QuerySet[ActionLog]:
         .select_related("user", "action")
         .order_by("created_at", "id")
     )
+
+
+def list_my_action_logs(
+    user_id: UUID, *, status: str | None = None
+) -> QuerySet[ActionLog]:
+    """Return the caller's own action logs, newest first.
+
+    Covers all statuses by default (APPROVED, PENDING_AUDIT, REJECTED).
+    The existing ``(user, action, created_at)`` index supports the user filter.
+    """
+    qs = (
+        ActionLog.objects.filter(user_id=user_id)
+        .select_related("action")
+        .order_by("-created_at", "-id")
+    )
+    if status is not None:
+        qs = qs.filter(status=status)
+    return qs

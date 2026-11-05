@@ -9,7 +9,7 @@ from typing import Any
 from django.core.files.uploadedfile import UploadedFile
 from django.db import transaction
 from django.db.models import F, QuerySet
-from django.http import FileResponse, HttpResponseRedirect
+from django.http import FileResponse, HttpResponse
 from django.utils import timezone
 from rest_framework import mixins, status, views, viewsets
 from rest_framework.decorators import action
@@ -32,9 +32,9 @@ from .evidence import (
     evidence_content_type,
     evidence_file_path,
     evidence_fingerprint,
+    gcs_evidence_bytes,
     gcs_evidence_enabled,
     save_action_evidence,
-    signed_evidence_url,
     stored_evidence_fingerprint,
 )
 from .models import ActionCategory, ActionLog, ActionMaster, ExchangeableItem
@@ -44,11 +44,13 @@ from .selectors import (
     list_active_action_categories,
     list_active_actions,
     list_active_exchangeables,
+    list_my_action_logs,
 )
 from .serializers import (
     ActionCategorySerializer,
     ActionLogAuditSerializer,
     ActionLogListQuerySerializer,
+    ActionLogMineSerializer,
     ActionLogQueueSerializer,
     ActionLogSerializer,
     ActionMasterSerializer,
@@ -61,10 +63,41 @@ from .services import (
     ItemInactiveError,
     PointsAlreadySpentError,
     notify_mission_progress,
+    recalculate_streak,
     redeem_exchangeable,
     revert_mission_progress,
     revoke_awarded_points,
 )
+
+
+class ActionLogMineView(views.APIView):
+    """List the authenticated user's own action logs, newest first."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        """Return a paginated list of the caller's action logs.
+
+        Accepts an optional ``?status=`` query parameter to filter by
+        APPROVED / PENDING_AUDIT / REJECTED.
+        """
+        query = ActionLogListQuerySerializer(
+            data=request.query_params,
+            partial=True,  # status is optional; no default is injected
+        )
+        query.is_valid(raise_exception=True)
+        status_filter: str | None = query.validated_data.get("status")
+
+        qs = list_my_action_logs(user_id=request.user.pk, status=status_filter)
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        if page is None:
+            return Response(
+                ActionLogMineSerializer(qs, many=True).data
+            )
+        return paginator.get_paginated_response(
+            ActionLogMineSerializer(page, many=True).data
+        )
 
 
 def _format_error(exc: Exception) -> str:
@@ -313,6 +346,7 @@ class ActionLogCreateView(views.APIView):
                 )
                 check_and_award_badges(user)
                 notify_mission_progress(action_log)
+                recalculate_streak(user)
 
         return Response(
             {
@@ -331,7 +365,7 @@ class ActionLogEvidenceView(views.APIView):
 
     def get(
         self, _request: Request, log_id: uuid.UUID
-    ) -> FileResponse | HttpResponseRedirect | Response:
+    ) -> FileResponse | HttpResponse | Response:
         try:
             action_log = ActionLog.objects.get(pk=log_id)
         except ActionLog.DoesNotExist:
@@ -340,13 +374,14 @@ class ActionLogEvidenceView(views.APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         if gcs_evidence_enabled():
-            signed_url = signed_evidence_url(action_log.evidence_object_key)
-            if not signed_url:
+            stored = gcs_evidence_bytes(action_log.evidence_object_key)
+            if stored is None:
                 return Response(
                     {"error": "Evidence image not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            return HttpResponseRedirect(signed_url)
+            payload, content_type = stored
+            return HttpResponse(payload, content_type=content_type)
         path = evidence_file_path(action_log.evidence_object_key)
         if path is None:
             return Response(
@@ -414,6 +449,7 @@ class ActionLogAuditView(views.APIView):
                 )
                 # Must run after the REJECTED status is saved (campaigns rule).
                 revert_mission_progress(action_log)
+                recalculate_streak(action_log.user)
             elif new_status == "APPROVED":
                 profile = action_log.user.profile
                 points = action_log.points_awarded
@@ -432,6 +468,7 @@ class ActionLogAuditView(views.APIView):
                 profile.refresh_from_db(fields=["total_points", "available_points"])
                 check_and_award_badges(action_log.user)
                 notify_mission_progress(action_log)
+                recalculate_streak(action_log.user)
 
                 notify(
                     action_log.user,

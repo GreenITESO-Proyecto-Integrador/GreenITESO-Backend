@@ -12,10 +12,20 @@ from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
 from green_iteso.campaigns.models import Campaign
+from green_iteso.campaigns.services import earliest_allowed_start
 
 
 def _url(campaign: Campaign) -> str:
     return reverse("campaign-detail", kwargs={"campaign_id": campaign.pk})
+
+
+def _start_still_today() -> Any:
+    """A start that is still today in Mexico City, including the last hour.
+
+    ``now + 1 hour`` falls on tomorrow after 23:00 and then passes the rule
+    that a start must be tomorrow or later.
+    """
+    return earliest_allowed_start() - timedelta(seconds=1)
 
 
 @pytest.mark.django_db
@@ -284,7 +294,7 @@ class TestCampaignUpdateDateChanges:
 
         response = api_client.patch(
             _url(campaign),
-            {"start_date": (timezone.now() + timedelta(hours=1)).isoformat()},
+            {"start_date": _start_still_today().isoformat()},
             format="json",
         )
 
@@ -393,7 +403,7 @@ class TestCampaignUpdateDateChanges:
         response = api_client.patch(
             _url(campaign),
             {
-                "start_date": (now + timedelta(hours=1)).isoformat(),
+                "start_date": _start_still_today().isoformat(),
                 "end_date": stored_end.replace(microsecond=654000).isoformat(),
             },
             format="json",

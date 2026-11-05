@@ -4,6 +4,7 @@ from django.db import transaction
 
 from green_iteso.accounts.models import User
 from green_iteso.notifications.models import Notification
+from green_iteso.notifications.services import notify
 
 from .models import Badge, UserBadge
 
@@ -27,9 +28,10 @@ def check_and_award_badges(user: User) -> None:
         for badge in eligible_badges:
             created = UserBadge.objects.get_or_create(user=user, badge=badge)[1]
             if created:
-                Notification.objects.create(
-                    user=user,
-                    title="¡Nueva medalla desbloqueada!",
-                    message=f"Has obtenido el logro: {badge.name}. ¡Sigue así!",
-                    notification_type=Notification.NotificationType.BADGE_EARNED,
+                # notify() saves the notification and pushes it over the
+                # WebSocket after commit, so the frontend can celebrate it live.
+                notify(
+                    user,
+                    Notification.NotificationType.BADGE_EARNED,
+                    badge_name=badge.name,
                 )

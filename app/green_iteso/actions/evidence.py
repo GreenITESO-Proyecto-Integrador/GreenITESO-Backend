@@ -134,7 +134,7 @@ def _upload_gcs(object_key: str, payload: bytes, kind: str) -> None:
     except Exception:
         try:
             blob.delete()
-        except Exception:
+        except Exception: # pylint: disable=broad-exception-caught
             pass
         raise
 
@@ -230,7 +230,7 @@ def gcs_evidence_bytes(object_key: str) -> tuple[bytes, str] | None:
     return payload, kind
 
 
-def signed_read_url(blob: Any) -> str:
+def signed_read_url(blob: storage.Blob, expiration: timedelta = SIGNED_URL_TTL) -> str:
     """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
 
     Shared with ``core.image_storage``, which serves avatars from the same bucket.
@@ -239,14 +239,14 @@ def signed_read_url(blob: Any) -> str:
         return ""
     try:
         email, token = _signing_credentials()
-    except Exception:
+    except Exception: # pylint: disable=broad-exception-caught
         return ""
     if not email or not token:
         return ""
     return str(
         blob.generate_signed_url(
             version="v4",
-            expiration=SIGNED_URL_TTL,
+            expiration=expiration,
             method="GET",
             service_account_email=email,
             access_token=token,

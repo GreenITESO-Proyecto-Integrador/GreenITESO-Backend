@@ -18,6 +18,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from green_iteso.actions.evidence import signed_read_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -118,7 +119,7 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             with Image.open(file_obj) as img:
                 img.verify()
-        except (UnidentifiedImageError, Exception):
+        except (UnidentifiedImageError, Exception): # pylint: disable=broad-exception-caught
             return Response(
                 {"error": "La imagen está truncada o no se puede decodificar."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -135,11 +136,16 @@ class ImageUploadView(APIView):
             file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=detected_mime)
 
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(hours=1),
-                method="GET",
-            )
+            signed_url = signed_read_url(blob, expiration=timedelta(days=7))
+
+            if not signed_url:
+                if blob.exists():
+                    blob.delete()
+                logger.error("Fallo al firmar la URL de GCS. Se eliminó el blob huérfano.")
+                return Response(
+                    {"error": "No se pudo generar el enlace seguro de la imagen."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
             return Response({"url": signed_url}, status=status.HTTP_200_OK)
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")

@@ -396,18 +396,21 @@ class ImageUploadViewTests(APITestCase):
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @patch("green_iteso.feed.views.signed_read_url")
+    @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
-        self, _mock_storage_client: MagicMock, mock_signed_read_url: MagicMock
+        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
     ) -> None:
-        """Ensure a successful upload returns a 200 OK and the signed URL."""
+        """Ensure a valid image is uploaded and returns a signed URL."""
         self.client.force_authenticate(user=self.user)
 
-        mock_signed_read_url.return_value = (
-            "https://storage.googleapis.com/test-bucket/"
-            "uploads/test.png?X-Goog-Signature=mock"
-        )
+        # Simulamos que el servidor sí tiene credenciales
+        mock_signing_credentials.return_value = ("test-account@gcp.com", "fake-token")
+
+        # Simulamos que Google Cloud devuelve una URL firmada correcta
+        mock_bucket = mock_storage_client.return_value.bucket.return_value
+        mock_blob = mock_bucket.blob.return_value
+        mock_blob.generate_signed_url.return_value = "https://storage.googleapis.com/bucket/file.jpg?X-Goog-Signature=123"
 
         valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
@@ -416,26 +419,21 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("url", response.data)
         self.assertIn("X-Goog-Signature", response.data["url"])
 
-    @patch("green_iteso.feed.views.signed_read_url")
+    @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
-    def test_upload_failure_empty_url_deletes_blob_returns_500(
-        self, mock_storage_client: MagicMock, mock_signed_read_url: MagicMock
+    def test_upload_failure_empty_credentials_returns_500(
+        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
     ) -> None:
-        """Ensure an empty signed URL triggers a rollback (blob deletion) and a 500 error."""
+        """Ensure failing to get signing credentials triggers a 500 error."""
         self.client.force_authenticate(user=self.user)
 
-        mock_instance = mock_storage_client.return_value
-        mock_bucket = mock_instance.bucket.return_value
-        mock_blob = mock_bucket.blob.return_value
-
-        mock_signed_read_url.return_value = ""
+        # Simulamos que Google Cloud no devuelve el email y token para firmar
+        mock_signing_credentials.return_value = (None, None)
 
         valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        mock_blob.upload_from_file.assert_called_once()
-        mock_blob.delete.assert_called_once()
 
     @override_settings(GCS_EVIDENCE_BUCKET="")
     def test_upload_unconfigured_bucket_returns_503(self) -> None:

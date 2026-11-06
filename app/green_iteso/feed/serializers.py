@@ -12,6 +12,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
+from green_iteso.accounts.cosmetics import background_image_url, frame_image_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge
@@ -23,15 +24,40 @@ class PostAuthorSerializer(serializers.ModelSerializer):
     """Minimal nested author details for feed cards."""
 
     avatar_url = serializers.SerializerMethodField()
+    frame_url = serializers.SerializerMethodField()
+    background_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name", "avatar_url"]
-        read_only_fields = ["id", "email", "first_name", "last_name", "avatar_url"]
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "avatar_url",
+            "frame_url",
+            "background_url",
+        ]
+        read_only_fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "avatar_url",
+            "frame_url",
+            "background_url",
+        ]
 
     def get_avatar_url(self, user: Any) -> str:
         """The author's profile photo URL (#170), or "" when there is none."""
         return user_avatar_url(user, self.context.get("request"))
+
+    def get_frame_url(self, user: Any) -> str:
+        """Image of the author's active avatar frame, or "" when there is none."""
+        return frame_image_url(user, self.context)
+
+    def get_background_url(self, user: Any) -> str:
+        """Image of the author's active profile background, or "" when there is none."""
+        return background_image_url(user, self.context)
 
 
 class PostSerializer(serializers.ModelSerializer):

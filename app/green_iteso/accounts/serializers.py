@@ -12,6 +12,7 @@ from green_iteso.actions.models import ActionCategory
 
 from .avatars import public_avatar_url, user_avatar_url
 from .models import User, UserProfile, UserRoleAudit
+from .moderation import account_status
 from .selectors import EcologicalProfile
 from .services import nickname_change_cost
 
@@ -35,6 +36,32 @@ class UserSerializer(UserAvatarMixin, serializers.ModelSerializer):
         model = User
         fields = ["id", "email", "role", "date_joined", "avatar_url"]
         read_only_fields = fields
+
+
+class AdminUserSerializer(UserSerializer):
+    """What an admin sees of an account: names and whether it is banned."""
+
+    status = serializers.SerializerMethodField(
+        help_text="ACTIVE, BANNED (by an admin) or SELF_DEACTIVATED (by the user)."
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "nickname",
+            "role",
+            "date_joined",
+            "avatar_url",
+            "status",
+        ]
+        read_only_fields = fields
+
+    def get_status(self, user: User) -> str:
+        return account_status(user)
 
 
 class ChangeRoleRequestSerializer(serializers.Serializer):  # pylint: disable=abstract-method

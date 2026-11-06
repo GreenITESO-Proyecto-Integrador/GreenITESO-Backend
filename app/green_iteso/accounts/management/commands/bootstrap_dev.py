@@ -545,21 +545,7 @@ def create_demo_action_log(
 ) -> SeededActionLog:
     """Create or validate one stable synthetic action log."""
     user = context.users[index % len(context.users)]
-    action = context.actions[index % len(context.actions)]
-    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-    if status == ActionLog.Status.PENDING_AUDIT:
-        photo_action = next(
-            (
-                candidate
-                for candidate in context.actions
-                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
-            ),
-            None,
-        )
-        if photo_action is not None:
-            action = photo_action
-        else:
-            status = ActionLog.Status.APPROVED
+    action, status = expected_demo_action_status(index, context.actions)
     idempotency_key = f"demo-action-{index:02d}"
     institutional_clan = context.profiles[user.pk].institutional_clan
     credited_private_clan = context.private_clans[index % len(context.private_clans)]
@@ -606,13 +592,7 @@ def create_demo_action_log(
         getattr(institutional_clan, "pk", None),
         credited_private_clan.pk,
     )
-    existing_identity = (
-        log.idempotency_key,
-        log.user_id,
-        log.action_id,
-        log.institutional_clan_id,
-        log.credited_private_clan_id,
-    )
+    existing_identity = demo_action_log_identity(log)[:5]
     if not was_created and existing_identity != expected_identity:
         raise CommandError(
             "Demo action-log identity collision; existing row was preserved. "
@@ -629,6 +609,49 @@ def create_demo_action_log(
             institutional_clan,
             credited_private_clan,
         ),
+    )
+
+
+def expected_demo_action_status(
+    index: int, actions: list[ActionMaster]
+) -> tuple[ActionMaster, str]:
+    """Return the deterministic synthetic action and compatible status."""
+    action = actions[index % len(actions)]
+    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
+    if status == ActionLog.Status.PENDING_AUDIT:
+        photo_action = next(
+            (
+                candidate
+                for candidate in actions
+                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
+            ),
+            None,
+        )
+        if photo_action is not None:
+            action = photo_action
+        else:
+            status = ActionLog.Status.APPROVED
+    return action, status
+
+
+def demo_action_log_identity(log: ActionLog) -> tuple[Any, ...]:
+    """Return immutable and review-state fields used to verify a demo log."""
+    return (
+        log.idempotency_key,
+        log.user_id,
+        log.action_id,
+        log.institutional_clan_id,
+        log.credited_private_clan_id,
+        log.status,
+        log.points_awarded,
+        log.co2_kg_factor_snapshot,
+        log.water_liters_factor_snapshot,
+        log.plastic_kg_factor_snapshot,
+        log.campaign_id,
+        log.evidence_object_key,
+        log.reviewed_by_id,
+        log.reviewed_at is not None,
+        log.rejection_reason,
     )
 
 

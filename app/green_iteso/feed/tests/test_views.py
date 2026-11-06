@@ -326,7 +326,7 @@ class ImageUploadViewTests(APITestCase):
             password="testpassword123!",
             first_name="Test",
         )
-        self.url = "/api/uploads/"
+        self.url = "/api/v1/uploads/"
 
     def test_upload_unauthenticated_returns_401(self) -> None:
         """Ensure unauthenticated users are rejected."""

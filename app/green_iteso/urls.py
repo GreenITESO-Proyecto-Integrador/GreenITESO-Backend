@@ -22,6 +22,7 @@ api_v1_patterns = [
     path("feed/", include("green_iteso.feed.urls")),
     path("notifications/", include("green_iteso.notifications.urls")),
     path("rankings/", include("green_iteso.gamification.urls")),
+    path("uploads/", ImageUploadView.as_view(), name="image-upload"),
 ]
 
 api_patterns = [
@@ -33,7 +34,6 @@ api_patterns = [
 urlpatterns = [
     path("", index_view, name="index"),
     path("api/", include(api_patterns)),
-    path("api/uploads/", ImageUploadView.as_view(), name="image-upload"),
 ]
 
 if settings.DEBUG:

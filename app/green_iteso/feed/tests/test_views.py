@@ -326,7 +326,7 @@ class ImageUploadViewTests(APITestCase):
             password="testpassword123!",
             first_name="Test",
         )
-        self.url = "/api/uploads/"
+        self.url = "/api/v1/uploads/"
 
     def test_upload_unauthenticated_returns_401(self) -> None:
         """Ensure unauthenticated users are rejected."""
@@ -373,7 +373,7 @@ class ImageUploadViewTests(APITestCase):
     @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
     @patch("google.cloud.storage.Client")
     def test_upload_gcs_service_failure_returns_500(
-        self, mock_storage_client: MagicMock, mock_gcs_enabled: MagicMock
+        self, mock_storage_client: MagicMock, _mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure GCS failures are handled gracefully with a 500 error."""
         self.client.force_authenticate(user=self.user)
@@ -392,7 +392,7 @@ class ImageUploadViewTests(APITestCase):
     @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, mock_gcs_enabled: MagicMock
+        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, _mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure a valid image is uploaded and returns a signed URL."""
         self.client.force_authenticate(user=self.user)
@@ -412,11 +412,11 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("url", response.data)
         self.assertIn("X-Goog-Signature", response.data["url"])
 
-    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)    
     @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_failure_empty_credentials_returns_500(
-        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, mock_gcs_enabled: MagicMock
+        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, _mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure failing to get signing credentials triggers a 500 error."""
         self.client.force_authenticate(user=self.user)
@@ -432,7 +432,7 @@ class ImageUploadViewTests(APITestCase):
 
     @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=False)
     @patch("green_iteso.feed.views.default_storage.save", return_value="uploads/test-mock.jpg")
-    def test_image_upload_local(self, mock_save: MagicMock, mock_gcs_enabled: MagicMock) -> None:
+    def test_image_upload_local(self, mock_save: MagicMock, _mock_gcs_enabled: MagicMock) -> None:
         """Ensure local upload flow works when GCS is disabled."""
         self.client.force_authenticate(user=self.user)
         valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")

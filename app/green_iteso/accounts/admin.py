@@ -55,6 +55,16 @@ class UserAdmin(BaseUserAdmin):
     search_fields = ("email", "first_name", "last_name")
     filter_horizontal = ("groups", "user_permissions")
 
+    def save_model(
+        self, request: HttpRequest, obj: User, form: forms.ModelForm, change: bool
+    ) -> None:
+        # ``deactivated_at`` marks a self-deactivation that may sign back in
+        # (#176). An admin who re-enables the account takes ownership of its
+        # state, so a later admin disable must not be undone by the next login.
+        if obj.is_active:
+            obj.deactivated_at = None
+        super().save_model(request, obj, form, change)
+
 
 @admin.register(Clan)
 class ClanAdmin(admin.ModelAdmin):

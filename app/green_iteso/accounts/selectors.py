@@ -20,6 +20,28 @@ from .models import Clan, ClanMembership, User, UserProfile
 from .services import ensure_profile
 
 
+def get_active_private_clan(user: User) -> Clan | None:
+    """Return the private clan currently credited for ``user``, if any.
+
+    ClanMembership allows at most one membership flagged ``is_active_private``
+    per user, so this reads it from there instead of from a column on the
+    profile. Shared by get_profile_clans and get_ecological_profile so both
+    resolve the active clan the same way.
+
+    Args:
+        user: Account whose active private clan is read.
+
+    Returns:
+        The clan, or None when the user has not selected one.
+    """
+    membership = (
+        ClanMembership.objects.select_related("clan")
+        .filter(user=user, is_active_private=True)
+        .first()
+    )
+    return membership.clan if membership else None
+
+
 class ProfileClans(NamedTuple):
     """The profile of a user together with the clans their points credit."""
 
@@ -46,15 +68,10 @@ def get_profile_clans(user: User) -> ProfileClans:
         UserProfile.DoesNotExist: If the account has no profile yet.
     """
     profile = UserProfile.objects.select_related("institutional_clan").get(user=user)
-    membership = (
-        ClanMembership.objects.select_related("clan")
-        .filter(user=user, is_active_private=True)
-        .first()
-    )
     return ProfileClans(
         profile=profile,
         institutional_clan=profile.institutional_clan,
-        active_private_clan=membership.clan if membership else None,
+        active_private_clan=get_active_private_clan(user),
     )
 
 
@@ -99,9 +116,19 @@ class EcologicalProfile:
     finished_campaigns: list[FinishedCampaign]
 
 
-def _approved_action_logs(user: User) -> QuerySet[ActionLog]:
-    """Return ``user``'s own approved action logs, the only ones that count as impact."""
-    return ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
+def _approved_action_logs(
+    user: User, profile: UserProfile | None
+) -> QuerySet[ActionLog]:
+    """Return ``user``'s own approved action logs, the only ones that count as impact.
+
+    Logs from before the account was deactivated (``progress_reset_at``, #176)
+    are history, not part of the fresh start, so they are left out. A missing
+    profile means the user never had one, so nothing was reset.
+    """
+    logs = ActionLog.objects.filter(user=user, status=ActionLog.Status.APPROVED)
+    if profile is not None and profile.progress_reset_at is not None:
+        logs = logs.filter(created_at__gte=profile.progress_reset_at)
+    return logs
 
 
 def _sum_impact(logs: QuerySet[ActionLog]) -> ImpactMetrics:
@@ -134,14 +161,9 @@ def get_ecological_profile(user: User) -> EcologicalProfile:
     placeholder is the correct behavior today, not a workaround.
     """
     profile = ensure_profile(user)
-    active_membership = (
-        ClanMembership.objects.filter(user=user, is_active_private=True)
-        .select_related("clan")
-        .first()
-    )
-    active_private_clan = active_membership.clan if active_membership else None
+    active_private_clan = get_active_private_clan(user)
 
-    metrics = _sum_impact(_approved_action_logs(user))
+    metrics = _sum_impact(_approved_action_logs(user, profile))
 
     finished_campaigns = [
         FinishedCampaign(
@@ -258,7 +280,7 @@ def get_profile_metrics(user: User, filters: MetricsFilters) -> ProfileMetrics:
     """
     profile = ensure_profile(user)
 
-    logs = _approved_action_logs(user)
+    logs = _approved_action_logs(user, profile)
     badges = UserBadge.objects.filter(user=user)
     campaigns = Campaign.objects.filter(
         participants__user=user, status=Campaign.Status.FINISHED
@@ -352,12 +374,11 @@ def get_impact_trend(
         for offset in range(weeks - 1, -1, -1)
     ]
 
+    # Read-only lookup: this GET must not create a profile as a side effect.
+    profile = UserProfile.objects.filter(user=user).first()
     rows = (
-        ActionLog.objects.filter(
-            user=user,
-            status=ActionLog.Status.APPROVED,
-            created_at__date__gte=week_starts[0],
-        )
+        _approved_action_logs(user, profile)
+        .filter(created_at__date__gte=week_starts[0])
         .annotate(week=TruncWeek("created_at"))
         .values("week")
         .annotate(

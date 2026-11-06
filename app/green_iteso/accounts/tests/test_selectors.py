@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.accounts.selectors import (
+    get_active_private_clan,
     get_ecological_profile,
     get_impact_trend,
     get_profile_clans,
@@ -302,3 +303,33 @@ def test_get_impact_trend_buckets_approved_actions_by_week_and_excludes_others()
     assert one_week_ago_point.co2_kg == Decimal("0")
     three_weeks_ago_point = by_week[current_week_start - timedelta(weeks=3)]
     assert three_weeks_ago_point.co2_kg == Decimal("0")
+
+
+@pytest.mark.django_db
+def test_get_active_private_clan_returns_the_flagged_membership(member: User) -> None:
+    active = Clan.objects.create(name="Las Ranas", type=Clan.ClanType.PRIVATE)
+    other = Clan.objects.create(name="Eco Warriors", type=Clan.ClanType.PRIVATE)
+    ClanMembership.objects.create(user=member, clan=active, is_active_private=True)
+    ClanMembership.objects.create(user=member, clan=other)
+
+    assert get_active_private_clan(member) == active
+
+
+@pytest.mark.django_db
+def test_get_active_private_clan_is_none_without_a_flagged_membership(
+    member: User,
+) -> None:
+    clan = Clan.objects.create(name="Las Ranas", type=Clan.ClanType.PRIVATE)
+    ClanMembership.objects.create(user=member, clan=clan)
+
+    assert get_active_private_clan(member) is None
+
+
+@pytest.mark.django_db
+def test_both_selectors_agree_on_the_active_private_clan(member: User) -> None:
+    """get_profile_clans and get_ecological_profile must not drift apart."""
+    active = Clan.objects.create(name="Las Ranas", type=Clan.ClanType.PRIVATE)
+    ClanMembership.objects.create(user=member, clan=active, is_active_private=True)
+
+    assert get_profile_clans(member).active_private_clan == active
+    assert get_ecological_profile(member).active_private_clan == active

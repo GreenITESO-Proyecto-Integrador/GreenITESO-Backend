@@ -56,6 +56,10 @@ class User(AbstractUser):
     # Display name shown across the app; set during onboarding, so it starts
     # blank rather than enforcing NOT NULL against pre-onboarding accounts.
     nickname = models.CharField(max_length=50, blank=True, default="")
+    # Set when the user deactivates their own account (#176), together with
+    # ``is_active = False``. It tells that apart from an admin disabling the
+    # account (``is_active = False`` alone), which can never log back in.
+    deactivated_at = models.DateTimeField(null=True, blank=True)
     objects = UserManager()
 
     USERNAME_FIELD = "email"
@@ -229,6 +233,10 @@ class UserProfile(models.Model):
     # How many times the user has changed their nickname. The first change is
     # free; later ones cost points (#175), see ``services.change_nickname``.
     nickname_changes = models.PositiveSmallIntegerField(default=0)
+    # Set when the account is deactivated (#176): the user starts over, so
+    # action logs from before this moment no longer count toward their impact
+    # metrics. The logs themselves stay, as audit and clan history.
+    progress_reset_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "accounts_user_profile"

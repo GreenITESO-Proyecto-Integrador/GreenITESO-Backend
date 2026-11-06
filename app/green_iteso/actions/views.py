@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from django.core.files.uploadedfile import UploadedFile
@@ -19,6 +20,7 @@ from rest_framework.response import Response
 
 from green_iteso.accounts.models import Clan, UserProfile
 from green_iteso.accounts.selectors import get_profile_clans
+from green_iteso.accounts.services import ensure_account_writable
 from green_iteso.core.permissions import IsAdmin, IsAuthenticated
 from green_iteso.feed.services import create_shared_evidence_post
 from green_iteso.gamification.services import check_and_award_badges
@@ -188,12 +190,13 @@ class ActionLogCreateView(views.APIView):
 
     def post(self, request: Request) -> Response:
         """Handle POST requests to register a user action and update points."""
+        requested_at = timezone.now()
         serializer = ActionLogSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         saved: list[str] = []
         try:
-            return self._create_action_log(data, request.user, saved)
+            return self._create_action_log(data, request.user, saved, requested_at)
         except Exception:
             if saved:
                 delete_action_evidence(saved[0])
@@ -204,6 +207,7 @@ class ActionLogCreateView(views.APIView):
         data: dict[str, Any],
         user: Any,
         saved: list[str],
+        requested_at: datetime,
     ) -> Response:
         """Persist one action log inside a transaction, including its image."""
         uploaded: UploadedFile | None = data.get("evidence")
@@ -214,6 +218,8 @@ class ActionLogCreateView(views.APIView):
             # A weaker row lock still serializes submissions but permits user
             # FK inserts by transactions already holding a profile-row lock.
             user = type(user).objects.select_for_update(no_key=True).get(pk=user.pk)
+            # Queued behind a deactivation: must not credit the reset profile (#176).
+            ensure_account_writable(user, requested_at=requested_at)
             existing = ActionLog.objects.filter(
                 user_id=user.id, idempotency_key=data["idempotency_key"]
             ).first()

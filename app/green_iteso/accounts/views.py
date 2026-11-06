@@ -45,6 +45,7 @@ from .selectors import (
 )
 from .serializers import (
     ChangeRoleRequestSerializer,
+    DeactivateAccountSerializer,
     EcologicalProfileSerializer,
     ImpactTrendPointSerializer,
     LoginRequestSerializer,
@@ -59,9 +60,11 @@ from .serializers import (
     UserSerializer,
 )
 from .services import (
+    AccountDeactivationBlockedError,
     InsufficientPointsForNicknameError,
     NicknameUnchangedError,
     change_nickname,
+    deactivate_account,
     login_with_microsoft,
     set_profile_avatar,
     update_profile,
@@ -175,6 +178,7 @@ class LoginView(FirstRejectionThrottleMixin, APIView):
                 "refresh": result.refresh,
                 "user": result.user,
                 "created": result.created,
+                "reactivated": result.reactivated,
             },
             context={"request": request},
         )
@@ -365,6 +369,29 @@ class ProfileNicknameView(APIView):
         except (NicknameUnchangedError, InsufficientPointsForNicknameError) as exc:
             raise DRFValidationError({"nickname": str(exc)}) from exc
         return Response(NicknameChangeResultSerializer(result).data)
+
+
+class ProfileDeactivateView(APIView):
+    """Deactivate the caller's own account and wipe their progress (#176)."""
+
+    @extend_schema(
+        request=DeactivateAccountSerializer,
+        responses={
+            204: OpenApiResponse(description="Account deactivated"),
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: not confirmed, leads a clan, or last admin"
+            ),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """Soft-delete the account; signing in again later starts from zero."""
+        payload = DeactivateAccountSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            deactivate_account(user=request.user)
+        except AccountDeactivationBlockedError as exc:
+            raise DRFValidationError({"account": str(exc)}) from exc
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProfileMetricsView(APIView):

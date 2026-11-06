@@ -233,13 +233,17 @@ def gcs_evidence_bytes(object_key: str) -> tuple[bytes, str] | None:
 def signed_read_url(blob: storage.Blob, expiration: timedelta = SIGNED_URL_TTL) -> str:
     """Return a short-lived read URL for an existing ``blob``, or "" if it can't be signed.
 
-    Shared with ``core.image_storage``, which serves avatars from the same bucket.
+    Args:
+        blob: The GCS blob to sign.
+        expiration: The timedelta for which the signed URL remains valid.
+
+    Shared with ``core.image_storage``, which serves avatars and feed items from the same bucket.
     """
     if not blob.exists():
         return ""
     try:
         email, token = _signing_credentials()
-    except Exception: # pylint: disable=broad-exception-caught
+    except Exception:  # pylint: disable=broad-exception-caught
         return ""
     if not email or not token:
         return ""

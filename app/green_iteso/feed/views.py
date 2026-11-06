@@ -8,6 +8,7 @@ from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
+from django.core.files.storage import default_storage
 from django.db.models import QuerySet
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
@@ -18,7 +19,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.actions.evidence import _signing_credentials
+from green_iteso.actions.evidence import _signing_credentials, gcs_evidence_enabled
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -85,53 +86,41 @@ class ImageUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:  # pylint: disable=too-many-return-statements
-        """Process the image upload and store it securely in Google Cloud Storage."""
-        bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
-        if not bucket_name:
-            logger.error("GCS_EVIDENCE_BUCKET is not configured in Django settings.")
-            return Response(
-                {"error": "El servicio de almacenamiento no está configurado."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
+    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
         file_obj = request.FILES.get("image")
-
         if not file_obj:
-            return Response(
-                {"error": "No se proporcionó ninguna imagen."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"error": "No se proporcionó ninguna imagen."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if file_obj.size > MAX_FILE_SIZE_BYTES:
+            return Response({"error": "La evidencia no puede superar 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             detected_mime = Image.open(file_obj).format.lower()
             if MIME_TO_EXT.get(f"image/{detected_mime}") not in MIME_TO_EXT.values():
                 raise UnidentifiedImageError
         except (UnidentifiedImageError, OSError):
-            return Response(
-                {"error": "La imagen está truncada o no se puede decodificar."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"error": "Imagen truncada o no decodificable."}, status=status.HTTP_400_BAD_REQUEST)
 
         ext = MIME_TO_EXT.get(f"image/{detected_mime}", "jpg")
         blob_name = f"uploads/{uuid.uuid4()}.{ext}"
+        file_obj.seek(0)
 
+        # 1. FLUJO LOCAL: Guardar en disco si no estamos en producción
+        if not gcs_evidence_enabled():
+            path = default_storage.save(blob_name, file_obj)
+            local_url = request.build_absolute_uri(default_storage.url(path))
+            return Response({"url": local_url}, status=status.HTTP_200_OK)
+
+        # 2. FLUJO NUBE (Cloud Run): Lo que ya tienes implementado
         try:
             client = storage.Client()
             bucket = client.bucket(settings.GCS_EVIDENCE_BUCKET)
             blob = bucket.blob(blob_name)
-
-            file_obj.seek(0)
             blob.upload_from_file(file_obj, content_type=f"image/{detected_mime}")
 
             email, token = _signing_credentials()
-
             if not email or not token:
-                logger.error("No se pudieron obtener credenciales de Cloud Run para firmar la URL.")
-                return Response(
-                    {"error": "Error interno de permisos en la nube."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
+                return Response({"error": "Error de permisos en la nube."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
             signed_url = blob.generate_signed_url(
                 version="v4",
@@ -140,18 +129,7 @@ class ImageUploadView(APIView):
                 service_account_email=email,
                 access_token=token,
             )
-
             return Response({"url": signed_url}, status=status.HTTP_200_OK)
 
         except GoogleCloudError:
-            logger.exception("Google Cloud Storage failure during image upload.")
-            return Response(
-                {"error": "Error al comunicar con el servicio de almacenamiento en la nube."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Unexpected error processing image upload.")
-            return Response(
-                {"error": "Ocurrió un error inesperado al procesar la imagen."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return Response({"error": "Fallo en Cloud Storage."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -351,19 +351,10 @@ class ImageUploadViewTests(APITestCase):
         response = self.client.post(self.url, {"image": fake_file}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_upload_oversized_file_returns_400(self) -> None:
-        """Ensure files over the 5MB limit are rejected."""
-        self.client.force_authenticate(user=self.user)
-        large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
-        oversized_file = SimpleUploadedFile(
-            "large.jpg",
-            large_content,
-            content_type="image/jpeg",
-        )
-        response = self.client.post(
-            self.url, {"image": oversized_file}, format="multipart"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+    # Nota: Eliminé la prueba de test_upload_oversized_file_returns_400 porque en tu vista
+    # actual no estás validando el tamaño del archivo con MAX_FILE_SIZE_BYTES de nuevo.
+    # El archivo se lee con Image.open, y si es enorme consumirá memoria.
+    # (El frontend lo valida, pero tu vista actual no).
 
     def test_upload_truncated_image_returns_400(self) -> None:
         """Ensure an image with a valid header but truncated content is rejected by Pillow."""
@@ -379,9 +370,10 @@ class ImageUploadViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("error", response.data)
 
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
     @patch("google.cloud.storage.Client")
     def test_upload_gcs_service_failure_returns_500(
-        self, mock_storage_client: MagicMock
+        self, mock_storage_client: MagicMock, mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure GCS failures are handled gracefully with a 500 error."""
         self.client.force_authenticate(user=self.user)
@@ -396,10 +388,11 @@ class ImageUploadViewTests(APITestCase):
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
     @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
+        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure a valid image is uploaded and returns a signed URL."""
         self.client.force_authenticate(user=self.user)
@@ -419,10 +412,11 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("url", response.data)
         self.assertIn("X-Goog-Signature", response.data["url"])
 
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
     @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_failure_empty_credentials_returns_500(
-        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
+        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock, mock_gcs_enabled: MagicMock
     ) -> None:
         """Ensure failing to get signing credentials triggers a 500 error."""
         self.client.force_authenticate(user=self.user)
@@ -435,12 +429,33 @@ class ImageUploadViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @override_settings(GCS_EVIDENCE_BUCKET="")
-    def test_upload_unconfigured_bucket_returns_503(self) -> None:
-        """Ensure a missing GCS bucket configuration returns a 503 error."""
+
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=False)
+    @patch("green_iteso.feed.views.default_storage.save", return_value="uploads/test-mock.jpg")
+    def test_image_upload_local(self, mock_save: MagicMock, mock_gcs_enabled: MagicMock) -> None:
+        """Ensure local upload flow works when GCS is disabled."""
         self.client.force_authenticate(user=self.user)
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
+        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
+
         response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("url", response.data)
+        self.assertIn("uploads/test-mock.jpg", response.data["url"])
+        mock_save.assert_called_once()
+
+    def test_upload_oversized_file_returns_400(self) -> None:
+        """Ensure files over the 5MB limit are rejected."""
+        self.client.force_authenticate(user=self.user)
+        # Creamos un payload de 5MB + 1 byte
+        large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
+        oversized_file = SimpleUploadedFile(
+            "large.jpg",
+            large_content,
+            content_type="image/jpeg",
+        )
+        response = self.client.post(
+            self.url, {"image": oversized_file}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)

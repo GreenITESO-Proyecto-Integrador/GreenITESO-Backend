@@ -91,13 +91,13 @@ class ImageUploadView(APIView):
         file_obj = request.FILES.get("image")
         if not file_obj:
             return Response(
-                {"error": "No se proporcionó ninguna imagen."}, 
+                {"error": "No se proporcionó ninguna imagen."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if file_obj.size > MAX_FILE_SIZE_BYTES:
             return Response(
-                {"error": "La evidencia no puede superar 5 MB."}, 
+                {"error": "La evidencia no puede superar 5 MB."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

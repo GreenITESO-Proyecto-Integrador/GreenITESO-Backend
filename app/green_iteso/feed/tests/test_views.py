@@ -412,7 +412,7 @@ class ImageUploadViewTests(APITestCase):
         self.assertIn("url", response.data)
         self.assertIn("X-Goog-Signature", response.data["url"])
 
-    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)    
+    @patch("green_iteso.feed.views.gcs_evidence_enabled", return_value=True)
     @patch("green_iteso.feed.views._signing_credentials")
     @patch("google.cloud.storage.Client")
     def test_upload_failure_empty_credentials_returns_500(

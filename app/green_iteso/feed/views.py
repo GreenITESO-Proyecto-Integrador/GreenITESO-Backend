@@ -18,7 +18,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.actions.evidence import signed_read_url
+from green_iteso.actions.evidence import _signing_credentials
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -96,63 +96,57 @@ class ImageUploadView(APIView):
             )
 
         file_obj = request.FILES.get("image")
+
         if not file_obj:
             return Response(
-                {"error": "No se proporcionó ningún archivo en el campo 'image'."},
+                {"error": "No se proporcionó ninguna imagen."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        if file_obj.size > MAX_FILE_SIZE_BYTES:
-            return Response(
-                {"error": "El archivo excede el tamaño máximo permitido de 5 MB."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        detected_mime = detect_image_mime(file_obj)
-        if not detected_mime or detected_mime not in MIME_TO_EXT:
-            err_msg = (
-                "Formato no permitido o corrupto. Usa imágenes JPG, PNG o WebP válidas."
-            )
-            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            file_obj.seek(0)
-            with Image.open(file_obj) as img:
-                img.verify()
-        except (UnidentifiedImageError, Exception): # pylint: disable=broad-exception-caught
+            detected_mime = Image.open(file_obj).format.lower()
+            if MIME_TO_EXT.get(f"image/{detected_mime}") not in MIME_TO_EXT.values():
+                raise UnidentifiedImageError
+        except (UnidentifiedImageError, OSError):
             return Response(
                 {"error": "La imagen está truncada o no se puede decodificar."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        ext = MIME_TO_EXT[detected_mime]
+        ext = MIME_TO_EXT.get(f"image/{detected_mime}", "jpg")
         blob_name = f"uploads/{uuid.uuid4()}.{ext}"
 
         try:
             client = storage.Client()
-            bucket = client.bucket(bucket_name)
+            bucket = client.bucket(settings.GCS_EVIDENCE_BUCKET)
             blob = bucket.blob(blob_name)
 
             file_obj.seek(0)
-            blob.upload_from_file(file_obj, content_type=detected_mime)
+            blob.upload_from_file(file_obj, content_type=f"image/{detected_mime}")
 
-            signed_url = signed_read_url(blob, expiration=timedelta(days=7))
+            email, token = _signing_credentials()
 
-            if not signed_url:
-                if blob.exists():
-                    blob.delete()
-                logger.error("Fallo al firmar la URL de GCS. Se eliminó el blob huérfano.")
+            if not email or not token:
+                logger.error("No se pudieron obtener credenciales de Cloud Run para firmar la URL.")
                 return Response(
-                    {"error": "No se pudo generar el enlace seguro de la imagen."},
+                    {"error": "Error interno de permisos en la nube."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
+
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(days=7),
+                method="GET",
+                service_account_email=email,
+                access_token=token,
+            )
+
             return Response({"url": signed_url}, status=status.HTTP_200_OK)
+
         except GoogleCloudError:
             logger.exception("Google Cloud Storage failure during image upload.")
             return Response(
-                {
-                    "error": "Error al comunicar con el servicio de almacenamiento en la nube."
-                },
+                {"error": "Error al comunicar con el servicio de almacenamiento en la nube."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         except Exception:  # pylint: disable=broad-exception-caught

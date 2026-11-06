@@ -244,13 +244,42 @@ def test_institutional_clan_assignment_get_returns_current_state() -> None:
     client = APIClient()
     client.force_authenticate(caller)
     client.post(
-        "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
+        "/api/v1/clans/institutional-clan/",
+        {
+            "career": "Ingeniería en Sistemas",
+            "nickname": "Ana",
+            "visibility": "PRIVATE",
+        },
     )
 
     response = client.get("/api/v1/clans/institutional-clan/")
 
     assert response.status_code == 200
-    assert response.json()["career"] == "Ingeniería en Sistemas"
+    body = response.json()
+    assert body["career"] == "Ingeniería en Sistemas"
+    assert body["institutional_clan"]["name"] == "Ingeniería en Sistemas"
+    assert body["nickname"] == "Ana"
+    assert body["visibility"] == "PRIVATE"
+    assert body["onboarding_completed_at"] is not None
+
+    schema_response = client.get(
+        "/api/schema/", HTTP_ACCEPT="application/vnd.oai.openapi+json"
+    )
+    assert schema_response.status_code == 200
+    schema = schema_response.json()
+    operation_schema = schema["paths"]["/api/v1/clans/institutional-clan/"]["get"]
+    response_schema = operation_schema["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assignment_schema = schema["components"]["schemas"]["InstitutionalAssignment"]
+    assert response_schema["$ref"] == "#/components/schemas/InstitutionalAssignment"
+    assert {
+        "career",
+        "institutional_clan",
+        "nickname",
+        "visibility",
+        "onboarding_completed_at",
+    } <= assignment_schema["properties"].keys()
 
 
 @pytest.mark.django_db

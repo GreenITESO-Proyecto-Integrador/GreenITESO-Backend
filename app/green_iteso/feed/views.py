@@ -6,13 +6,14 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from django.db.models import QuerySet
+from django.db.models import BooleanField, Count, Exists, OuterRef, QuerySet, Value
 from django.http import HttpResponseBase
 from django.urls import reverse
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 from PIL import Image
 from rest_framework import permissions, serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
@@ -27,7 +28,7 @@ from green_iteso.core.image_storage import (
     validate_image,
 )
 from green_iteso.core.permissions import IsAdmin
-from green_iteso.feed.models import Post
+from green_iteso.feed.models import Post, PostLike, PostType
 from green_iteso.feed.serializers import PostSerializer
 
 # pylint: disable=no-member
@@ -62,22 +63,76 @@ class IsAuthorOrReadOnly(permissions.BasePermission):
 
 
 class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
-    """ViewSet handling CRUD operations for community feed posts."""
+    """ViewSet handling CRUD operations, filtering, and kudos for feed posts."""
 
     serializer_class = PostSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
 
     def get_queryset(self) -> QuerySet[Post]:
-        return (
-            Post.objects.select_related("author__profile", "badge_user__badge")
-            .all()
-            .order_by("-created_at")
+        user = self.request.user
+        liked_subquery = (
+            Exists(PostLike.objects.filter(post=OuterRef("pk"), user_id=user.pk))
+            if user and user.is_authenticated
+            else Value(False, output_field=BooleanField())
         )
+
+        queryset = Post.objects.select_related(
+            "author__profile", "badge_user__badge"
+        ).annotate(
+            likes_count=Count("likes", distinct=True),
+            liked_by_me=liked_subquery,
+        )
+
+        post_type = self.request.query_params.get("post_type")
+        if post_type in PostType.values:
+            queryset = queryset.filter(post_type=post_type)
+
+        ordering = self.request.query_params.get("ordering")
+        if ordering == "popular":
+            return queryset.order_by("-likes_count", "-created_at")
+
+        return queryset.order_by("-created_at")
 
     def perform_create(self, serializer: PostSerializer) -> None:
         """Assign authenticated user as author upon creation."""
         user = self.request.user if self.request.user.is_authenticated else None
         serializer.save(author=user)
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name="PostLikeToggleResponse",
+                fields={
+                    "liked_by_me": serializers.BooleanField(),
+                    "likes_count": serializers.IntegerField(),
+                },
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[permissions.IsAuthenticated],
+        url_path="like",
+    )
+    def like(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
+        """Toggle a kudos/like on a feed post for the current user."""
+        post = self.get_object()
+        deleted_count, _ = PostLike.objects.filter(
+            post=post, user=request.user
+        ).delete()
+        if deleted_count == 0:
+            PostLike.objects.get_or_create(post=post, user=request.user)
+            liked_by_me = True
+        else:
+            liked_by_me = False
+
+        likes_count = PostLike.objects.filter(post=post).count()
+        return Response(
+            {"liked_by_me": liked_by_me, "likes_count": likes_count},
+            status=status.HTTP_200_OK,
+        )
 
 
 class ImageUploadView(APIView):

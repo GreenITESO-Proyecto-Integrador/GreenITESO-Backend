@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from green_iteso.accounts.models import UserProfile
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
 
@@ -304,3 +305,74 @@ class PostAPITests(APITestCase):
         official_post.refresh_from_db()
         self.assertEqual(official_post.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
         self.assertEqual(official_post.content, "Contenido original")
+
+    def test_author_serializer_exposes_nickname_and_respects_private_profile(
+        self,
+    ) -> None:
+        """Ensure author nickname/display_name are serialized and PRIVATE profiles hide real names."""
+
+        self.author.nickname = "EcoEmilio"
+        self.author.first_name = "Emilio"
+        self.author.last_name = "Maciel"
+        self.author.save()
+        UserProfile.objects.update_or_create(
+            user=self.author,
+            defaults={"visibility": UserProfile.Visibility.PRIVATE},
+        )
+
+        Post.objects.create(
+            author=self.author,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Reciclando vidrio",
+        )
+
+        response = self.client.get(self.base_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        author_data = response.data["results"][0]["author"]
+        self.assertEqual(author_data["nickname"], "EcoEmilio")
+        self.assertEqual(author_data["display_name"], "EcoEmilio")
+        self.assertEqual(author_data["first_name"], "")
+        self.assertEqual(author_data["last_name"], "")
+
+    def test_toggle_like_and_popular_ordering(self) -> None:
+        """Ensure users can toggle kudos on a post and sort feed by popularity."""
+        post_one = Post.objects.create(
+            author=self.author,
+            post_type=PostType.SHARED_EVIDENCE,
+            content="Post menos popular",
+        )
+        post_two = Post.objects.create(
+            author=self.author,
+            post_type=PostType.COMMUNITY_MILESTONE,
+            content="Post más popular",
+        )
+
+        self.client.force_authenticate(user=self.author)
+        like_url = f"/api/v1/feed/{post_two.pk}/like/"
+
+        # Primer clic: da Kudos
+        res_like = self.client.post(like_url)
+        self.assertEqual(res_like.status_code, status.HTTP_200_OK)
+        self.assertTrue(res_like.data["liked_by_me"])
+        self.assertEqual(res_like.data["likes_count"], 1)
+
+        # Filtrar por tipo COMMUNITY_MILESTONE
+        res_filtered = self.client.get(
+            f"{self.base_url}?post_type={PostType.COMMUNITY_MILESTONE}"
+        )
+        self.assertEqual(res_filtered.data["count"], 1)
+        self.assertEqual(res_filtered.data["results"][0]["id"], post_two.pk)
+
+        # Ordenar por popularidad (?ordering=popular)
+        res_popular = self.client.get(f"{self.base_url}?ordering=popular")
+        results = res_popular.data["results"]
+        self.assertEqual(results[0]["id"], post_two.pk)
+        self.assertEqual(results[0]["likes_count"], 1)
+        self.assertTrue(results[0]["liked_by_me"])
+        self.assertEqual(results[1]["id"], post_one.pk)
+
+        # Segundo clic: quita Kudos
+        res_unlike = self.client.post(like_url)
+        self.assertEqual(res_unlike.status_code, status.HTTP_200_OK)
+        self.assertFalse(res_unlike.data["liked_by_me"])
+        self.assertEqual(res_unlike.data["likes_count"], 0)

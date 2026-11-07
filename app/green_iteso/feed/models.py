@@ -92,3 +92,40 @@ class Post(models.Model):
             raise ValidationError(
                 {"badge_user": "The attached badge must belong to the post author."}
             )
+
+
+class PostLike(models.Model):
+    """Single kudos/like from an authenticated user on a feed post."""
+
+    id = models.BigAutoField(primary_key=True)
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="likes",
+        db_column="post_id",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="liked_posts",
+        db_column="user_id",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "feed_post_likes"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["post", "user"],
+                name="feed_post_like_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["post", "user"],
+                name="feed_like_post_user_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Like by {self.user_id} on Post {self.post_id}"

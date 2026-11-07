@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 import logging
-import uuid
-from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
-from django.conf import settings
 from django.db.models import QuerySet
-from google.cloud import storage
-from google.cloud.exceptions import GoogleCloudError
-from PIL import Image, UnidentifiedImageError
-from rest_framework import permissions, status, viewsets
+from django.http import HttpResponseBase
+from django.urls import reverse
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from PIL import Image
+from rest_framework import permissions, serializers, status, viewsets
+from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from green_iteso.actions.evidence import _signing_credentials
+from green_iteso.core.image_storage import (
+    InvalidImageError,
+    image_response,
+    save_image,
+    validate_image,
+)
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
@@ -27,25 +34,19 @@ from green_iteso.feed.serializers import PostSerializer
 
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
-MIME_TO_EXT = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-}
+FEED_IMAGE_PREFIX = "feed"
 
 
-def detect_image_mime(file_obj: Any) -> str | None:
-    """Validate image magic bytes and return canonical MIME type."""
-    header = file_obj.read(12)
-    file_obj.seek(0)
-    if header.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return "image/webp"
-    return None
+def _ensure_decodable(uploaded: Any) -> None:
+    """Reject a file whose signature is valid but whose body Pillow can't decode."""
+    try:
+        with Image.open(uploaded) as image:
+            image.verify()
+    # Pillow raises many exception types for a broken file.
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        raise InvalidImageError("The image is truncated or corrupt.") from error
+    finally:
+        uploaded.seek(0)
 
 
 class IsAuthorOrReadOnly(permissions.BasePermission):
@@ -80,23 +81,35 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
 
 
 class ImageUploadView(APIView):
-    """Endpoint handling multipart image uploads to Google Cloud Storage."""
+    """Store a feed post image and return the stable URL to put in ``image_url``.
+
+    The URL points at ``FeedImageView`` instead of the bucket. A signed URL
+    would expire and is longer than ``Post.image_url`` allows (500).
+    """
 
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "feed_image_upload"
 
-    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:  # pylint: disable=too-many-return-statements
-        """Process the image upload and store it securely in Google Cloud Storage."""
-        bucket_name = getattr(settings, "GCS_EVIDENCE_BUCKET", None)
-        if not bucket_name:
-            logger.error("GCS_EVIDENCE_BUCKET is not configured in Django settings.")
-            return Response(
-                {"error": "El servicio de almacenamiento no está configurado."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    @extend_schema(
+        request={
+            "multipart/form-data": inline_serializer(
+                name="FeedImageUploadRequest",
+                fields={"image": serializers.ImageField()},
             )
-
+        },
+        responses={
+            200: inline_serializer(
+                name="FeedImageUploadResponse", fields={"url": serializers.URLField()}
+            ),
+            400: OpenApiResponse(description="Missing, invalid, or over 5 MB."),
+            500: OpenApiResponse(description="The storage service failed."),
+        },
+    )
+    def post(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
+        """Validate and store the image, then return its URL."""
         file_obj = request.FILES.get("image")
-
         if not file_obj:
             return Response(
                 {"error": "No se proporcionó ninguna imagen."},
@@ -104,54 +117,60 @@ class ImageUploadView(APIView):
             )
 
         try:
-            detected_mime = Image.open(file_obj).format.lower()
-            if MIME_TO_EXT.get(f"image/{detected_mime}") not in MIME_TO_EXT.values():
-                raise UnidentifiedImageError
-        except (UnidentifiedImageError, OSError):
+            validate_image(file_obj)
+            _ensure_decodable(file_obj)
+            object_key = save_image(FEED_IMAGE_PREFIX, request.user.pk, file_obj)
+        except InvalidImageError:
             return Response(
-                {"error": "La imagen está truncada o no se puede decodificar."},
+                {
+                    "error": "La imagen debe ser un JPG, PNG o WEBP válido de máximo 5 MB."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        ext = MIME_TO_EXT.get(f"image/{detected_mime}", "jpg")
-        blob_name = f"uploads/{uuid.uuid4()}.{ext}"
-
-        try:
-            client = storage.Client()
-            bucket = client.bucket(settings.GCS_EVIDENCE_BUCKET)
-            blob = bucket.blob(blob_name)
-
-            file_obj.seek(0)
-            blob.upload_from_file(file_obj, content_type=f"image/{detected_mime}")
-
-            email, token = _signing_credentials()
-
-            if not email or not token:
-                logger.error("No se pudieron obtener credenciales de Cloud Run para firmar la URL.")
-                return Response(
-                    {"error": "Error interno de permisos en la nube."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(days=7),
-                method="GET",
-                service_account_email=email,
-                access_token=token,
-            )
-
-            return Response({"url": signed_url}, status=status.HTTP_200_OK)
-
-        except GoogleCloudError:
-            logger.exception("Google Cloud Storage failure during image upload.")
-            return Response(
-                {"error": "Error al comunicar con el servicio de almacenamiento en la nube."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
         except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Unexpected error processing image upload.")
+            logger.exception("Could not store a feed image.")
             return Response(
-                {"error": "Ocurrió un error inesperado al procesar la imagen."},
+                {"error": "No se pudo guardar la imagen. Inténtalo de nuevo."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        path = reverse(
+            "feed-image",
+            kwargs={
+                "owner_id": request.user.pk,
+                "filename": object_key.rsplit("/", 1)[1],
+            },
+        )
+        return Response(
+            {"url": request.build_absolute_uri(path)}, status=status.HTTP_200_OK
+        )
+
+
+class FeedImageView(APIView):
+    """Serve an image stored by ``ImageUploadView``.
+
+    Open to anyone, like profile avatars: an ``<img>`` can't send the Bearer
+    token, and the feed shows these images to every reader. File names are
+    random UUIDs, so a URL can't be guessed.
+    """
+
+    authentication_classes: list[type] = []
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        responses={
+            (200, "image/*"): OpenApiTypes.BINARY,
+            302: OpenApiResponse(description="Redirect to a short-lived signed URL."),
+            404: OpenApiResponse(description="No stored image at this URL."),
+        },
+    )
+    def get(self, _request: Request, owner_id: UUID, filename: str) -> HttpResponseBase:
+        """Redirect to (deployed) or stream (local) the stored image."""
+        object_key = f"{FEED_IMAGE_PREFIX}/{owner_id}/{filename}"
+        response = image_response(FEED_IMAGE_PREFIX, owner_id, object_key)
+        if response is None:
+            raise NotFound()
+        # Shorter than the 10-minute signed URL, so a cached redirect never
+        # outlives the URL it points at.
+        response["Cache-Control"] = "private, max-age=300"
+        return response

@@ -170,6 +170,7 @@ REST_FRAMEWORK = {
         "auth_ip": "300/min",
         "clan_invite_redeem": "10/min",
         "profile_avatar": "10/min",
+        "feed_image_upload": "10/min",
     },
 }
 

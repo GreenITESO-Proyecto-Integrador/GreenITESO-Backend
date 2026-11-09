@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import unicodedata
 
+from .errors import ReservedClanNameError, UnknownCareerError
+
 INSTITUTIONAL_CAREERS: tuple[str, ...] = (
     "Ingeniería en Ciberseguridad",
     "Ingeniería en Desarrollo de Software",
@@ -39,3 +41,30 @@ def canonical_career(value: str) -> str | None:
 def is_reserved_clan_name(name: str) -> bool:
     """Whether ``name`` belongs to a catalog career and so to an institutional clan."""
     return canonical_career(name) is not None
+
+
+def require_career(value: str) -> str:
+    """Return the catalog spelling of ``value`` for onboarding.
+
+    Raises:
+        UnknownCareerError: If ``value`` is not in the catalog.
+    """
+    career = canonical_career(value)
+    if career is None:
+        raise UnknownCareerError(f"'{value.strip()}' is not in the career catalog.")
+    return career
+
+
+def ensure_name_not_reserved(name: str) -> None:
+    """Refuse a private clan name that belongs to a catalog career.
+
+    Such a clan would make every onboarding into that career fail on the
+    unique clan name.
+
+    Raises:
+        ReservedClanNameError: If ``name`` matches a catalog career.
+    """
+    if is_reserved_clan_name(name):
+        raise ReservedClanNameError(
+            f"'{name.strip()}' is reserved for an institutional clan."
+        )

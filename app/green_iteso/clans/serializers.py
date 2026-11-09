@@ -125,7 +125,14 @@ class ClanMembershipSerializer(serializers.ModelSerializer):
 class InstitutionalOnboardingSerializer(serializers.Serializer):
     """Input payload for declaring a career during onboarding (T2-30)."""
 
-    career = serializers.CharField(max_length=150, allow_blank=False)
+    career = serializers.CharField(
+        max_length=150,
+        allow_blank=False,
+        help_text=(
+            "One of GET /clans/institutional-clan/careers/. Case, accents and "
+            "spacing are ignored; anything else is rejected with 400."
+        ),
+    )
     nickname = serializers.CharField(
         max_length=50,
         allow_blank=True,

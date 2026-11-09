@@ -20,6 +20,7 @@ from green_iteso.accounts.models import (
 from green_iteso.accounts.services import ensure_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
+from .careers import canonical_career, is_reserved_clan_name
 from .errors import (
     AlreadyClanMemberError,
     AlreadyLeadingAClanError,
@@ -31,6 +32,8 @@ from .errors import (
     InvitationsNotNeededError,
     MembershipClanMismatchError,
     PrivateClanLimitExceededError,
+    ReservedClanNameError,
+    UnknownCareerError,
 )
 from .invite_codes import (
     CODE_LENGTH,
@@ -234,10 +237,17 @@ def assign_institutional_clan(
     in the previous institutional clan, so the user always ends up a member
     of exactly one institutional clan. ``visibility``, when given, is saved
     in the same profile update (onboarding, #163).
+
+    ``career`` must be in the curated catalog (#213) and is stored with the
+    catalog's spelling, so user input never names a new institutional clan.
+
+    Raises:
+        UnknownCareerError: If ``career`` is not in the catalog.
     """
-    career = career.strip()
-    if not career:
-        raise ValueError("career must not be blank")
+    known_career = canonical_career(career)
+    if known_career is None:
+        raise UnknownCareerError(f"'{career.strip()}' is not in the career catalog.")
+    career = known_career
 
     profile = ensure_profile(user)
     clan = _get_or_create_institutional_clan(career)
@@ -300,6 +310,22 @@ MAX_PRIVATE_CLAN_MEMBERSHIPS_PER_USER = 5
 
 
 CLAN_NAME_UNIQUE_CONSTRAINT = "clan_name_unique_when_alive"
+
+
+def _ensure_name_not_reserved(name: str) -> None:
+    """Keep catalog career names for institutional clans (#213).
+
+    A private clan holding a career's name would make every onboarding into
+    that career fail on the unique clan name, so the name is refused up front,
+    ignoring case, accents and repeated spaces.
+
+    Raises:
+        ReservedClanNameError: If ``name`` matches a catalog career.
+    """
+    if is_reserved_clan_name(name):
+        raise ReservedClanNameError(
+            f"'{name.strip()}' is reserved for an institutional clan."
+        )
 
 
 def _violated_constraint(exc: IntegrityError) -> str | None:
@@ -411,6 +437,7 @@ def create_private_clan(
     if privacy not in Clan.Privacy.values:
         raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
 
+    _ensure_name_not_reserved(name)
     locked_user = User.objects.select_for_update().get(pk=created_by.pk)
 
     if _is_already_leading_a_clan(locked_user):
@@ -729,10 +756,13 @@ def update_clan(
             the clan is institutional.
         InvalidClanPrivacyError: If ``privacy`` is not a ``Clan.Privacy`` value.
         DuplicateClanNameError: If another alive clan already uses ``name``.
+        ReservedClanNameError: If ``name`` is a catalog career (#213).
     """
     locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
     if privacy is not None and privacy not in Clan.Privacy.values:
         raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+    if name is not None and name != locked.name:
+        _ensure_name_not_reserved(name)
 
     changes = {"name": name, "description": description, "privacy": privacy}
     changed_fields = [

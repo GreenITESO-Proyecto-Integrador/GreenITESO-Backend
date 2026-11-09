@@ -10,6 +10,7 @@ from django.db import transaction
 from django.test import TestCase
 
 from green_iteso.accounts.models import Clan, ClanMembership, User
+from green_iteso.clans.errors import ReservedClanNameError, UnknownCareerError
 from green_iteso.clans.services import (
     AlreadyLeadingAClanError,
     DuplicateClanLeaderError,
@@ -600,12 +601,14 @@ def test_dissolve_clan_serializes_against_concurrent_leadership_transfer() -> No
 def test_assign_institutional_clan_creates_it_on_first_use() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    profile = assign_institutional_clan(user=user, career="Ingeniería en Sistemas")
+    profile = assign_institutional_clan(
+        user=user, career="Ingeniería en Sistemas Computacionales"
+    )
 
-    clan = Clan.objects.get(name="Ingeniería en Sistemas")
+    clan = Clan.objects.get(name="Ingeniería en Sistemas Computacionales")
     assert clan.type == Clan.ClanType.INSTITUTIONAL
     assert profile.institutional_clan == clan
-    assert profile.career == "Ingeniería en Sistemas"
+    assert profile.career == "Ingeniería en Sistemas Computacionales"
     assert profile.onboarding_completed_at is not None
 
 
@@ -613,7 +616,9 @@ def test_assign_institutional_clan_creates_it_on_first_use() -> None:
 def test_assign_institutional_clan_grants_member_role() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    profile = assign_institutional_clan(user=user, career="Ingeniería en Sistemas")
+    profile = assign_institutional_clan(
+        user=user, career="Ingeniería en Sistemas Computacionales"
+    )
 
     membership = ClanMembership.objects.get(user=user, clan=profile.institutional_clan)
     assert membership.role == ClanMembership.MembershipRole.MEMBER
@@ -625,22 +630,22 @@ def test_assign_institutional_clan_reuses_the_same_career_clan() -> None:
     second_user = User.objects.create_user(email="zoe@iteso.mx", password="local-only")
 
     first_profile = assign_institutional_clan(
-        user=first_user, career="Diseño Industrial"
+        user=first_user, career="Ingeniería en Desarrollo de Software"
     )
     second_profile = assign_institutional_clan(
-        user=second_user, career="Diseño Industrial"
+        user=second_user, career="Ingeniería en Desarrollo de Software"
     )
 
     assert first_profile.institutional_clan == second_profile.institutional_clan
-    assert Clan.objects.filter(name="Diseño Industrial").count() == 1
+    assert Clan.objects.filter(name="Ingeniería en Desarrollo de Software").count() == 1
 
 
 @pytest.mark.django_db
 def test_assign_institutional_clan_is_idempotent_for_the_same_career() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    assign_institutional_clan(user=user, career="Diseño Industrial")
-    assign_institutional_clan(user=user, career="Diseño Industrial")
+    assign_institutional_clan(user=user, career="Ingeniería en Desarrollo de Software")
+    assign_institutional_clan(user=user, career="Ingeniería en Desarrollo de Software")
 
     assert ClanMembership.objects.filter(user=user).count() == 1
 
@@ -649,11 +654,13 @@ def test_assign_institutional_clan_is_idempotent_for_the_same_career() -> None:
 def test_assign_institutional_clan_keeps_the_original_timestamp() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    first = assign_institutional_clan(user=user, career="Diseño Industrial")
-    second = assign_institutional_clan(user=user, career="Mecatrónica")
+    first = assign_institutional_clan(
+        user=user, career="Ingeniería en Desarrollo de Software"
+    )
+    second = assign_institutional_clan(user=user, career="Ingeniería en Mecatrónica")
 
     assert second.onboarding_completed_at == first.onboarding_completed_at
-    assert second.career == "Mecatrónica"
+    assert second.career == "Ingeniería en Mecatrónica"
 
 
 @pytest.mark.django_db
@@ -667,18 +674,26 @@ def test_assign_institutional_clan_rejects_a_blank_career() -> None:
 @pytest.mark.django_db
 def test_assign_institutional_clan_rejects_a_name_taken_by_another_clan_type() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
-    Clan.objects.create(name="Diseño Industrial", type=Clan.ClanType.PRIVATE)
+    Clan.objects.create(
+        name="Ingeniería en Desarrollo de Software", type=Clan.ClanType.PRIVATE
+    )
 
     with pytest.raises(ValueError):
-        assign_institutional_clan(user=user, career="Diseño Industrial")
+        assign_institutional_clan(
+            user=user, career="Ingeniería en Desarrollo de Software"
+        )
 
 
 @pytest.mark.django_db
 def test_assign_institutional_clan_removes_the_stale_membership_on_change() -> None:
     user = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    first_profile = assign_institutional_clan(user=user, career="Diseño Industrial")
-    second_profile = assign_institutional_clan(user=user, career="Mecatrónica")
+    first_profile = assign_institutional_clan(
+        user=user, career="Ingeniería en Desarrollo de Software"
+    )
+    second_profile = assign_institutional_clan(
+        user=user, career="Ingeniería en Mecatrónica"
+    )
 
     memberships = ClanMembership.objects.filter(user=user)
     assert memberships.count() == 1
@@ -853,6 +868,53 @@ def test_update_clan_rejects_a_name_taken_by_an_alive_clan(
 
     with pytest.raises(DuplicateClanNameError):
         update_clan(clan=clan, actor=leader, name="Taken")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "name", ["Ingeniería en Mecatrónica", "  INGENIERIA EN   mecatronica "]
+)
+def test_create_private_clan_rejects_a_catalog_career_name(
+    leader: User, name: str
+) -> None:
+    # Would otherwise block every onboarding into that career (#213).
+    with pytest.raises(ReservedClanNameError):
+        create_private_clan(name=name, created_by=leader)
+
+    assert not Clan.objects.filter(type=Clan.ClanType.PRIVATE).exists()
+
+
+@pytest.mark.django_db
+def test_update_clan_rejects_a_catalog_career_name(leader: User) -> None:
+    clan = create_private_clan(name="Green Team", created_by=leader)
+
+    with pytest.raises(ReservedClanNameError):
+        update_clan(clan=clan, actor=leader, name="ingeniería en ciberseguridad")
+
+    clan.refresh_from_db()
+    assert clan.name == "Green Team"
+
+
+@pytest.mark.django_db
+def test_onboarding_still_works_after_a_private_clan_was_refused_the_name(
+    leader: User, member: User
+) -> None:
+    with pytest.raises(ReservedClanNameError):
+        create_private_clan(name="Ingeniería en Mecatrónica", created_by=leader)
+
+    profile = assign_institutional_clan(user=member, career="Ingeniería en Mecatrónica")
+
+    assert profile.institutional_clan.type == Clan.ClanType.INSTITUTIONAL
+
+
+@pytest.mark.django_db
+def test_assign_institutional_clan_rejects_a_career_outside_the_catalog(
+    member: User,
+) -> None:
+    with pytest.raises(UnknownCareerError):
+        assign_institutional_clan(user=member, career="Diseño Industrial")
+
+    assert not Clan.objects.filter(name="Diseño Industrial").exists()
 
 
 @pytest.mark.django_db

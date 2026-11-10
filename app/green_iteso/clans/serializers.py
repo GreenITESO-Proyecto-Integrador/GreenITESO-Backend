@@ -7,13 +7,13 @@ from typing import Any
 from rest_framework import serializers
 
 from green_iteso.accounts.avatars import user_avatar_url
-from green_iteso.accounts.cosmetics import background_image_url, frame_image_url
 from green_iteso.accounts.models import (
     Clan,
     ClanInvitation,
     ClanMembership,
     UserProfile,
 )
+from green_iteso.actions.cosmetics import background_image_url, frame_image_url
 
 
 class ClanSerializer(serializers.ModelSerializer):

@@ -12,7 +12,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
-from green_iteso.accounts.cosmetics import background_image_url, frame_image_url
+from green_iteso.actions.cosmetics import background_image_url, frame_image_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import UserBadge

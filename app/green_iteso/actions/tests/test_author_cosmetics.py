@@ -35,10 +35,16 @@ def catalog() -> None:
         )
 
 
-def _user(email: str, **preferences: object) -> User:
+def _user(
+    email: str, *, unlocked: list[str] | None = None, **preferences: object
+) -> User:
+    """A person who picked ``preferences``; they own those keys unless ``unlocked`` says otherwise."""
+    if unlocked is None:
+        unlocked = [value for value in preferences.values() if isinstance(value, str)]
     user = User.objects.create_user(email=email, password="local-only")
     UserProfile.objects.update_or_create(
-        user=user, defaults={"preferences": preferences}
+        user=user,
+        defaults={"preferences": preferences, "unlocked_cosmetics": unlocked},
     )
     return user
 
@@ -87,6 +93,44 @@ def test_a_url_stored_in_preferences_is_never_served_to_others() -> None:
 
     assert payload["frame_url"] == ""
     assert payload["background_url"] == ""
+
+
+@pytest.mark.django_db
+def test_a_catalog_key_the_person_never_unlocked_shows_nothing() -> None:
+    author = _user(
+        "ana@iteso.mx",
+        unlocked=[],
+        active_frame="frame_halloween",
+        active_background="background_grasoso",
+    )
+
+    payload = _feed_author(author)
+
+    assert payload["frame_url"] == ""
+    assert payload["background_url"] == ""
+
+
+@pytest.mark.django_db
+def test_only_the_unlocked_cosmetic_of_the_two_is_shown() -> None:
+    author = _user(
+        "ana@iteso.mx",
+        unlocked=["frame_halloween"],
+        active_frame="frame_halloween",
+        active_background="background_grasoso",
+    )
+
+    payload = _feed_author(author)
+
+    assert payload["frame_url"] == FRAME_URL
+    assert payload["background_url"] == ""
+
+
+@pytest.mark.django_db
+def test_a_cosmetic_an_admin_switched_off_stops_showing() -> None:
+    author = _user("ana@iteso.mx", active_frame="frame_halloween")
+    ExchangeableItem.objects.filter(key="frame_halloween").update(is_active=False)
+
+    assert _feed_author(author)["frame_url"] == ""
 
 
 @pytest.mark.django_db

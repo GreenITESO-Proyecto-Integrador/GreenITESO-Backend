@@ -58,6 +58,7 @@ from .serializers import (
     ProfileMetricsQuerySerializer,
     ProfileMetricsSerializer,
     ProfileUpdateSerializer,
+    UserBanAuditSerializer,
     UserRoleAuditSerializer,
     UserSerializer,
 )
@@ -100,7 +101,14 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return super().get_serializer_class()
 
     def get_permissions(self) -> list[BasePermission]:
-        if self.action in {"list", "role", "role_history", "ban", "unban"}:
+        if self.action in {
+            "list",
+            "role",
+            "role_history",
+            "ban",
+            "unban",
+            "ban_history",
+        }:
             return [IsAdmin()]
         return super().get_permissions()
 
@@ -217,6 +225,26 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             serializer = UserRoleAuditSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
         return Response(UserRoleAuditSerializer(audits, many=True).data)
+
+    @extend_schema(
+        responses={
+            200: UserBanAuditSerializer(many=True),
+            401: OpenApiResponse(description="UNAUTHENTICATED"),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="ban-history")
+    def ban_history(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """List who banned or unbanned an account, newest first (ADMIN only)."""
+        audits = self.get_object().ban_audit_logs.all()
+        page = self.paginate_queryset(audits)
+        if page is not None:
+            serializer = UserBanAuditSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        return Response(UserBanAuditSerializer(audits, many=True).data)
 
 
 class LoginView(FirstRejectionThrottleMixin, APIView):

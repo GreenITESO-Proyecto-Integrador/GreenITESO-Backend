@@ -11,7 +11,7 @@ from rest_framework import serializers
 from green_iteso.actions.models import ActionCategory
 
 from .avatars import public_avatar_url, user_avatar_url
-from .models import User, UserProfile, UserRoleAudit
+from .models import User, UserBanAudit, UserProfile, UserRoleAudit
 from .moderation import account_status
 from .selectors import EcologicalProfile
 from .services import nickname_change_cost
@@ -86,6 +86,15 @@ class UserRoleAuditSerializer(serializers.ModelSerializer):
             "new_role",
             "created_at",
         ]
+        read_only_fields = fields
+
+
+class UserBanAuditSerializer(serializers.ModelSerializer):
+    """One ban or unban of an account: who did it and when."""
+
+    class Meta:
+        model = UserBanAudit
+        fields = ["id", "user", "performed_by", "action", "created_at"]
         read_only_fields = fields
 
 

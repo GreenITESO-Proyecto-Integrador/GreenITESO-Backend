@@ -23,7 +23,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 from green_iteso.notifications.services import close_user_sockets
 
 from .exceptions import LoginError
-from .models import User
+from .models import ClanMembership, User, UserBanAudit
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,12 @@ def ban_user(*, admin_user: User, user: User) -> User:
     once; open sockets close after the commit. Progress, clan membership and
     posts are left as they are, so an unban restores the account untouched. A
     self-deactivated account can be banned too, so it can no longer come back.
+    Every ban is recorded in ``UserBanAudit``.
 
     Raises:
         ModerationError: If ``user`` is the admin themselves, is an admin (change
-            their role first) or is already banned.
+            their role first), leads a clan (the clan would be left with a leader
+            who can never act) or is already banned.
     """
     locked = User.objects.select_for_update().get(pk=user.pk)
     if locked.pk == admin_user.pk:
@@ -103,6 +105,16 @@ def ban_user(*, admin_user: User, user: User) -> User:
         )
     if account_status(locked) == STATUS_BANNED:
         raise ModerationError("This account is already banned.")
+    if ClanMembership.objects.filter(
+        user=locked,
+        role=ClanMembership.MembershipRole.LEADER,
+        status=ClanMembership.Status.ACCEPTED,
+        clan__deleted_at__isnull=True,
+    ).exists():
+        raise ModerationError(
+            "This account leads a clan. Ask them to transfer its leadership "
+            "or dissolve it before banning."
+        )
 
     locked.is_active = False
     locked.deactivated_at = None
@@ -110,6 +122,10 @@ def ban_user(*, admin_user: User, user: User) -> User:
 
     for token in OutstandingToken.objects.filter(user=locked):
         BlacklistedToken.objects.get_or_create(token=token)
+
+    UserBanAudit.objects.create(
+        user=locked, performed_by=admin_user, action=UserBanAudit.Action.BAN
+    )
 
     banned_user_id = locked.pk
     transaction.on_commit(lambda: close_user_sockets(banned_user_id))
@@ -132,6 +148,9 @@ def unban_user(*, admin_user: User, user: User) -> User:
 
     locked.is_active = True
     locked.save(update_fields=["is_active"])
+    UserBanAudit.objects.create(
+        user=locked, performed_by=admin_user, action=UserBanAudit.Action.UNBAN
+    )
 
     logger.info("Account unbanned: user_id=%s by=%s", locked.pk, admin_user.pk)
     return locked

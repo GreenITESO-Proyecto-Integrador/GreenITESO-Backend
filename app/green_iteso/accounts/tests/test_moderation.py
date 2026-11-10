@@ -13,7 +13,8 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from green_iteso.accounts.models import User
+from green_iteso.accounts.models import User, UserBanAudit
+from green_iteso.clans.services import create_private_clan, join_clan
 
 
 def _user(email: str, **fields: object) -> User:
@@ -155,6 +156,72 @@ def test_ban_keeps_the_persons_data(client: APIClient) -> None:
 
     target.refresh_from_db()
     assert target.nickname == "Bici"
+
+
+@pytest.mark.django_db
+def test_ban_and_unban_are_recorded_with_who_did_them(
+    client: APIClient, admin: User
+) -> None:
+    target = _user("ana@iteso.mx")
+
+    client.post(f"/api/v1/users/{target.pk}/ban/")
+    client.post(f"/api/v1/users/{target.pk}/unban/")
+
+    rows = list(UserBanAudit.objects.filter(user=target).order_by("created_at"))
+    assert [row.action for row in rows] == ["BAN", "UNBAN"]
+    assert {row.performed_by_id for row in rows} == {admin.pk}
+
+
+@pytest.mark.django_db
+def test_a_refused_ban_leaves_no_record(client: APIClient, admin: User) -> None:
+    client.post(f"/api/v1/users/{admin.pk}/ban/")
+
+    assert not UserBanAudit.objects.exists()
+
+
+@pytest.mark.django_db
+def test_ban_history_lists_the_newest_first(client: APIClient) -> None:
+    target = _user("ana@iteso.mx")
+    client.post(f"/api/v1/users/{target.pk}/ban/")
+    client.post(f"/api/v1/users/{target.pk}/unban/")
+
+    response = client.get(f"/api/v1/users/{target.pk}/ban-history/")
+
+    assert response.status_code == 200
+    assert [row["action"] for row in response.json()["results"]] == ["UNBAN", "BAN"]
+
+
+@pytest.mark.django_db
+def test_ban_history_is_for_admins_only() -> None:
+    target = _user("ana@iteso.mx")
+    api = APIClient()
+    api.force_authenticate(_user("lupe@iteso.mx"))
+
+    assert api.get(f"/api/v1/users/{target.pk}/ban-history/").status_code == 403
+
+
+@pytest.mark.django_db
+def test_ban_refuses_a_clan_leader(client: APIClient) -> None:
+    leader = _user("lead@iteso.mx")
+    create_private_clan(created_by=leader, name="Verde")
+
+    response = client.post(f"/api/v1/users/{leader.pk}/ban/")
+
+    assert response.status_code == 400
+    assert "leads a clan" in response.json()["error"]["message"]
+    leader.refresh_from_db()
+    assert leader.is_active is True
+    assert not UserBanAudit.objects.exists()
+
+
+@pytest.mark.django_db
+def test_ban_allows_a_plain_clan_member(client: APIClient) -> None:
+    leader = _user("lead@iteso.mx")
+    member = _user("member@iteso.mx")
+    clan = create_private_clan(created_by=leader, name="Verde")
+    join_clan(clan=clan, user=member)
+
+    assert client.post(f"/api/v1/users/{member.pk}/ban/").status_code == 200
 
 
 @pytest.mark.django_db

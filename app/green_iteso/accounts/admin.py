@@ -11,6 +11,7 @@ from .models import (
     ClanInvitation,
     ClanMembership,
     User,
+    UserBanAudit,
     UserProfile,
     UserRoleAudit,
 )
@@ -228,6 +229,27 @@ class UserRoleAuditAdmin(admin.ModelAdmin):
     list_filter = ("previous_role", "new_role")
     search_fields = ("user__email", "changed_by__email")
     readonly_fields = ("user", "changed_by", "previous_role", "new_role", "created_at")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: object | None = None
+    ) -> bool:
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: object | None = None
+    ) -> bool:
+        return False
+
+
+@admin.register(UserBanAudit)
+class UserBanAuditAdmin(admin.ModelAdmin):
+    list_display = ("user", "performed_by", "action", "created_at")
+    list_filter = ("action",)
+    search_fields = ("user__email", "performed_by__email")
+    readonly_fields = ("user", "performed_by", "action", "created_at")
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False

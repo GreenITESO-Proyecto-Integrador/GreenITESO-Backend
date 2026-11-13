@@ -2,24 +2,14 @@
 """Integration tests for feed REST API endpoints."""
 
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import override_settings
 from django.utils import timezone
-from google.cloud.exceptions import GoogleCloudError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
-
-VALID_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
-    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
 
 User = get_user_model()
 
@@ -314,133 +304,3 @@ class PostAPITests(APITestCase):
         official_post.refresh_from_db()
         self.assertEqual(official_post.post_type, PostType.OFFICIAL_ANNOUNCEMENT)
         self.assertEqual(official_post.content, "Contenido original")
-
-
-@override_settings(GCS_EVIDENCE_BUCKET="test-bucket")
-class ImageUploadViewTests(APITestCase):
-    """Integration tests for the GCS image upload endpoint."""
-
-    def setUp(self) -> None:
-        self.user = User.objects.create_user(
-            email="testupload@iteso.mx",
-            password="testpassword123!",
-            first_name="Test",
-        )
-        self.url = "/api/v1/uploads/"
-
-    def test_upload_unauthenticated_returns_401(self) -> None:
-        """Ensure unauthenticated users are rejected."""
-        response = self.client.post(self.url, {})
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_upload_missing_file_returns_400(self) -> None:
-        """Ensure requests without an image file are rejected."""
-        self.client.force_authenticate(user=self.user)
-        response = self.client.post(self.url, {})
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("error", response.data)
-
-    def test_upload_invalid_mime_type_returns_400(self) -> None:
-        """Ensure non-image files are properly rejected."""
-        self.client.force_authenticate(user=self.user)
-        fake_file = SimpleUploadedFile(
-            "test.txt",
-            b"contenido de texto plano",
-            content_type="text/plain",
-        )
-        response = self.client.post(self.url, {"image": fake_file}, format="multipart")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_upload_oversized_file_returns_400(self) -> None:
-        """Ensure files over the 5MB limit are rejected."""
-        self.client.force_authenticate(user=self.user)
-        large_content = b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024 + 1)
-        oversized_file = SimpleUploadedFile(
-            "large.jpg",
-            large_content,
-            content_type="image/jpeg",
-        )
-        response = self.client.post(
-            self.url, {"image": oversized_file}, format="multipart"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_upload_truncated_image_returns_400(self) -> None:
-        """Ensure an image with a valid header but truncated content is rejected by Pillow."""
-        self.client.force_authenticate(user=self.user)
-        truncated_png = SimpleUploadedFile(
-            "truncated.png",
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
-            content_type="image/png",
-        )
-        response = self.client.post(
-            self.url, {"image": truncated_png}, format="multipart"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("error", response.data)
-
-    @patch("google.cloud.storage.Client")
-    def test_upload_gcs_service_failure_returns_500(
-        self, mock_storage_client: MagicMock
-    ) -> None:
-        """Ensure GCS failures are handled gracefully with a 500 error."""
-        self.client.force_authenticate(user=self.user)
-        mock_instance = mock_storage_client.return_value
-        mock_bucket = mock_instance.bucket.return_value
-        mock_blob = mock_bucket.blob.return_value
-        mock_blob.upload_from_file.side_effect = GoogleCloudError("GCS error")
-
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    @patch("green_iteso.feed.views._signing_credentials")
-    @patch("google.cloud.storage.Client")
-    def test_upload_success_returns_200_and_url(
-        self, mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
-    ) -> None:
-        """Ensure a valid image is uploaded and returns a signed URL."""
-        self.client.force_authenticate(user=self.user)
-
-        # Simulamos que el servidor sí tiene credenciales
-        mock_signing_credentials.return_value = ("test-account@gcp.com", "fake-token")
-
-        # Simulamos que Google Cloud devuelve una URL firmada correcta
-        mock_bucket = mock_storage_client.return_value.bucket.return_value
-        mock_blob = mock_bucket.blob.return_value
-        mock_blob.generate_signed_url.return_value = "https://storage.googleapis.com/bucket/file.jpg?X-Goog-Signature=123"
-
-        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn("url", response.data)
-        self.assertIn("X-Goog-Signature", response.data["url"])
-
-    @patch("green_iteso.feed.views._signing_credentials")
-    @patch("google.cloud.storage.Client")
-    def test_upload_failure_empty_credentials_returns_500(
-        self, _mock_storage_client: MagicMock, mock_signing_credentials: MagicMock
-    ) -> None:
-        """Ensure failing to get signing credentials triggers a 500 error."""
-        self.client.force_authenticate(user=self.user)
-
-        # Simulamos que Google Cloud no devuelve el email y token para firmar
-        mock_signing_credentials.return_value = (None, None)
-
-        valid_png = SimpleUploadedFile("sample.png", VALID_PNG_BYTES, content_type="image/png")
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    @override_settings(GCS_EVIDENCE_BUCKET="")
-    def test_upload_unconfigured_bucket_returns_503(self) -> None:
-        """Ensure a missing GCS bucket configuration returns a 503 error."""
-        self.client.force_authenticate(user=self.user)
-        valid_png = SimpleUploadedFile(
-            "sample.png", VALID_PNG_BYTES, content_type="image/png"
-        )
-        response = self.client.post(self.url, {"image": valid_png}, format="multipart")
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)

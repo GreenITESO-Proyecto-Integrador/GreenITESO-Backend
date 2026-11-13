@@ -74,11 +74,12 @@ la ven la propia persona y los `ADMIN`. Para cualquier otro, `avatar_url` es
 - `author` de `GET /api/v1/feed/`
 - `GET /api/v1/rankings/users/`, que solo lista perfiles públicos
 
-### Por qué no `POST /api/uploads/`
+### Por qué no `POST /api/v1/uploads/`
 
-Ese endpoint (#192, feed) responde con una URL firmada de **1 hora** y de más
-de 1000 caracteres. Guardada como `avatar_url`, la foto desaparecería a la hora
-y además rebasa el límite de 500 caracteres del campo. Tampoco tiene modo local.
+Ese endpoint es para las imágenes del feed ([feed-image-upload.md](feed-image-upload.md)).
+Al principio devolvía una URL firmada que caducaba y rebasaba los 500
+caracteres del campo. Ya devuelve una URL estable, pero el avatar sigue con su
+propio endpoint porque guarda la llave en el perfil y borra la foto anterior.
 
 ### Enlaces pegados
 

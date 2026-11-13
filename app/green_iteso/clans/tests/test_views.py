@@ -204,7 +204,8 @@ def test_dissolved_clan_is_not_retrievable(leader: User, clan: Clan) -> None:
 @pytest.mark.django_db
 def test_institutional_clan_assignment_requires_authentication() -> None:
     response = APIClient().post(
-        "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
+        "/api/v1/clans/institutional-clan/",
+        {"career": "Ingeniería en Sistemas Computacionales"},
     )
 
     assert response.status_code == 401
@@ -217,13 +218,16 @@ def test_institutional_clan_assignment_declares_a_career() -> None:
     client.force_authenticate(caller)
 
     response = client.post(
-        "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
+        "/api/v1/clans/institutional-clan/",
+        {"career": "Ingeniería en Sistemas Computacionales"},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["career"] == "Ingeniería en Sistemas"
-    assert body["institutional_clan"]["name"] == "Ingeniería en Sistemas"
+    assert body["career"] == "Ingeniería en Sistemas Computacionales"
+    assert (
+        body["institutional_clan"]["name"] == "Ingeniería en Sistemas Computacionales"
+    )
     assert body["onboarding_completed_at"] is not None
 
 
@@ -244,13 +248,14 @@ def test_institutional_clan_assignment_get_returns_current_state() -> None:
     client = APIClient()
     client.force_authenticate(caller)
     client.post(
-        "/api/v1/clans/institutional-clan/", {"career": "Ingeniería en Sistemas"}
+        "/api/v1/clans/institutional-clan/",
+        {"career": "Ingeniería en Sistemas Computacionales"},
     )
 
     response = client.get("/api/v1/clans/institutional-clan/")
 
     assert response.status_code == 200
-    assert response.json()["career"] == "Ingeniería en Sistemas"
+    assert response.json()["career"] == "Ingeniería en Sistemas Computacionales"
 
 
 @pytest.mark.django_db
@@ -273,6 +278,18 @@ def test_list_clans_filters_by_search_query_param() -> None:
 
     names = [row["name"] for row in response.json()["results"]]
     assert names == ["Green Team"]
+
+
+@pytest.mark.django_db
+def test_create_clan_with_a_catalog_career_name_returns_400() -> None:
+    leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
+    client = APIClient()
+    client.force_authenticate(leader)
+
+    response = client.post("/api/v1/clans/", {"name": "Ingeniería en Mecatrónica"})
+
+    assert response.status_code == 400
+    assert "reserved for an institutional clan" in str(response.json())
 
 
 @pytest.mark.django_db

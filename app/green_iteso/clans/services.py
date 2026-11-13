@@ -20,6 +20,7 @@ from green_iteso.accounts.models import (
 from green_iteso.accounts.services import ensure_profile
 
 from .avatars import delete_clan_avatar, save_clan_avatar
+from .careers import ensure_name_not_reserved, require_career
 from .errors import (
     AlreadyClanMemberError,
     AlreadyLeadingAClanError,
@@ -233,11 +234,10 @@ def assign_institutional_clan(
     different career reassigns the profile and removes the stale membership
     in the previous institutional clan, so the user always ends up a member
     of exactly one institutional clan. ``visibility``, when given, is saved
-    in the same profile update (onboarding, #163).
+    in the same profile update (onboarding, #163). ``career`` must be in the
+    curated catalog (#213); ``require_career`` raises ``UnknownCareerError``.
     """
-    career = career.strip()
-    if not career:
-        raise ValueError("career must not be blank")
+    career = require_career(career)
 
     profile = ensure_profile(user)
     clan = _get_or_create_institutional_clan(career)
@@ -411,6 +411,7 @@ def create_private_clan(
     if privacy not in Clan.Privacy.values:
         raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
 
+    ensure_name_not_reserved(name)
     locked_user = User.objects.select_for_update().get(pk=created_by.pk)
 
     if _is_already_leading_a_clan(locked_user):
@@ -729,10 +730,13 @@ def update_clan(
             the clan is institutional.
         InvalidClanPrivacyError: If ``privacy`` is not a ``Clan.Privacy`` value.
         DuplicateClanNameError: If another alive clan already uses ``name``.
+        ReservedClanNameError: If ``name`` is a catalog career (#213).
     """
     locked = _lock_clan_for_leader_edit(clan=clan, actor=actor)
     if privacy is not None and privacy not in Clan.Privacy.values:
         raise InvalidClanPrivacyError(f"'{privacy}' is not a valid Clan.Privacy value.")
+    if name is not None and name != locked.name:
+        ensure_name_not_reserved(name)
 
     changes = {"name": name, "description": description, "privacy": privacy}
     changed_fields = [

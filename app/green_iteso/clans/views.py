@@ -541,7 +541,7 @@ class InstitutionalCareersView(APIView):
 
     @extend_schema(responses=InstitutionalCareersSerializer)
     def get(self, _request: Request) -> Response:
-        """Return the names of the alive institutional clans, sorted."""
+        """Return the curated career catalog, sorted (#213)."""
         return Response(
             InstitutionalCareersSerializer(
                 {"careers": list_institutional_careers()}

@@ -15,6 +15,14 @@ class DuplicateClanNameError(ValueError):
     """Raised when ``Clan.name`` is already taken by another alive clan."""
 
 
+class ReservedClanNameError(DuplicateClanNameError):
+    """Raised when a private clan would take the name of a catalog career (#213)."""
+
+
+class UnknownCareerError(ValueError):
+    """Raised when onboarding names a career outside the curated catalog (#213)."""
+
+
 class AlreadyLeadingAClanError(ValueError):
     """Raised when BR-04's single-leadership-per-user rule would be violated."""
 

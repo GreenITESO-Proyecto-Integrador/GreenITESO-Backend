@@ -92,7 +92,7 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
             with connection.execute_wrapper(observe_user_lock):
                 complete_onboarding(
                     user=User.objects.get(pk=user.pk),
-                    career="Review career",
+                    career="Ingeniería en Ciberseguridad",
                     nickname="Ignored",
                 )
         except Exception as exc:
@@ -108,7 +108,7 @@ def test_nickname_change_and_onboarding_do_not_deadlock() -> None:
     assert user.nickname == "Changed"
     assert profile.nickname_changes == 1
     assert profile.available_points == 0
-    assert profile.career == "Review career"
+    assert profile.career == "Ingeniería en Ciberseguridad"
 
 
 @pytest.mark.django_db(transaction=True)

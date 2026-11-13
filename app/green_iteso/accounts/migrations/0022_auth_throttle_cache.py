@@ -12,7 +12,7 @@ TABLE = "accounts_auth_throttle_cache"
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0020_account_deactivation"),
+        ("accounts", "0021_user_ban_audit"),
     ]
 
     operations = [

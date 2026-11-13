@@ -89,7 +89,7 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   (ver `docs/deployment.md`) y es obligatoria para releases de `staging` y
   `production`; el app desplegado emite un `RuntimeWarning` si falta. Los contadores viven en el
   cache `throttle` (`DatabaseCache` sobre PostgreSQL, tabla `accounts_auth_throttle_cache` creada
-  por la migración `accounts.0021`), así que todos los workers, instancias y revisiones comparten
+  por la migración `accounts.0022`), así que todos los workers, instancias y revisiones comparten
   el mismo conteo y un reinicio no lo borra (#217). Cada request de auth hace unas pocas
   consultas a esa tabla; si algún día hay Redis, basta cambiar `CACHES["throttle"]`.
 

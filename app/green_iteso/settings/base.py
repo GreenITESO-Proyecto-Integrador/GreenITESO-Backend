@@ -170,6 +170,7 @@ REST_FRAMEWORK = {
         "auth_ip": "300/min",
         "clan_invite_redeem": "10/min",
         "profile_avatar": "10/min",
+        "feed_image_upload": "10/min",
     },
 }
 
@@ -193,7 +194,7 @@ elif DEPLOYED and CONNECTION_ROLE == "app":
 
 # Auth throttle counters (#186) live in PostgreSQL so every worker, instance
 # and revision shares one count and a restart does not reset it (#217). The
-# table comes from accounts migration 0021, not from createcachetable. Other
+# table comes from accounts migration 0022, not from createcachetable. Other
 # throttles stay in the per-process default cache.
 THROTTLE_CACHE_ALIAS = "throttle"
 CACHES = {

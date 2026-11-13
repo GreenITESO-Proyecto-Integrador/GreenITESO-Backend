@@ -1,4 +1,4 @@
-"""Upgrade and rollback of accounts 0021, the shared auth throttle cache table (#217)."""
+"""Upgrade and rollback of accounts 0022, the shared auth throttle cache table (#217)."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ def _table_exists(name: str) -> bool:
 
 
 @pytest.mark.django_db(transaction=True)
-def test_accounts_0021_adds_and_removes_the_auth_throttle_cache_table() -> None:
+def test_accounts_0022_adds_and_removes_the_auth_throttle_cache_table() -> None:
     """Upgrade and rollback of the shared throttle cache table (#217)."""
-    old_target = [("accounts", "0020_account_deactivation")]
-    new_target = [("accounts", "0021_auth_throttle_cache")]
+    old_target = [("accounts", "0021_user_ban_audit")]
+    new_target = [("accounts", "0022_auth_throttle_cache")]
 
     executor = MigrationExecutor(connection)
     executor.migrate(old_target)

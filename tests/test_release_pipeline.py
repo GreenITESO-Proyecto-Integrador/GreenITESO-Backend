@@ -70,7 +70,7 @@ def _fake_commands(
         'case "$*" in\n'
         "  *'artifacts docker images describe'*'@sha256:'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
         "  *'artifacts docker images describe'*':sha-'*) exit 1 ;;\n"
-        "  *'run jobs describe'*) echo 'NOT_FOUND' >&2; exit 1 ;;\n"
+        "  *'run jobs describe'*) echo 'ERROR: (gcloud.run.jobs.describe) Cannot find job [x].' >&2; exit 1 ;;\n"
         f"  *'run jobs execute'*'-smoke'*) exit {smoke_status} ;;\n"
         f"  *'run jobs execute'*) exit {migrate_status} ;;\n"
         "esac\n"
@@ -238,7 +238,7 @@ def _fake_building_commands(tmp_path: Path) -> Path:
         f'echo gcloud "$@" >> {log}\n'
         'case "$*" in\n'
         f"  *'artifacts docker images describe'*) echo 'sha256:{'d' * 64}' ;;\n"
-        "  *'run jobs describe'*) echo 'NOT_FOUND' >&2; exit 1 ;;\n"
+        "  *'run jobs describe'*) echo 'ERROR: (gcloud.run.jobs.describe) Cannot find job [x].' >&2; exit 1 ;;\n"
         "esac\n"
     )
     gcloud.chmod(0o755)

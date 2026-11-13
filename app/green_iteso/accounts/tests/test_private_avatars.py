@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import ClanMembership, User, UserProfile
@@ -58,6 +59,8 @@ def _upload(user: User, visibility: str) -> str:
 
 def _fetch(url: str) -> int:
     parts = urlsplit(url)
+    # An empty url would request "/" and pass on the index view's 200.
+    assert parts.path.startswith("/api/v1/avatars/"), url
     return APIClient().get(parts.path, parse_qs(parts.query)).status_code
 
 
@@ -194,3 +197,38 @@ def test_admins_still_see_a_private_photo(owner: User, admin: User) -> None:
     post = _client(admin).get("/api/v1/feed/").json()["results"][0]
 
     assert _fetch(post["author"]["avatar_url"]) == 200
+
+
+@pytest.mark.django_db
+@override_settings(
+    MICROSOFT_AUTH_MODE="mock", MICROSOFT_TENANT_ID="", MICROSOFT_CLIENT_ID=""
+)
+def test_login_returns_the_owners_private_photo(owner: User) -> None:
+    _upload(owner, PRIVATE)
+
+    response = APIClient().post(
+        "/api/v1/auth/login/",
+        {"id_token": f"mock:{owner.email}", "access_token": ""},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert _fetch(response.json()["user"]["avatar_url"]) == 200
+
+
+@pytest.mark.django_db
+@override_settings(
+    MICROSOFT_AUTH_MODE="mock", MICROSOFT_TENANT_ID="", MICROSOFT_CLIENT_ID=""
+)
+def test_login_returns_the_owners_private_pasted_link(owner: User) -> None:
+    UserProfile.objects.create(
+        user=owner, visibility=PRIVATE, avatar_url="https://example.com/ana.jpg"
+    )
+
+    response = APIClient().post(
+        "/api/v1/auth/login/",
+        {"id_token": f"mock:{owner.email}", "access_token": ""},
+        format="json",
+    )
+
+    assert response.json()["user"]["avatar_url"] == "https://example.com/ana.jpg"

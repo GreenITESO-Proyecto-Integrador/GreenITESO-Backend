@@ -66,25 +66,37 @@ def is_valid_private_avatar_signature(
     return bool(signature) and constant_time_compare(signature, expected)
 
 
-def _may_see_private_photo(profile: UserProfile, request: Request | None) -> bool:
-    viewer = getattr(request, "user", None)
+def _may_see_private_photo(
+    profile: UserProfile, request: Request | None, viewer: User | None
+) -> bool:
+    if viewer is None:
+        viewer = getattr(request, "user", None)
     if viewer is None or not viewer.is_authenticated:
         return False
     return viewer.pk == profile.user_id or viewer.role == User.Role.ADMIN
 
 
-def public_avatar_url(profile: UserProfile | None, request: Request | None) -> str:
-    """Return the URL ``request``'s user should load for this profile's photo, or "".
+def public_avatar_url(
+    profile: UserProfile | None,
+    request: Request | None,
+    *,
+    viewer: User | None = None,
+) -> str:
+    """Return the URL the viewer should load for this profile's photo, or "".
 
     An uploaded photo resolves to the serving endpoint, versioned by the
     object's file name so a new upload is never hidden by a cached image. A
     pasted link is returned as is. A ``PRIVATE`` profile's photo is "" for
     anyone but the person and admins, and its upload URL is signed (#238).
+
+    The viewer is ``request.user`` unless ``viewer`` is given: login answers
+    an anonymous request after it has verified who signed in, and passes that
+    account so its owner gets their own photo.
     """
     if profile is None:
         return ""
     is_private = profile.visibility == UserProfile.Visibility.PRIVATE
-    if is_private and not _may_see_private_photo(profile, request):
+    if is_private and not _may_see_private_photo(profile, request, viewer):
         return ""
     if profile.avatar_object_key:
         path = reverse("profile-avatar", kwargs={"user_id": profile.user_id})
@@ -97,10 +109,12 @@ def public_avatar_url(profile: UserProfile | None, request: Request | None) -> s
     return profile.avatar_url
 
 
-def user_avatar_url(user: User, request: Request | None) -> str:
+def user_avatar_url(
+    user: User, request: Request | None, *, viewer: User | None = None
+) -> str:
     """``public_avatar_url`` for a user whose profile may not exist yet."""
     try:
         profile = user.profile
     except ObjectDoesNotExist:
         return ""
-    return public_avatar_url(profile, request)
+    return public_avatar_url(profile, request, viewer=viewer)

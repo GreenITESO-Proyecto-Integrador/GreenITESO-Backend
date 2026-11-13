@@ -20,12 +20,18 @@ _MAX_PREFERENCES_BYTES = 10_000
 
 
 class UserAvatarMixin(serializers.Serializer):  # pylint: disable=abstract-method
-    """Adds the user's profile photo URL (#170); "" when there is none."""
+    """Adds the user's profile photo URL (#170); "" when there is none.
+
+    A ``viewer`` in the context overrides ``request.user`` as the person the
+    photo is shown to (login, whose request is still anonymous).
+    """
 
     avatar_url = serializers.SerializerMethodField()
 
     def get_avatar_url(self, user: User) -> str:
-        return user_avatar_url(user, self.context.get("request"))
+        return user_avatar_url(
+            user, self.context.get("request"), viewer=self.context.get("viewer")
+        )
 
 
 class UserSerializer(UserAvatarMixin, serializers.ModelSerializer):

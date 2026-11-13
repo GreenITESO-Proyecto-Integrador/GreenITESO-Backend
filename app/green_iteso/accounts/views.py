@@ -184,7 +184,9 @@ class LoginView(FirstRejectionThrottleMixin, APIView):
                 "created": result.created,
                 "reactivated": result.reactivated,
             },
-            context={"request": request},
+            # The request is anonymous, but the account was just verified: it
+            # sees its own photo even when its profile is PRIVATE (#238).
+            context={"request": request, "viewer": result.user},
         )
         return Response(body.data, status=status.HTTP_200_OK)
 

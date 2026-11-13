@@ -13,6 +13,7 @@ from green_iteso.accounts.models import (
     ClanMembership,
     UserProfile,
 )
+from green_iteso.actions.cosmetics import background_image_url, frame_image_url
 
 
 class ClanSerializer(serializers.ModelSerializer):
@@ -125,7 +126,14 @@ class ClanMembershipSerializer(serializers.ModelSerializer):
 class InstitutionalOnboardingSerializer(serializers.Serializer):
     """Input payload for declaring a career during onboarding (T2-30)."""
 
-    career = serializers.CharField(max_length=150, allow_blank=False)
+    career = serializers.CharField(
+        max_length=150,
+        allow_blank=False,
+        help_text=(
+            "One of GET /clans/institutional-clan/careers/. Case, accents and "
+            "spacing are ignored; anything else is rejected with 400."
+        ),
+    )
     nickname = serializers.CharField(
         max_length=50,
         allow_blank=True,
@@ -164,6 +172,8 @@ class ClanMemberSerializer(serializers.Serializer):
     nickname = serializers.CharField(source="user.nickname", read_only=True)
     display_name = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
+    frame_url = serializers.SerializerMethodField()
+    background_url = serializers.SerializerMethodField()
     role = serializers.ChoiceField(
         choices=ClanMembership.MembershipRole.choices, read_only=True
     )
@@ -176,6 +186,14 @@ class ClanMemberSerializer(serializers.Serializer):
     def get_avatar_url(self, membership: ClanMembership) -> str:
         """The member's profile photo URL (#170), or "" when there is none."""
         return user_avatar_url(membership.user, self.context.get("request"))
+
+    def get_frame_url(self, membership: ClanMembership) -> str:
+        """Image of the member's active avatar frame, or "" when there is none."""
+        return frame_image_url(membership.user, self.context)
+
+    def get_background_url(self, membership: ClanMembership) -> str:
+        """Image of the member's active profile background, or "" when there is none."""
+        return background_image_url(membership.user, self.context)
 
     def create(self, validated_data: dict) -> ClanMembership:
         """Stub required by abstract base class definition."""

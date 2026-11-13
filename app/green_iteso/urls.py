@@ -23,6 +23,7 @@ api_v1_patterns = [
     path("notifications/", include("green_iteso.notifications.urls")),
     path("rankings/", include("green_iteso.gamification.urls")),
     path("uploads/", ImageUploadView.as_view(), name="image-upload"),
+    path("", include("green_iteso.feedback.urls")),
 ]
 
 api_patterns = [

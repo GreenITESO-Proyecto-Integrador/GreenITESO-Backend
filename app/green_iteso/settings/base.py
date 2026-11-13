@@ -150,6 +150,7 @@ INSTALLED_APPS = [
     "green_iteso.feed",
     "green_iteso.notifications",
     "green_iteso.gamification.apps.GamificationConfig",
+    "green_iteso.feedback",
 ]
 
 REST_FRAMEWORK = {
@@ -170,6 +171,7 @@ REST_FRAMEWORK = {
         "auth_ip": "300/min",
         "clan_invite_redeem": "10/min",
         "profile_avatar": "10/min",
+        "feedback_submit": "10/hour",
     },
 }
 

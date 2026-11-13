@@ -126,7 +126,10 @@ El catálogo DRAFT local y `bootstrap_dev` siguen siendo exclusivamente locales.
 `seed_neon_dev` usa una fixture DRAFT **distinta**, fija y versionada:
 `app/green_iteso/actions/fixtures/catalog_dev_synthetic_v1.json`. Sólo está
 autorizada para Neon dev; sus acciones, puntos e impactos son ficticios y no
-representan ratificación de Producto. No contiene carreras institucionales.
+representan ratificación de Producto. Incluye cuatro carreras autodeclaradas
+para la demo: Ingeniería en Desarrollo de Software, Ingeniería en Sistemas
+Computacionales, Ingeniería en Mecatrónica e Ingeniería en Ciberseguridad.
+No acredita la carrera oficial de una persona ni constituye catálogo aprobado.
 El comando no acepta rutas arbitrarias. Calcula el SHA-256 del archivo y lo
 compara con `NEON_DEV_SYNTHETIC_CATALOG_SHA256` suministrado en el entorno de
 ejecución; un pin ausente o distinto detiene la carga antes de escribir.
@@ -151,12 +154,33 @@ El comando comprueba el ambiente, host, rol, TLS configurado y TLS de la
 conexión; exige `--confirm-target dev`; valida el catálogo completo antes de
 escribir; y carga catálogo y demo en una transacción. Los usuarios sintéticos
 son `STUDENT` (nunca `ADMIN`/`STAFF`), con correo `example.invalid` y sin
-identidad Microsoft Entra ni contraseña. Como la fixture sintética no tiene
-carreras canónicas, el comando crea tres clanes
-institucionales **sintéticos exclusivos de dev** con nombres `Demo institutional
-clan` y carreras `DEMO-CAREER`. No se agregan a la futura fixture aprobada ni a
-staging/production. IDs y claves son deterministas, los choques
-se rechazan y una segunda ejecución es idempotente. Esta operación no forma
+identidad Microsoft Entra ni contraseña. Los clanes de carrera usan los UUID
+estables de la fixture cuando no existe uno del mismo nombre. Si onboarding ya
+creó un clan institucional público sin creador, el seed adopta su UUID y conserva
+su descripción, membresías, perfiles y saldos ajenos a la demo. Una fila dada de
+baja se restaura si es la única candidata; si existe una fila activa del mismo
+nombre, se usa esa y se transfieren únicamente las referencias y puntos demo
+verificados. Varios candidatos dados de baja sin uno activo son ambiguos: el
+comando aborta sin escribir y requiere revisión del operador. También rechaza
+colisiones con clanes privados o identidades estables editadas.
+
+La reconciliación v1 mueve únicamente los 20 perfiles demo, sus membresías y
+los 24 logs sintéticos cuya identidad completa se comprueba antes de escribir.
+Incluye los logs `APPROVED`: se trasladan sus puntos entre clanes sin cambiar
+saldos ni atribución histórica de otras personas. Los tres clanes legados
+`Demo institutional clan` se dan de baja lógica si quedan sin perfiles,
+membresías ni logs, para quitarlos del selector. Si conservan referencias
+ajenas, se mantienen; una baja manual posterior no rompe las siguientes
+corridas. No se borran filas. Los estados parciales, incompatibles o editados
+se rechazan transaccionalmente. El candado advisory serializa las corridas;
+un conflicto concurrente requiere reintentar con el estado confirmado.
+
+Los UUID demo y las claves siguen siendo deterministas, y la segunda ejecución
+es idempotente. Al cambiar los bytes de la fixture, el operador debe revisar
+el diff y **actualizar `NEON_DEV_SYNTHETIC_CATALOG_SHA256`** con el digest de ese
+archivo exacto antes de ejecutar. Este cambio no actualiza el secreto ni ejecuta
+el seed en Neon. Esa ejecución requiere autorización explícita y confirmar
+proyecto, rama `dev`, base y estado previo esperado. Esta operación no forma
 parte de la migración al merge ni de un deploy automático. No se cargan semillas
 en staging/preprod ni en production. El comando se probó con PostgreSQL 18
 local y se ejecutó con autorización en Neon `dev` el 2026-09-28; el

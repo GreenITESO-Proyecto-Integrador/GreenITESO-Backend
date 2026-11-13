@@ -8,7 +8,7 @@ from django.db.models import QuerySet
 from django.http import HttpResponseBase
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
-from rest_framework import mixins, status, viewsets
+from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -35,6 +35,7 @@ from green_iteso.core.throttling import (
 from .avatars import PROFILE_AVATAR_PREFIX
 from .exceptions import RequestValidationError
 from .models import User, UserProfile
+from .moderation import STATUS_FILTERS, ban_user, filter_users, unban_user
 from .selectors import (
     MetricsFilters,
     get_ecological_profile,
@@ -44,6 +45,7 @@ from .selectors import (
     list_users,
 )
 from .serializers import (
+    AdminUserSerializer,
     ChangeRoleRequestSerializer,
     DeactivateAccountSerializer,
     EcologicalProfileSerializer,
@@ -56,6 +58,7 @@ from .serializers import (
     ProfileMetricsQuerySerializer,
     ProfileMetricsSerializer,
     ProfileUpdateSerializer,
+    UserBanAuditSerializer,
     UserRoleAuditSerializer,
     UserSerializer,
 )
@@ -73,17 +76,100 @@ from .services import (
 
 
 class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """Self-scoped `me`, plus an admin-only directory listing, under /api/v1/users/."""
+    """Self-scoped `me`, plus an admin-only directory with ban controls, under /api/v1/users/."""
 
     serializer_class = UserSerializer
 
     def get_queryset(self) -> QuerySet[User]:
-        return list_users()
+        users = list_users()
+        if self.action != "list":
+            return users
+        status_filter = self.request.query_params.get("status") or None
+        if status_filter is not None and status_filter not in STATUS_FILTERS:
+            raise DRFValidationError(
+                {"status": f"status must be one of: {', '.join(STATUS_FILTERS)}."}
+            )
+        return filter_users(
+            users,
+            status_filter=status_filter,
+            search=self.request.query_params.get("search"),
+        )
+
+    def get_serializer_class(self) -> type[serializers.BaseSerializer]:
+        if self.action in {"list", "ban", "unban"}:
+            return AdminUserSerializer
+        return super().get_serializer_class()
 
     def get_permissions(self) -> list[BasePermission]:
-        if self.action in {"list", "role", "role_history"}:
+        if self.action in {
+            "list",
+            "role",
+            "role_history",
+            "ban",
+            "unban",
+            "ban_history",
+        }:
             return [IsAdmin()]
         return super().get_permissions()
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "status",
+                OpenApiTypes.STR,
+                enum=list(STATUS_FILTERS),
+                description="Only banned accounts, or only the ones that are not banned.",
+            ),
+            OpenApiParameter(
+                "search",
+                OpenApiTypes.STR,
+                description=(
+                    "A user id (exact match) or text found in the email, names or nickname."
+                ),
+            ),
+        ]
+    )
+    def list(self, request: Request, *args: object, **kwargs: object) -> Response:
+        """List accounts with their status (ADMIN only)."""
+        return super().list(request, *args, **kwargs)
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: AdminUserSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: self, administrator or already banned"
+            ),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["post"])
+    def ban(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """Switch an account off until an admin unbans it (ADMIN only)."""
+        banned = ban_user(admin_user=request.user, user=self.get_object())
+        return Response(self.get_serializer(banned).data)
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: AdminUserSerializer,
+            400: OpenApiResponse(
+                description="VALIDATION_ERROR: the account is not banned"
+            ),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["post"])
+    def unban(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """Let a banned account sign in again (ADMIN only)."""
+        restored = unban_user(admin_user=request.user, user=self.get_object())
+        return Response(self.get_serializer(restored).data)
 
     @action(detail=False, methods=["get"])
     def me(self, request: Request) -> Response:
@@ -139,6 +225,26 @@ class UserViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             serializer = UserRoleAuditSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
         return Response(UserRoleAuditSerializer(audits, many=True).data)
+
+    @extend_schema(
+        responses={
+            200: UserBanAuditSerializer(many=True),
+            401: OpenApiResponse(description="UNAUTHENTICATED"),
+            403: OpenApiResponse(description="PERMISSION_DENIED: caller is not ADMIN"),
+            404: OpenApiResponse(description="NOT_FOUND: user not found"),
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="ban-history")
+    def ban_history(  # pylint: disable=unused-argument
+        self, request: Request, pk: str | None = None
+    ) -> Response:
+        """List who banned or unbanned an account, newest first (ADMIN only)."""
+        audits = self.get_object().ban_audit_logs.all()
+        page = self.paginate_queryset(audits)
+        if page is not None:
+            serializer = UserBanAuditSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        return Response(UserBanAuditSerializer(audits, many=True).data)
 
 
 class LoginView(FirstRejectionThrottleMixin, APIView):

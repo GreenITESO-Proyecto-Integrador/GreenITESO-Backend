@@ -7,6 +7,7 @@ from django.db import IntegrityError
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
+from green_iteso.clans.careers import INSTITUTIONAL_CAREERS
 from green_iteso.clans.services import complete_onboarding
 
 ONBOARDING_URL = "/api/v1/clans/institutional-clan/"
@@ -20,16 +21,48 @@ def _client_for(user: User) -> APIClient:
 
 
 @pytest.mark.django_db
-def test_careers_lists_alive_institutional_clans_sorted() -> None:
+def test_careers_lists_the_curated_catalog_sorted() -> None:
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
-    Clan.objects.create(name="Ingeniería en Sistemas", type=Clan.ClanType.INSTITUTIONAL)
+    # A clan created earlier from free text is not offered (#213).
     Clan.objects.create(name="Arquitectura", type=Clan.ClanType.INSTITUTIONAL)
     Clan.objects.create(name="Clan privado", type=Clan.ClanType.PRIVATE)
 
     response = _client_for(caller).get(CAREERS_URL)
 
     assert response.status_code == 200
-    assert response.json() == {"careers": ["Arquitectura", "Ingeniería en Sistemas"]}
+    assert response.json() == {"careers": sorted(INSTITUTIONAL_CAREERS)}
+
+
+@pytest.mark.django_db
+def test_onboarding_rejects_a_career_outside_the_catalog() -> None:
+    caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    response = _client_for(caller).post(ONBOARDING_URL, {"career": "Clan pirata"})
+
+    assert response.status_code == 400
+    assert "career" in response.json()
+    assert not Clan.objects.filter(name="Clan pirata").exists()
+    assert not UserProfile.objects.filter(
+        user=caller, onboarding_completed_at__isnull=False
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_onboarding_stores_the_catalog_spelling() -> None:
+    caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+
+    response = _client_for(caller).post(
+        ONBOARDING_URL, {"career": "  ingenieria en   MECATRONICA "}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["career"] == "Ingeniería en Mecatrónica"
+    assert (
+        Clan.objects.filter(
+            name="Ingeniería en Mecatrónica", type=Clan.ClanType.INSTITUTIONAL
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db
@@ -43,19 +76,23 @@ def test_onboarding_sets_nickname_and_visibility_with_the_career() -> None:
 
     response = _client_for(caller).post(
         ONBOARDING_URL,
-        {"career": "Arquitectura", "nickname": " Ana ", "visibility": "PRIVATE"},
+        {
+            "career": "Ingeniería en Ciberseguridad",
+            "nickname": " Ana ",
+            "visibility": "PRIVATE",
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["institutional_clan"]["name"] == "Arquitectura"
+    assert body["institutional_clan"]["name"] == "Ingeniería en Ciberseguridad"
     assert body["nickname"] == "Ana"
     assert body["visibility"] == "PRIVATE"
     caller.refresh_from_db()
     assert caller.nickname == "Ana"
     assert UserProfile.objects.get(user=caller).visibility == "PRIVATE"
     assert ClanMembership.objects.filter(
-        user=caller, clan__name="Arquitectura"
+        user=caller, clan__name="Ingeniería en Ciberseguridad"
     ).exists()
 
 
@@ -66,7 +103,7 @@ def test_onboarding_keeps_an_existing_nickname() -> None:
     caller.save(update_fields=["nickname"])
 
     response = _client_for(caller).post(
-        ONBOARDING_URL, {"career": "Arquitectura", "nickname": "Otro"}
+        ONBOARDING_URL, {"career": "Ingeniería en Ciberseguridad", "nickname": "Otro"}
     )
 
     assert response.status_code == 200
@@ -79,7 +116,9 @@ def test_onboarding_keeps_an_existing_nickname() -> None:
 def test_onboarding_without_optional_fields_only_assigns_the_clan() -> None:
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
-    response = _client_for(caller).post(ONBOARDING_URL, {"career": "Arquitectura"})
+    response = _client_for(caller).post(
+        ONBOARDING_URL, {"career": "Ingeniería en Ciberseguridad"}
+    )
 
     assert response.status_code == 200
     caller.refresh_from_db()
@@ -92,7 +131,8 @@ def test_onboarding_rejects_an_unknown_visibility() -> None:
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
 
     response = _client_for(caller).post(
-        ONBOARDING_URL, {"career": "Arquitectura", "visibility": "FRIENDS"}
+        ONBOARDING_URL,
+        {"career": "Ingeniería en Ciberseguridad", "visibility": "FRIENDS"},
     )
 
     assert response.status_code == 400
@@ -103,11 +143,14 @@ def test_onboarding_rejects_an_unknown_visibility() -> None:
 def test_complete_onboarding_rolls_back_the_nickname_when_the_career_fails() -> None:
     # The nickname is written before the clan assignment, so this only passes
     # if both run in one transaction.
+    # A private clan that took a career's name before #213 reserved it.
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
-    Clan.objects.create(name="Ocupado", type=Clan.ClanType.PRIVATE)
+    Clan.objects.create(name="Ingeniería en Mecatrónica", type=Clan.ClanType.PRIVATE)
 
     with pytest.raises(ValueError):
-        complete_onboarding(user=caller, career="Ocupado", nickname="Ana")
+        complete_onboarding(
+            user=caller, career="Ingeniería en Mecatrónica", nickname="Ana"
+        )
 
     caller.refresh_from_db()
     assert caller.nickname == ""
@@ -119,7 +162,10 @@ def test_complete_onboarding_rolls_back_when_the_profile_save_fails() -> None:
 
     with pytest.raises(IntegrityError):
         complete_onboarding(
-            user=caller, career="Arquitectura", nickname="Ana", visibility="HIDDEN"
+            user=caller,
+            career="Ingeniería en Ciberseguridad",
+            nickname="Ana",
+            visibility="HIDDEN",
         )
 
     caller.refresh_from_db()

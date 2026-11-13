@@ -125,3 +125,22 @@ def test_complete_onboarding_rolls_back_when_the_profile_save_fails() -> None:
     caller.refresh_from_db()
     assert caller.nickname == ""
     assert not ClanMembership.objects.filter(user=caller).exists()
+
+
+@pytest.mark.django_db
+def test_onboarding_nickname_does_not_spend_the_free_change() -> None:
+    """Choosing a nickname at onboarding is not a change; the next one is free (#225)."""
+    caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    client = _client_for(caller)
+    client.post(ONBOARDING_URL, {"career": "Arquitectura", "nickname": "Ana"})
+
+    profile = UserProfile.objects.get(user=caller)
+    assert profile.nickname_changes == 0
+    assert client.get("/api/v1/profile/me/").json()["nickname_change_cost"] == 0
+
+    first = client.post("/api/v1/profile/me/nickname/", {"nickname": "Anita"})
+
+    assert first.status_code == 200
+    profile.refresh_from_db()
+    assert profile.nickname_changes == 1
+    assert profile.available_points == 0

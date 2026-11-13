@@ -280,10 +280,11 @@ def complete_onboarding(
 
     Assigns the institutional clan exactly like ``assign_institutional_clan``
     and optionally sets the profile visibility in that same profile update.
-    ``nickname`` only fills an empty nickname: this is the free first choice,
-    and changing an existing one belongs to the nickname-change flow (#175),
-    not to onboarding. If the clan assignment fails, the nickname is rolled
-    back with it.
+    ``nickname`` only fills an empty nickname. Choosing it here is not a
+    nickname change: it leaves ``nickname_changes`` alone, so the first later
+    change through the nickname-change flow (#175) is still free (#225).
+    Changing an existing nickname belongs to that flow, not to onboarding. If
+    the clan assignment fails, the nickname is rolled back with it.
     """
     if nickname is not None:
         nickname = nickname.strip()

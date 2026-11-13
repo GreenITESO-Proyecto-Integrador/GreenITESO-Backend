@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from django.db import connection
+from django.db import connection, transaction
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
@@ -287,3 +287,66 @@ def test_clan_roster_query_count_does_not_grow_with_members(
         response = client.get(url)
 
     assert len(response.json()["members"]) == 6
+
+
+# --- User deletion cleans up the stored photo (#206) ------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deleting_a_user_deletes_their_stored_photo(
+    user: User, avatar_media: Path
+) -> None:
+    _client(user).post(AVATAR_URL, {"avatar": _png()})
+    key = _key(user)
+    assert (avatar_media / key).exists()
+
+    user.delete()
+
+    assert not UserProfile.objects.filter(user_id=user.pk).exists()
+    assert not (avatar_media / key).exists()
+    assert stored_files(avatar_media) == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deleting_users_via_queryset_deletes_their_stored_photos(
+    user: User, avatar_media: Path
+) -> None:
+    other = User.objects.create_user(email="beto@iteso.mx", first_name="Beto")
+    UserProfile.objects.create(user=other, avatar_url="https://example.com/beto.jpg")
+    _client(user).post(AVATAR_URL, {"avatar": _png()})
+    key = _key(user)
+    assert (avatar_media / key).exists()
+
+    User.objects.filter(pk__in=[user.pk, other.pk]).delete()
+
+    assert not (avatar_media / key).exists()
+    assert stored_files(avatar_media) == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deleting_a_user_without_a_photo_succeeds(
+    user: User, avatar_media: Path
+) -> None:
+    UserProfile.objects.create(user=user, avatar_url="https://example.com/ana.jpg")
+    no_profile_user = User.objects.create_user(email="sinperfil@iteso.mx")
+
+    user.delete()
+    no_profile_user.delete()
+
+    assert stored_files(avatar_media) == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_rolled_back_user_deletion_keeps_the_stored_photo(
+    user: User, avatar_media: Path
+) -> None:
+    _client(user).post(AVATAR_URL, {"avatar": _png()})
+    key = _key(user)
+
+    with pytest.raises(RuntimeError), transaction.atomic():
+        user.delete()
+        raise RuntimeError("abort delete")
+
+    assert User.objects.filter(pk=user.pk).exists()
+    assert _key(user) == key
+    assert (avatar_media / key).exists()

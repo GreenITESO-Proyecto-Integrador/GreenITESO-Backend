@@ -14,6 +14,9 @@ from uuid import UUID
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.uploadedfile import UploadedFile
+from django.db import transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.urls import reverse
 from rest_framework.request import Request
 
@@ -58,3 +61,20 @@ def user_avatar_url(user: User, request: Request | None) -> str:
     except ObjectDoesNotExist:
         return ""
     return public_avatar_url(profile, request)
+
+
+@receiver(
+    post_delete,
+    sender=UserProfile,
+    dispatch_uid="accounts.delete_profile_avatar_on_profile_delete",
+)
+def _delete_avatar_on_profile_delete(
+    sender: type[UserProfile], instance: UserProfile, **kwargs: object
+) -> None:
+    """Remove the stored profile photo once a profile or its user is deleted (#206)."""
+    del sender, kwargs
+    object_key = instance.avatar_object_key
+    if not object_key:
+        return
+    user_id = instance.user_id
+    transaction.on_commit(lambda: delete_profile_avatar(user_id, object_key))

@@ -168,7 +168,7 @@ gcloud run jobs describe "$MIGRATION_JOB_NAME" \
   --region="$GCP_REGION" --project="$GCP_PROJECT_ID" >/dev/null 2>"$job_error" || job_status=$?
 if (( job_status == 0 )); then
   gcloud run jobs update "$MIGRATION_JOB_NAME" "${JOB_ARGS[@]}"
-elif grep -Eiq 'not found|not_found|does not exist' "$job_error"; then
+elif grep -Eiq 'not found|not_found|does not exist|cannot find' "$job_error"; then
   gcloud run jobs create "$MIGRATION_JOB_NAME" "${JOB_ARGS[@]}"
 else
   cat "$job_error" >&2

@@ -24,6 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
+from green_iteso.feed.images import schedule_feed_image_cleanup
 from green_iteso.feed.models import Post
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
@@ -53,7 +54,9 @@ def ensure_profile(user: User) -> UserProfile:
     return profile
 
 
-def ensure_account_writable(user: User, *, requested_at: datetime | None = None) -> None:
+def ensure_account_writable(
+    user: User, *, requested_at: datetime | None = None
+) -> None:
     """Reject a write queued behind a deactivation (#176).
 
     Call while holding the user row lock, so the check sees a deactivation
@@ -452,7 +455,13 @@ def deactivate_account(*, user: User) -> User:
     UserMissionProgress.objects.filter(user=locked).delete()
     UserBadge.objects.filter(user=locked).delete()
     Notification.all_objects.filter(user=locked).delete()
+    post_image_urls = list(
+        Post.objects.filter(author=locked)
+        .exclude(image_url="")
+        .values_list("image_url", flat=True)
+    )
     Post.objects.filter(author=locked).delete()
+    schedule_feed_image_cleanup(post_image_urls, locked.pk)
     pending_logs = ActionLog.objects.filter(
         user=locked, status=ActionLog.Status.PENDING_AUDIT
     )

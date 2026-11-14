@@ -657,6 +657,9 @@ def test_onboarding_membership_insert_completes_while_seed_waits_for_profile(
 ) -> None:
     _seed_legacy_neon_demo(monkeypatch)
     user = User.objects.get(pk=demo_id("user", "1"))
+    career = DEV_CAREERS[0]
+    # Avoid blocking the seed on an uncommitted clan name before profile locking.
+    Clan.objects.create(name=career, type=Clan.ClanType.INSTITUTIONAL)
     membership_insert_started = Event()
     release_membership_insert = Event()
     seed_reached_profile_locks = Event()
@@ -690,7 +693,7 @@ def test_onboarding_membership_insert_completes_while_seed_waits_for_profile(
     def assign_career() -> UserProfile:
         try:
             return assign_institutional_clan(
-                user=User.objects.get(pk=user.pk), career="Concurrent test assignment"
+                user=User.objects.get(pk=user.pk), career=career
             )
         finally:
             connections.close_all()
@@ -706,10 +709,8 @@ def test_onboarding_membership_insert_completes_while_seed_waits_for_profile(
         assert membership_insert_started.wait(timeout=10)
         seed = executor.submit(run_seed)
         assert seed_reached_profile_locks.wait(timeout=10)
-        # At this point the seed holds its user lock and is about to wait on the
-        # profile row. The FK check for onboarding's membership insert must be
-        # compatible with that user lock, so onboarding can commit and release
-        # the profile for the seed to validate.
+        # Confirm that onboarding holds the profile row while the seed waits,
+        # then let onboarding commit so the seed can validate the edited data.
         deadline = monotonic() + 10
         while monotonic() < deadline:
             with connection.cursor() as cursor:
@@ -720,6 +721,7 @@ def test_onboarding_membership_insert_completes_while_seed_waits_for_profile(
                 )
                 activity = cursor.fetchone()
             if activity is not None and activity[0] == "Lock" and activity[2]:
+                assert "accounts_user_profile" in activity[1]
                 break
             sleep(0.01)
         else:
@@ -729,12 +731,12 @@ def test_onboarding_membership_insert_completes_while_seed_waits_for_profile(
             )
         release_membership_insert.set()
         assigned_profile = assignment.result(timeout=20)
-        assert assigned_profile.career == "Concurrent test assignment"
+        assert assigned_profile.career == career
         with pytest.raises(CommandError, match="legacy demo profile or clan differs"):
             seed.result(timeout=20)
 
     assigned_profile.refresh_from_db()
-    assert assigned_profile.career == "Concurrent test assignment"
+    assert assigned_profile.career == career
 
 
 @pytest.mark.django_db(transaction=True)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -23,6 +25,8 @@ from .notifications import (
     notify_mission_completed,
     notify_proposal_reviewed,
 )
+
+logger = logging.getLogger(__name__)
 
 MIN_CAMPAIGN_DURATION = timedelta(days=1)
 
@@ -469,3 +473,51 @@ def revert_action_log_from_missions(action_log: Any) -> list[UserMissionProgress
         recalculate_mission_progress(action_log.user, contribution.mission)
         for contribution in contributions
     ]
+
+
+def _find_intro_campaign() -> Campaign | None:
+    """Look the intro campaign up by its fixed id, then by title."""
+    try:
+        campaign_id = UUID(settings.INTRO_CAMPAIGN_ID)
+    except ValueError:
+        campaign_id = None
+    if campaign_id is not None:
+        campaign = Campaign.objects.filter(pk=campaign_id).first()
+        if campaign is not None:
+            return campaign
+    return (
+        Campaign.objects.filter(
+            title=settings.INTRO_CAMPAIGN_TITLE,
+            scope=Campaign.Scope.GLOBAL,
+            approval_status=Campaign.ApprovalStatus.APPROVED,
+        )
+        .order_by("created_at")
+        .first()
+    )
+
+
+def enroll_in_intro_campaign(user: Any) -> bool:
+    """Enroll ``user`` in the intro campaign with zeroed progress on every mission.
+
+    Automatic, so it ignores the campaign's enrollment window. Idempotent. Never
+    raises: a missing campaign or any failure is logged and login carries on.
+    Returns whether the user ended up enrolled.
+    """
+    try:
+        with transaction.atomic():
+            campaign = _find_intro_campaign()
+            if campaign is None:
+                logger.warning("Intro campaign not found; user not auto-enrolled.")
+                return False
+            CampaignParticipant.objects.get_or_create(campaign=campaign, user=user)
+            UserMissionProgress.objects.bulk_create(
+                [
+                    UserMissionProgress(user=user, mission=mission)
+                    for mission in campaign.missions.all()
+                ],
+                ignore_conflicts=True,
+            )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Intro campaign auto-enrollment failed.")
+        return False
+    return True

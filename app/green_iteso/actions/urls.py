@@ -22,7 +22,9 @@ router.register("exchangeables", ExchangeableItemViewSet, basename="exchangeable
 
 urlpatterns = router.urls + [
     path("action-logs/", ActionLogCreateView.as_view(), name="action-log-create"),
-    path("action-logs/mine/", ActionLogMineView.as_view(), name="action-log-mine"),  # NEW
+    path(
+        "action-logs/mine/", ActionLogMineView.as_view(), name="action-log-mine"
+    ),  # NEW
     path(
         "action-logs/<uuid:log_id>/evidence/",
         ActionLogEvidenceView.as_view(),

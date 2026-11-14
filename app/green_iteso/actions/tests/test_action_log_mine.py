@@ -165,7 +165,7 @@ class ActionLogMineViewTest(TestCase):
             idempotency_key=str(uuid.uuid4()),
             points_awarded=50,
             status=ActionLog.Status.APPROVED,
-            created_at=datetime(2021, 1, 1, tzinfo=UTC)
+            created_at=datetime(2021, 1, 1, tzinfo=UTC),
         )
         new_log = ActionLog.objects.create(
             user=self.user,
@@ -174,7 +174,7 @@ class ActionLogMineViewTest(TestCase):
             idempotency_key=str(uuid.uuid4()),
             points_awarded=50,
             status=ActionLog.Status.APPROVED,
-            created_at=datetime(2023, 1, 1, tzinfo=UTC)
+            created_at=datetime(2023, 1, 1, tzinfo=UTC),
         )
 
         response = self.client.get(reverse("action-log-mine"))
@@ -250,7 +250,7 @@ class ActionLogMineViewTest(TestCase):
             idempotency_key=str(uuid.uuid4()),
             points_awarded=50,
             status=ActionLog.Status.APPROVED,
-            evidence_object_key="some-key"
+            evidence_object_key="some-key",
         )
 
         response = self.client.get(reverse("action-log-mine"))
@@ -271,7 +271,7 @@ class ActionLogMineViewTest(TestCase):
             idempotency_key=str(uuid.uuid4()),
             points_awarded=50,
             status=ActionLog.Status.APPROVED,
-            evidence_object_key=""
+            evidence_object_key="",
         )
 
         response = self.client.get(reverse("action-log-mine"))

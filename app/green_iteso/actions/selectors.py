@@ -27,7 +27,7 @@ def local_day_utc_bounds(now: datetime | None = None) -> tuple[datetime, datetim
 
 def count_user_action_logs_for_local_day(
     user_id: UUID, action_id: UUID, *, now: datetime | None = None
- ) -> int:
+) -> int:
     """Count submitted logs for one action in the current local calendar day."""
     start, end = local_day_utc_bounds(now)
     return ActionLog.objects.filter(

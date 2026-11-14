@@ -24,6 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
+from green_iteso.campaigns.services import enroll_in_intro_campaign
 from green_iteso.feed.models import Post
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
@@ -53,7 +54,9 @@ def ensure_profile(user: User) -> UserProfile:
     return profile
 
 
-def ensure_account_writable(user: User, *, requested_at: datetime | None = None) -> None:
+def ensure_account_writable(
+    user: User, *, requested_at: datetime | None = None
+) -> None:
     """Reject a write queued behind a deactivation (#176).
 
     Call while holding the user row lock, so the check sees a deactivation
@@ -260,6 +263,8 @@ def login_with_microsoft(
         )
 
     user, created, reactivated = _upsert_user(identity, email)
+    if created:
+        enroll_in_intro_campaign(user)
     update_last_login(None, user)
     refresh = RefreshToken.for_user(user)
     return LoginResult(

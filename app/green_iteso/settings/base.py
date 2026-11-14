@@ -242,6 +242,12 @@ MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
 ALLOWED_EMAIL_DOMAIN = (
     os.environ.get("ALLOWED_EMAIL_DOMAIN", "iteso.mx").strip().lower()
 )
+INTRO_CAMPAIGN_ID = os.environ.get(
+    "INTRO_CAMPAIGN_ID", "90000000-0000-4000-8000-0000000000a1"
+).strip()
+INTRO_CAMPAIGN_TITLE = os.environ.get(
+    "INTRO_CAMPAIGN_TITLE", "Campaña de introducción"
+).strip()
 STAFF_EMAILS = [
     email.strip().lower()
     for email in os.environ.get("STAFF_EMAILS", "").split(",")

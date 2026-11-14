@@ -401,6 +401,17 @@ class AccountDeactivationBlockedError(ValueError):
     """Raised when an account cannot be deactivated yet: it leads a clan or is the last admin."""
 
 
+def _delete_user_posts(user: User) -> None:
+    """Delete the user's feed posts and, once committed, their uploaded images."""
+    image_urls = list(
+        Post.objects.filter(author=user)
+        .exclude(image_url="")
+        .values_list("image_url", flat=True)
+    )
+    Post.objects.filter(author=user).delete()
+    schedule_feed_image_cleanup(image_urls, user.pk)
+
+
 @transaction.atomic
 def deactivate_account(*, user: User) -> User:
     """Soft-delete ``user``'s own account and wipe their progress (#176).
@@ -455,13 +466,7 @@ def deactivate_account(*, user: User) -> User:
     UserMissionProgress.objects.filter(user=locked).delete()
     UserBadge.objects.filter(user=locked).delete()
     Notification.all_objects.filter(user=locked).delete()
-    post_image_urls = list(
-        Post.objects.filter(author=locked)
-        .exclude(image_url="")
-        .values_list("image_url", flat=True)
-    )
-    Post.objects.filter(author=locked).delete()
-    schedule_feed_image_cleanup(post_image_urls, locked.pk)
+    _delete_user_posts(locked)
     pending_logs = ActionLog.objects.filter(
         user=locked, status=ActionLog.Status.PENDING_AUDIT
     )

@@ -122,7 +122,7 @@ def test_an_admin_deleting_a_post_removes_the_authors_image(
 
 @pytest.mark.django_db
 def test_an_external_url_is_ignored(
-    media: Path, author: User, django_capture_on_commit_callbacks: Any
+    author: User, django_capture_on_commit_callbacks: Any
 ) -> None:
     post = _post(author, "https://example.com/cat.png")
 

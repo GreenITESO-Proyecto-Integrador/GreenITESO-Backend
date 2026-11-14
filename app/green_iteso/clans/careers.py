@@ -18,6 +18,8 @@ INSTITUTIONAL_CAREERS: tuple[str, ...] = (
     "Ingeniería en Desarrollo de Software",
     "Ingeniería en Mecatrónica",
     "Ingeniería en Sistemas Computacionales",
+    # Not a career: the institutional clan for staff, who study none.
+    "Staff ITESO",
 )
 
 

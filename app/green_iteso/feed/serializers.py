@@ -68,6 +68,20 @@ class PostAuthorSerializer(serializers.ModelSerializer):
         return data
 
 
+class FeedListQuerySerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Query parameters accepted by the feed listing; unknown values are a 400."""
+
+    ORDERING_RECENT = "recent"
+    ORDERING_POPULAR = "popular"
+
+    post_type = serializers.ChoiceField(choices=PostType.choices, required=False)
+    ordering = serializers.ChoiceField(
+        choices=[ORDERING_RECENT, ORDERING_POPULAR],
+        required=False,
+        default=ORDERING_RECENT,
+    )
+
+
 class PostSerializer(serializers.ModelSerializer):
     """Serializer handling validation and serialization for Post instances."""
 

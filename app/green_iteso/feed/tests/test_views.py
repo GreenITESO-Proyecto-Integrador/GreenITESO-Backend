@@ -376,3 +376,38 @@ class PostAPITests(APITestCase):
         self.assertEqual(res_unlike.status_code, status.HTTP_200_OK)
         self.assertFalse(res_unlike.data["liked_by_me"])
         self.assertEqual(res_unlike.data["likes_count"], 0)
+
+    def test_list_rejects_unknown_post_type(self) -> None:
+        """A misspelled post_type is a 400, not the whole feed."""
+        response = self.client.get(f"{self.base_url}?post_type=COMUNITY_MILESTONE")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("post_type", response.data)
+
+    def test_list_rejects_unknown_ordering(self) -> None:
+        """Only ``recent`` and ``popular`` are valid orderings."""
+        response = self.client.get(f"{self.base_url}?ordering=oldest")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ordering", response.data)
+
+    def test_list_recent_ordering_is_newest_first(self) -> None:
+        """``ordering=recent`` (what the frontend sends) keeps the default order."""
+        newer = Post.objects.create(
+            author=self.author,
+            post_type=PostType.COMMUNITY_MILESTONE,
+            content="Post más reciente",
+        )
+        response = self.client.get(f"{self.base_url}?ordering=recent")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"][0]["id"], newer.pk)
+
+    def test_filters_do_not_apply_outside_the_listing(self) -> None:
+        """Listing filters must not hide a post from retrieve or like."""
+        other_type = PostType.COMMUNITY_MILESTONE
+        detail = self.client.get(f"{self.detail_url}?post_type={other_type}")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=self.other_user)
+        like = self.client.post(
+            f"{self.detail_url}like/?post_type={other_type}&ordering=bogus"
+        )
+        self.assertEqual(like.status_code, status.HTTP_200_OK)

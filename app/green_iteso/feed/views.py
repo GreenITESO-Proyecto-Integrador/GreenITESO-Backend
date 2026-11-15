@@ -11,7 +11,12 @@ from django.db.models import BooleanField, Count, Exists, OuterRef, QuerySet, Va
 from django.http import HttpResponseBase
 from django.urls import reverse
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+    inline_serializer,
+)
 from PIL import Image
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
@@ -30,8 +35,8 @@ from green_iteso.core.image_storage import (
 )
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.images import FEED_IMAGE_PREFIX, schedule_feed_image_cleanup
-from green_iteso.feed.models import Post, PostLike, PostType
-from green_iteso.feed.serializers import PostSerializer
+from green_iteso.feed.models import Post, PostLike
+from green_iteso.feed.serializers import FeedListQuerySerializer, PostSerializer
 
 # pylint: disable=no-member
 
@@ -62,6 +67,7 @@ class IsAuthorOrReadOnly(permissions.BasePermission):
         return obj.author == request.user
 
 
+@extend_schema_view(list=extend_schema(parameters=[FeedListQuerySerializer]))
 class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
     """ViewSet handling CRUD operations, filtering, and kudos for feed posts."""
 
@@ -83,14 +89,18 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
             liked_by_me=liked_subquery,
         )
 
-        post_type = self.request.query_params.get("post_type")
-        if post_type in PostType.values:
+        # Filters only shape the listing; retrieve/update/like must reach any post.
+        if self.action != "list":
+            return queryset.order_by("-created_at")
+
+        query = FeedListQuerySerializer(data=self.request.query_params)
+        query.is_valid(raise_exception=True)
+        post_type = query.validated_data.get("post_type")
+        if post_type:
             queryset = queryset.filter(post_type=post_type)
 
-        ordering = self.request.query_params.get("ordering")
-        if ordering == "popular":
+        if query.validated_data["ordering"] == FeedListQuerySerializer.ORDERING_POPULAR:
             return queryset.order_by("-likes_count", "-created_at")
-
         return queryset.order_by("-created_at")
 
     def perform_create(self, serializer: PostSerializer) -> None:

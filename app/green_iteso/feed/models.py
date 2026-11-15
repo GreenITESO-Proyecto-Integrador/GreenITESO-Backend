@@ -120,12 +120,6 @@ class PostLike(models.Model):
                 name="feed_post_like_unique",
             ),
         ]
-        indexes = [
-            models.Index(
-                fields=["post", "user"],
-                name="feed_like_post_user_idx",
-            ),
-        ]
 
     def __str__(self) -> str:
         return f"Like by {self.user_id} on Post {self.post_id}"

@@ -38,11 +38,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 "db_table": "feed_post_likes",
-                "indexes": [
-                    models.Index(
-                        fields=["post", "user"], name="feed_like_post_user_idx"
-                    )
-                ],
                 "constraints": [
                     models.UniqueConstraint(
                         fields=("post", "user"), name="feed_post_like_unique"

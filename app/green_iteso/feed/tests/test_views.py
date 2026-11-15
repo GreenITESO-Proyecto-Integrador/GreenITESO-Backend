@@ -334,8 +334,8 @@ class PostAPITests(APITestCase):
         self.assertEqual(author_data["first_name"], "")
         self.assertEqual(author_data["last_name"], "")
 
-    def test_toggle_like_and_popular_ordering(self) -> None:
-        """Ensure users can toggle kudos on a post and sort feed by popularity."""
+    def test_like_unlike_and_popular_ordering(self) -> None:
+        """Ensure users can give and remove kudos and sort the feed by popularity."""
         post_one = Post.objects.create(
             author=self.author,
             post_type=PostType.SHARED_EVIDENCE,
@@ -371,11 +371,62 @@ class PostAPITests(APITestCase):
         self.assertTrue(results[0]["liked_by_me"])
         self.assertEqual(results[1]["id"], post_one.pk)
 
-        # Segundo clic: quita Kudos
-        res_unlike = self.client.post(like_url)
+        # DELETE quita Kudos
+        res_unlike = self.client.delete(like_url)
         self.assertEqual(res_unlike.status_code, status.HTTP_200_OK)
         self.assertFalse(res_unlike.data["liked_by_me"])
         self.assertEqual(res_unlike.data["likes_count"], 0)
+
+    def test_repeated_like_keeps_the_post_liked(self) -> None:
+        """A double tap or retry of POST must not undo the like."""
+        self.client.force_authenticate(user=self.other_user)
+        like_url = f"{self.detail_url}like/"
+
+        first = self.client.post(like_url)
+        second = self.client.post(like_url)
+
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertTrue(first.data["liked_by_me"])
+        self.assertTrue(second.data["liked_by_me"])
+        self.assertEqual(second.data["likes_count"], 1)
+        self.assertEqual(self.post.likes.count(), 1)
+
+    def test_repeated_unlike_keeps_the_post_unliked(self) -> None:
+        """DELETE without a like, or twice, is a no-op that reports the state."""
+        self.client.force_authenticate(user=self.other_user)
+        like_url = f"{self.detail_url}like/"
+        self.client.post(like_url)
+
+        first = self.client.delete(like_url)
+        second = self.client.delete(like_url)
+
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertFalse(first.data["liked_by_me"])
+        self.assertFalse(second.data["liked_by_me"])
+        self.assertEqual(second.data["likes_count"], 0)
+
+    def test_unlike_keeps_other_users_likes(self) -> None:
+        """Removing my kudos only deletes my row."""
+        like_url = f"{self.detail_url}like/"
+        self.client.force_authenticate(user=self.author)
+        self.client.post(like_url)
+        self.client.force_authenticate(user=self.other_user)
+        self.client.post(like_url)
+
+        response = self.client.delete(like_url)
+
+        self.assertEqual(response.data["likes_count"], 1)
+        self.assertTrue(self.post.likes.filter(user=self.author).exists())
+
+    def test_like_and_unlike_require_authentication(self) -> None:
+        """Anonymous users cannot give or remove kudos."""
+        like_url = f"{self.detail_url}like/"
+        self.assertEqual(
+            self.client.post(like_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
+        self.assertEqual(
+            self.client.delete(like_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
 
     def test_list_rejects_unknown_post_type(self) -> None:
         """A misspelled post_type is a 400, not the whole feed."""

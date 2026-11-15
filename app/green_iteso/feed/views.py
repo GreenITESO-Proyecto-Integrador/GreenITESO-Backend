@@ -127,7 +127,7 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         request=None,
         responses={
             200: inline_serializer(
-                name="PostLikeToggleResponse",
+                name="PostLikeResponse",
                 fields={
                     "liked_by_me": serializers.BooleanField(),
                     "likes_count": serializers.IntegerField(),
@@ -137,21 +137,23 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
     )
     @action(
         detail=True,
-        methods=["post"],
+        methods=["post", "delete"],
         permission_classes=[permissions.IsAuthenticated],
         url_path="like",
     )
     def like(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
-        """Toggle a kudos/like on a feed post for the current user."""
+        """``POST`` gives kudos and ``DELETE`` removes it; repeating either is a no-op.
+
+        Each method sets the desired state instead of toggling it, so a double
+        tap or a network retry cannot undo the user's choice.
+        """
         post = self.get_object()
-        deleted_count, _ = PostLike.objects.filter(
-            post=post, user=request.user
-        ).delete()
-        if deleted_count == 0:
+        if request.method == "DELETE":
+            PostLike.objects.filter(post=post, user=request.user).delete()
+            liked_by_me = False
+        else:
             PostLike.objects.get_or_create(post=post, user=request.user)
             liked_by_me = True
-        else:
-            liked_by_me = False
 
         likes_count = PostLike.objects.filter(post=post).count()
         return Response(

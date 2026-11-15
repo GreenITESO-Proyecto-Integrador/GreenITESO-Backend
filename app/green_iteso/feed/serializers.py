@@ -12,6 +12,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
+from green_iteso.accounts.models import UserProfile
 from green_iteso.actions.cosmetics import background_image_url, frame_image_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
@@ -59,10 +60,14 @@ class PostAuthorSerializer(serializers.ModelSerializer):
         return user.name_shown_to_others()
 
     def to_representation(self, instance: Any) -> dict[str, Any]:
-        """Hide real first/last name when the author's profile is PRIVATE."""
+        """Hide real first/last name when the author's profile is PRIVATE.
+
+        ``display_name`` already follows ``User.name_shown_to_others``; this
+        blanks the raw name fields with the same visibility rule.
+        """
         data = super().to_representation(instance)
         profile = getattr(instance, "profile", None)
-        if getattr(profile, "visibility", None) == "PRIVATE":
+        if getattr(profile, "visibility", None) == UserProfile.Visibility.PRIVATE:
             data["first_name"] = ""
             data["last_name"] = ""
         return data

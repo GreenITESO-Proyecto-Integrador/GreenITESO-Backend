@@ -334,6 +334,27 @@ class PostAPITests(APITestCase):
         self.assertEqual(author_data["first_name"], "")
         self.assertEqual(author_data["last_name"], "")
 
+    def test_private_author_without_nickname_shows_only_anonymous_label(
+        self,
+    ) -> None:
+        """A PRIVATE author with no nickname exposes no name in any field."""
+        self.author.nickname = ""
+        self.author.first_name = "Emilio"
+        self.author.last_name = "Maciel"
+        self.author.save()
+        UserProfile.objects.update_or_create(
+            user=self.author,
+            defaults={"visibility": UserProfile.Visibility.PRIVATE},
+        )
+
+        response = self.client.get(self.detail_url)
+
+        author_data = response.data["author"]
+        self.assertEqual(author_data["display_name"], User.ANONYMOUS_DISPLAY_NAME)
+        self.assertEqual(author_data["nickname"], "")
+        self.assertEqual(author_data["first_name"], "")
+        self.assertEqual(author_data["last_name"], "")
+
     def test_like_unlike_and_popular_ordering(self) -> None:
         """Ensure users can give and remove kudos and sort the feed by popularity."""
         post_one = Post.objects.create(

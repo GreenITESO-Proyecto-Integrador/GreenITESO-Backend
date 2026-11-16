@@ -6,6 +6,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpResponseBase
 from django.urls import reverse
@@ -27,14 +28,13 @@ from green_iteso.core.image_storage import (
     validate_image,
 )
 from green_iteso.core.permissions import IsAdmin
+from green_iteso.feed.images import FEED_IMAGE_PREFIX, schedule_feed_image_cleanup
 from green_iteso.feed.models import Post
 from green_iteso.feed.serializers import PostSerializer
 
 # pylint: disable=no-member
 
 logger = logging.getLogger(__name__)
-
-FEED_IMAGE_PREFIX = "feed"
 
 
 def _ensure_decodable(uploaded: Any) -> None:
@@ -78,6 +78,21 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         """Assign authenticated user as author upon creation."""
         user = self.request.user if self.request.user.is_authenticated else None
         serializer.save(author=user)
+
+    def perform_update(self, serializer: PostSerializer) -> None:
+        """Save the edit and drop the previous image when it was replaced."""
+        previous_url = serializer.instance.image_url
+        with transaction.atomic():
+            post = serializer.save()
+            if post.image_url != previous_url:
+                schedule_feed_image_cleanup([previous_url], post.author_id)
+
+    def perform_destroy(self, instance: Post) -> None:
+        """Delete the post, then its uploaded image once the delete commits."""
+        with transaction.atomic():
+            image_url, author_id = instance.image_url, instance.author_id
+            instance.delete()
+            schedule_feed_image_cleanup([image_url], author_id)
 
 
 class ImageUploadView(APIView):

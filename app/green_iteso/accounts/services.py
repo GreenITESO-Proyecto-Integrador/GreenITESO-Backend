@@ -25,7 +25,7 @@ from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
 from green_iteso.campaigns.services import enroll_in_intro_campaign
-from green_iteso.feed.models import Post
+from green_iteso.feed.services import delete_posts_by_author
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.services import close_user_sockets
@@ -457,7 +457,7 @@ def deactivate_account(*, user: User) -> User:
     UserMissionProgress.objects.filter(user=locked).delete()
     UserBadge.objects.filter(user=locked).delete()
     Notification.all_objects.filter(user=locked).delete()
-    Post.objects.filter(author=locked).delete()
+    delete_posts_by_author(author=locked)
     pending_logs = ActionLog.objects.filter(
         user=locked, status=ActionLog.Status.PENDING_AUDIT
     )

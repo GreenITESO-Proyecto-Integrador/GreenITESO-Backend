@@ -476,21 +476,27 @@ def revert_action_log_from_missions(action_log: Any) -> list[UserMissionProgress
 
 
 def _find_intro_campaign() -> Campaign | None:
-    """Look the intro campaign up by its fixed id, then by title."""
+    """Look the intro campaign up by its fixed id, then by title.
+
+    Both lookups only accept an approved, global campaign that is still open.
+    ``end_date`` is checked besides ``status`` because ``status`` syncs lazily.
+    """
+    eligible = Campaign.objects.filter(
+        scope=Campaign.Scope.GLOBAL,
+        approval_status=Campaign.ApprovalStatus.APPROVED,
+        end_date__gt=timezone.now(),
+    ).exclude(status=Campaign.Status.FINISHED)
     try:
         campaign_id = UUID(settings.INTRO_CAMPAIGN_ID)
     except ValueError:
+        logger.warning("INTRO_CAMPAIGN_ID is not a valid UUID; falling back to title.")
         campaign_id = None
     if campaign_id is not None:
-        campaign = Campaign.objects.filter(pk=campaign_id).first()
+        campaign = eligible.filter(pk=campaign_id).first()
         if campaign is not None:
             return campaign
     return (
-        Campaign.objects.filter(
-            title=settings.INTRO_CAMPAIGN_TITLE,
-            scope=Campaign.Scope.GLOBAL,
-            approval_status=Campaign.ApprovalStatus.APPROVED,
-        )
+        eligible.filter(title=settings.INTRO_CAMPAIGN_TITLE)
         .order_by("created_at")
         .first()
     )

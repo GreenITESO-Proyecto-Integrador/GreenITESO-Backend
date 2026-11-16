@@ -139,3 +139,46 @@ def test_returning_user_is_not_enrolled() -> None:
     assert result.created is False
     assert result.user.pk == existing.pk
     assert not CampaignParticipant.objects.filter(user=existing).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("lookup_by_id", [True, False])
+def test_finished_campaign_is_not_enrolled(lookup_by_id: bool) -> None:
+    pk = INTRO_ID if lookup_by_id else UUID("90000000-0000-4000-8000-0000000000ff")
+    campaign = _intro_campaign(pk=pk, missions=2)
+    Campaign.objects.filter(pk=campaign.pk).update(status=Campaign.Status.FINISHED)
+    user = User.objects.create_user(email="finished@iteso.mx", password="x")
+
+    assert enroll_in_intro_campaign(user) is False
+
+    assert not CampaignParticipant.objects.filter(user=user).exists()
+    assert not UserMissionProgress.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+def test_expired_campaign_with_stale_status_is_not_enrolled() -> None:
+    campaign = _intro_campaign(missions=2)
+    Campaign.objects.filter(pk=campaign.pk).update(
+        end_date=timezone.now() - timedelta(minutes=1)
+    )
+    user = User.objects.create_user(email="expired@iteso.mx", password="x")
+
+    assert enroll_in_intro_campaign(user) is False
+
+    assert not CampaignParticipant.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("lookup_by_id", [True, False])
+def test_unapproved_campaign_is_not_enrolled(lookup_by_id: bool) -> None:
+    pk = INTRO_ID if lookup_by_id else UUID("90000000-0000-4000-8000-0000000000ff")
+    campaign = _intro_campaign(pk=pk, missions=2)
+    Campaign.objects.filter(pk=campaign.pk).update(
+        approval_status=Campaign.ApprovalStatus.PENDING
+    )
+    user = User.objects.create_user(email="pending@iteso.mx", password="x")
+
+    assert enroll_in_intro_campaign(user) is False
+
+    assert not CampaignParticipant.objects.filter(user=user).exists()
+

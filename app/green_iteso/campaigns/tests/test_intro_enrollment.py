@@ -10,7 +10,11 @@ from django.utils import timezone
 
 from green_iteso.accounts.identity.base import ExternalIdentity
 from green_iteso.accounts.models import User
-from green_iteso.accounts.services import LoginResult, login_with_microsoft
+from green_iteso.accounts.services import (
+    LoginResult,
+    deactivate_account,
+    login_with_microsoft,
+)
 from green_iteso.actions.models import ActionCategory, ActionMaster
 from green_iteso.campaigns.models import (
     Campaign,
@@ -182,3 +186,20 @@ def test_unapproved_campaign_is_not_enrolled(lookup_by_id: bool) -> None:
 
     assert not CampaignParticipant.objects.filter(user=user).exists()
 
+
+@pytest.mark.django_db
+def test_self_deactivated_user_is_enrolled_again_on_return() -> None:
+    campaign = _intro_campaign()
+    oid, email = "44444444-4444-4444-4444-444444444444", "back@iteso.mx"
+    first = _login(oid, email)
+    deactivate_account(user=first.user)
+    assert not CampaignParticipant.objects.filter(user=first.user).exists()
+
+    result = _login(oid, email)
+
+    assert result.created is False
+    assert result.reactivated is True
+    assert CampaignParticipant.objects.filter(
+        campaign=campaign, user=result.user
+    ).exists()
+    assert UserMissionProgress.objects.filter(user=result.user).count() == 6

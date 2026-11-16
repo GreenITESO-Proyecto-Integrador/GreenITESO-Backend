@@ -263,7 +263,7 @@ def login_with_microsoft(
         )
 
     user, created, reactivated = _upsert_user(identity, email)
-    if created:
+    if created or reactivated:
         enroll_in_intro_campaign(user)
     update_last_login(None, user)
     refresh = RefreshToken.for_user(user)

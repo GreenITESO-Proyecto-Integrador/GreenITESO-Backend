@@ -59,10 +59,12 @@ python app/manage.py seed_demo
 ```
 
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
-clanes privados y membresías. Incluye cuatro campañas: una global activa,
-una global futura, una global terminada con ocho participantes y una privada
-activa con ocho participantes de su clan. Las cinco misiones permiten probar
-progreso y listas con y sin participación. También crea 24 logs
+clanes privados y membresías. Incluye cinco campañas: una global activa,
+una global futura, una global terminada con ocho participantes, una privada
+activa con ocho participantes de su clan y la campaña de introducción (ID y
+título de `INTRO_CAMPAIGN_ID` / `INTRO_CAMPAIGN_TITLE`, tres misiones, sin
+participantes: el primer login inscribe a cada usuario nuevo). Las ocho misiones
+permiten probar progreso y listas con y sin participación. También crea 24 logs
 `APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
 deterministas; ejecutarlo varias veces conserva una sola copia, pero si un ID
 determinista existente no coincide con la identidad demo esperada, el comando
@@ -207,6 +209,30 @@ usuarios, actividad, campañas ni datos demo. Es una ejecución manual fuera del
 flujo de migración/despliegue; este trabajo no ejecuta el comando contra Neon,
 especialmente en production. No agregues valores ni configures pins sin la
 decisión registrada de Product.
+
+## Campaña de introducción en staging y production
+
+> **Contexto:** esta campaña existe para la demo de la expo DESI. El alcance
+> actual es el mínimo para que funcione y necesita continuidad después de la
+> demo (ver "Pendiente de continuidad").
+
+Ninguna migración ni semilla crea esta campaña fuera de local y Neon dev. En
+staging y production el primer login solo registra `Intro campaign not found` si
+nadie la creó, y el usuario no queda inscrito. Para que la inscripción
+automática funcione, un admin crea una campaña global, aprobada y abierta
+(sin `FINISHED` y con `end_date` futura) con misiones, cuyo título sea
+exactamente `INTRO_CAMPAIGN_TITLE` (por defecto `Campaña de introducción`). La
+API no permite elegir el `id`, así que se encuentra por título; `INTRO_CAMPAIGN_ID`
+solo aplica a la campaña sembrada. Los usuarios que ya entraron no se inscriben
+de forma retroactiva.
+
+### Pendiente de continuidad
+
+- Decidir con E3 si la campaña debe existir en todos los ambientes mediante una
+  migración de datos.
+- Definir qué pasa al cerrarse: hoy hay que crear otra con el mismo título.
+- Decidir si los usuarios existentes se inscriben de forma retroactiva.
+- Alertar sobre el log `"Intro campaign auto-enrollment failed."`.
 
 ## Identidad y Admin local
 

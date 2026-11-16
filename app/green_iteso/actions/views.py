@@ -92,9 +92,7 @@ class ActionLogMineView(views.APIView):
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(qs, request, view=self)
         if page is None:
-            return Response(
-                ActionLogMineSerializer(qs, many=True).data
-            )
+            return Response(ActionLogMineSerializer(qs, many=True).data)
         return paginator.get_paginated_response(
             ActionLogMineSerializer(page, many=True).data
         )

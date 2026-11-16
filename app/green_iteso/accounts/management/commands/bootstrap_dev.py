@@ -529,17 +529,12 @@ def create_additional_campaigns(
     return created_count, len(scenarios)
 
 
-INTRO_MISSION_COUNT = 3
-
-
 def create_intro_campaign(
     users: list[User], actions: list[ActionMaster], as_of: datetime
 ) -> tuple[int, int]:
-    """Create the open, approved campaign new users are auto-enrolled in.
+    """Create the campaign first-login enrollment finds by its settings id/title.
 
-    It uses ``INTRO_CAMPAIGN_ID`` / ``INTRO_CAMPAIGN_TITLE`` so the first-login
-    enrollment finds it. It has no participants: users join on first login.
-    Returns ``(campaigns_created, mission_count)``.
+    Three missions, no participants. Returns ``(campaigns_created, missions)``.
     """
     try:
         pk = uuid.UUID(settings.INTRO_CAMPAIGN_ID)
@@ -565,7 +560,7 @@ def create_intro_campaign(
         raise CommandError(
             "Demo campaign identity collision; existing campaign was preserved."
         )
-    intro_actions = actions[:INTRO_MISSION_COUNT]
+    intro_actions = actions[:3]
     for index, action in enumerate(intro_actions, start=1):
         mission, mission_created = Mission.objects.get_or_create(
             pk=demo_id("mission", f"intro-{index}"),

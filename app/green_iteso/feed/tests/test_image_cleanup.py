@@ -148,7 +148,7 @@ def test_concurrent_deletes_of_posts_sharing_an_image_leave_no_orphan(
     for thread in threads:
         thread.join()
 
-    assert errors == []
+    assert not errors
     assert not Post.objects.filter(author=author).exists()
     assert stored_files(media) == []
 

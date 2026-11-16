@@ -59,10 +59,12 @@ python app/manage.py seed_demo
 ```
 
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
-clanes privados y membresías. Incluye cuatro campañas: una global activa,
-una global futura, una global terminada con ocho participantes y una privada
-activa con ocho participantes de su clan. Las cinco misiones permiten probar
-progreso y listas con y sin participación. También crea 24 logs
+clanes privados y membresías. Incluye cinco campañas: una global activa,
+una global futura, una global terminada con ocho participantes, una privada
+activa con ocho participantes de su clan y la campaña de introducción (ID y
+título de `INTRO_CAMPAIGN_ID` / `INTRO_CAMPAIGN_TITLE`, tres misiones, sin
+participantes: el primer login inscribe a cada usuario nuevo). Las ocho misiones
+permiten probar progreso y listas con y sin participación. También crea 24 logs
 `APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
 deterministas; ejecutarlo varias veces conserva una sola copia, pero si un ID
 determinista existente no coincide con la identidad demo esperada, el comando

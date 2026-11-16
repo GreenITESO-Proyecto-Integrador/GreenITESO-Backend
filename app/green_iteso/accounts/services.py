@@ -24,6 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
+from green_iteso.campaigns.services import enroll_in_intro_campaign
 from green_iteso.feed.services import delete_posts_by_author
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
@@ -262,6 +263,8 @@ def login_with_microsoft(
         )
 
     user, created, reactivated = _upsert_user(identity, email)
+    if created or reactivated:
+        enroll_in_intro_campaign(user)
     update_last_login(None, user)
     refresh = RefreshToken.for_user(user)
     return LoginResult(

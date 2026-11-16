@@ -24,7 +24,7 @@ nunca elige la llave del objeto. La llave siempre se genera en el backend como
 |---|---|---|
 | `POST /api/v1/profile/me/avatar/` (multipart, campo `avatar`) | el propio usuario | `200` con el perfil ecológico |
 | `DELETE /api/v1/profile/me/avatar/` | el propio usuario | `200` con el perfil; sin foto |
-| `GET /api/v1/avatars/<user_id>/` | cualquiera, sin token | `302` a una URL firmada (desplegado) o la imagen (local); `404` si no hay foto subida |
+| `GET /api/v1/avatars/<user_id>/` | cualquiera, sin token; perfil `PRIVATE` solo con `sig` válido | `302` a una URL firmada (desplegado) o la imagen (local); `404` si no hay foto subida o si el perfil es privado y falta `sig` o no es válido |
 | `PATCH /api/v1/profile/me/` con `avatar_url` | el propio usuario | `200`; guarda un enlace https externo |
 
 - La llave es `avatars/<user_id>/<uuid>.<ext>` y se guarda en
@@ -45,7 +45,26 @@ pegado es ese enlace; sin foto es `""`.
   lectura que dura 10 minutos. El parámetro `v` cambia con cada subida, así que
   una foto nueva nunca queda oculta por una imagen en caché.
 - No pide token porque un `<img>` no puede mandar el header `Authorization`, y
-  la foto se muestra dondequiera que aparece el usuario.
+  la foto de un perfil público se muestra dondequiera que aparece el usuario.
+
+### Perfiles privados (#238)
+
+**Decisión:** la foto sigue al nombre real. Un perfil `PRIVATE` ya oculta su
+nombre real a los demás (rosters, feed, ranking), así que su foto también: solo
+la ven la propia persona y los `ADMIN`. Para cualquier otro, `avatar_url` es
+`""`, sea una foto subida o un enlace pegado, y el cliente muestra las iniciales.
+
+- Como el endpoint no puede saber quién pide la imagen, la URL que reciben el
+  dueño y los admins lleva `sig`, un HMAC (`django.core.signing`, con
+  `SECRET_KEY`) de `<user_id>:<versión>`. Sin un `sig` válido,
+  `GET /avatars/<user_id>/` responde `404` para un perfil privado, igual que si
+  no tuviera foto, así que adivinar la URL no expone nada.
+- El `sig` no expira, para que la URL siga siendo estable y cacheable, pero
+  queda inválido con cada subida nueva (cambia la versión).
+- Al pasar de `PUBLIC` a `PRIVATE`, las URLs públicas ya repartidas (sin `sig`)
+  dejan de funcionar de inmediato.
+- El ranking de usuarios solo lista perfiles públicos, así que nunca muestra
+  la foto de un perfil privado.
 
 `avatar_url` aparece en:
 

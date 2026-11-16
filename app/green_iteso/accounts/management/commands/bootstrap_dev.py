@@ -68,6 +68,15 @@ class CampaignSeedContext:
 
 
 @dataclass(frozen=True)
+class SecondaryCampaignCounts:
+    """Rows written by the campaigns seeded besides the main active one."""
+
+    created: int
+    campaigns: int
+    missions: int
+
+
+@dataclass(frozen=True)
 class DemoClanSpec:
     """Stable identity and presentation of one synthetic clan."""
 
@@ -520,6 +529,71 @@ def create_additional_campaigns(
     return created_count, len(scenarios)
 
 
+def create_intro_campaign(
+    users: list[User], actions: list[ActionMaster], as_of: datetime
+) -> tuple[int, int]:
+    """Create the campaign first-login enrollment finds by its settings id/title.
+
+    Three missions, no participants. Returns ``(campaigns_created, missions)``.
+    """
+    try:
+        pk = uuid.UUID(settings.INTRO_CAMPAIGN_ID)
+    except ValueError:
+        pk = demo_id("campaign", "intro")
+    campaign, was_created = Campaign.objects.get_or_create(
+        pk=pk,
+        defaults={
+            "title": settings.INTRO_CAMPAIGN_TITLE,
+            "description": DEMO_CAMPAIGN_DESCRIPTION,
+            "scope": Campaign.Scope.GLOBAL,
+            "status": Campaign.Status.IN_PROGRESS,
+            "creator": users[0],
+            "start_date": as_of - timedelta(days=30),
+            "end_date": as_of + timedelta(days=365),
+        },
+    )
+    if not was_created and (
+        campaign.creator_id != users[0].pk
+        or campaign.scope != Campaign.Scope.GLOBAL
+        or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+    ):
+        raise CommandError(
+            "Demo campaign identity collision; existing campaign was preserved."
+        )
+    intro_actions = actions[:3]
+    for index, action in enumerate(intro_actions, start=1):
+        mission, mission_created = Mission.objects.get_or_create(
+            pk=demo_id("mission", f"intro-{index}"),
+            defaults={"campaign": campaign, "action": action, "target_count": 1},
+        )
+        if not mission_created and (
+            mission.campaign_id != campaign.pk or mission.action_id != action.pk
+        ):
+            raise CommandError(
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
+            )
+    return int(was_created), len(intro_actions)
+
+
+def create_secondary_campaigns(
+    users: list[User],
+    actions: list[ActionMaster],
+    private_clans: list[Clan],
+    as_of: datetime,
+) -> SecondaryCampaignCounts:
+    """Seed the scenario campaigns and the intro campaign."""
+    additional_created, scenarios = create_additional_campaigns(
+        users, actions, private_clans, as_of
+    )
+    intro_created, intro_missions = create_intro_campaign(users, actions, as_of)
+    return SecondaryCampaignCounts(
+        created=additional_created + intro_created,
+        campaigns=scenarios + 1,
+        missions=scenarios + intro_missions,
+    )
+
+
 def add_mission_contribution(
     index: int,
     status: str,
@@ -854,9 +928,7 @@ def create_log_seed_context(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    additional_created, additional_scenarios = create_additional_campaigns(
-        users, actions, private_clans, as_of
-    )
+    secondary = create_secondary_campaigns(users, actions, private_clans, as_of)
     return LogSeedContext(
         users=users,
         profiles=profiles,
@@ -866,9 +938,9 @@ def create_log_seed_context(
         metadata=DemoSeedMetadata(
             institutional_clans=institutional_clans,
             user_created=user_created,
-            campaigns_created=int(campaign_created) + additional_created,
-            campaign_count=1 + additional_scenarios,
-            mission_count=len(missions) + additional_scenarios,
+            campaigns_created=int(campaign_created) + secondary.created,
+            campaign_count=1 + secondary.campaigns,
+            mission_count=len(missions) + secondary.missions,
             shared_dev=shared_dev,
         ),
     )

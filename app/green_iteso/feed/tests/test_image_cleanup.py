@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
+from django.db import connection, transaction
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import User
@@ -16,6 +18,7 @@ from green_iteso.core.tests.image_helpers import (
     stored_files,
     use_local_media,
 )
+from green_iteso.feed.images import schedule_feed_image_cleanup
 from green_iteso.feed.models import Post, PostType
 
 HOST = "api.greeniteso.test"
@@ -89,6 +92,65 @@ def test_an_image_still_used_by_another_post_is_kept(
         _client(author).delete(f"/api/v1/feed/{first.pk}/")
 
     assert len(stored_files(media)) == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "variant",
+    [
+        lambda url: url.replace("http://", "https://"),
+        lambda url: f"{url}?v=2",
+    ],
+    ids=["other-scheme", "query-string"],
+)
+def test_an_image_used_through_another_url_form_is_kept(
+    media: Path,
+    author: User,
+    other: User,
+    django_capture_on_commit_callbacks: Any,
+    variant: Any,
+) -> None:
+    url = _upload(author)
+    first = _post(author, url)
+    _post(other, variant(url))
+
+    with django_capture_on_commit_callbacks(execute=True):
+        _client(author).delete(f"/api/v1/feed/{first.pk}/")
+
+    assert len(stored_files(media)) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_deletes_of_posts_sharing_an_image_leave_no_orphan(
+    media: Path, author: User
+) -> None:
+    url = _upload(author)
+    post_ids = [_post(author, url).pk, _post(author, url).pk]
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def delete_post(post_id: int) -> None:
+        try:
+            with transaction.atomic():
+                Post.objects.get(pk=post_id).delete()
+                schedule_feed_image_cleanup([url], author.pk)
+                # Both deletes are uncommitted here: each one still sees the
+                # other post, so only the check after commit can be right.
+                barrier.wait(timeout=10)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=delete_post, args=(pk,)) for pk in post_ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert not Post.objects.filter(author=author).exists()
+    assert stored_files(media) == []
 
 
 @pytest.mark.django_db

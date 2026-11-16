@@ -41,20 +41,36 @@ def _owned_feed_image(image_url: str, author_id: UUID) -> str | None:
     return f"{FEED_IMAGE_PREFIX}/{owner_id}/{match.kwargs['filename']}"
 
 
+def _delete_if_unreferenced(author_id: UUID, object_key: str) -> None:
+    """Delete ``object_key`` unless a committed post still points at it.
+
+    Matches on the ``uploads/<owner>/<file>`` path, so a different scheme,
+    host or query string still counts as a reference.
+    """
+    filename = object_key.rsplit("/", 1)[1]
+    still_used = Post.objects.filter(
+        image_url__contains=f"/uploads/{author_id}/{filename}"
+    ).exists()
+    if not still_used:
+        delete_image(FEED_IMAGE_PREFIX, author_id, object_key)
+
+
 def schedule_feed_image_cleanup(
     image_urls: Iterable[str], author_id: UUID | None
 ) -> None:
     """Delete the author's feed images no post references any more.
 
-    Call after the posts were changed, inside the same transaction. The files
-    are removed only once it commits.
+    Call after the posts were changed, inside the same transaction. The
+    reference check and the delete run only once it commits, so concurrent
+    deletes of posts sharing an image cannot both see the other's post and
+    leave the file orphaned.
     """
     if author_id is None:
         return
     for image_url in set(image_urls):
         object_key = _owned_feed_image(image_url, author_id)
-        if object_key is None or Post.objects.filter(image_url=image_url).exists():
+        if object_key is None:
             continue
         transaction.on_commit(
-            lambda key=object_key: delete_image(FEED_IMAGE_PREFIX, author_id, key)
+            lambda key=object_key: _delete_if_unreferenced(author_id, key)
         )

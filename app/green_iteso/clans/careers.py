@@ -11,7 +11,15 @@ from __future__ import annotations
 
 import unicodedata
 
-from .errors import ReservedClanNameError, UnknownCareerError
+from green_iteso.accounts.models import User
+
+from .errors import (
+    CareerNotAllowedForRoleError,
+    ReservedClanNameError,
+    UnknownCareerError,
+)
+
+STAFF_CAREER = "Staff ITESO"
 
 INSTITUTIONAL_CAREERS: tuple[str, ...] = (
     "Ingeniería en Ciberseguridad",
@@ -19,8 +27,11 @@ INSTITUTIONAL_CAREERS: tuple[str, ...] = (
     "Ingeniería en Mecatrónica",
     "Ingeniería en Sistemas Computacionales",
     # Not a career: the institutional clan for staff, who study none.
-    "Staff ITESO",
+    STAFF_CAREER,
 )
+
+STAFF_ONLY_CAREERS: frozenset[str] = frozenset({STAFF_CAREER})
+"""Catalog entries only ``User.Role.STAFF`` accounts can pick in onboarding."""
 
 
 def normalize_name(name: str) -> str:
@@ -45,15 +56,29 @@ def is_reserved_clan_name(name: str) -> bool:
     return canonical_career(name) is not None
 
 
-def require_career(value: str) -> str:
-    """Return the catalog spelling of ``value`` for onboarding.
+def careers_for_role(role: str) -> list[str]:
+    """Return the sorted catalog entries a user with ``role`` may pick."""
+    return sorted(
+        career
+        for career in INSTITUTIONAL_CAREERS
+        if career not in STAFF_ONLY_CAREERS or role == User.Role.STAFF
+    )
+
+
+def require_career(value: str, *, role: str) -> str:
+    """Return the catalog spelling of ``value`` for onboarding by a ``role`` user.
 
     Raises:
         UnknownCareerError: If ``value`` is not in the catalog.
+        CareerNotAllowedForRoleError: If the career is reserved for another role.
     """
     career = canonical_career(value)
     if career is None:
         raise UnknownCareerError(f"'{value.strip()}' is not in the career catalog.")
+    if career in STAFF_ONLY_CAREERS and role != User.Role.STAFF:
+        raise CareerNotAllowedForRoleError(
+            f"'{career}' is only available to staff accounts."
+        )
     return career
 
 

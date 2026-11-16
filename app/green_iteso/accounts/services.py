@@ -24,8 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from green_iteso.actions.evidence import delete_action_evidence
 from green_iteso.actions.models import ActionLog
 from green_iteso.campaigns.models import CampaignParticipant, UserMissionProgress
-from green_iteso.feed.images import schedule_feed_image_cleanup
-from green_iteso.feed.models import Post
+from green_iteso.feed.services import delete_posts_by_author
 from green_iteso.gamification.models import UserBadge
 from green_iteso.notifications.models import Notification
 from green_iteso.notifications.services import close_user_sockets
@@ -401,17 +400,6 @@ class AccountDeactivationBlockedError(ValueError):
     """Raised when an account cannot be deactivated yet: it leads a clan or is the last admin."""
 
 
-def _delete_user_posts(user: User) -> None:
-    """Delete the user's feed posts and, once committed, their uploaded images."""
-    image_urls = list(
-        Post.objects.filter(author=user)
-        .exclude(image_url="")
-        .values_list("image_url", flat=True)
-    )
-    Post.objects.filter(author=user).delete()
-    schedule_feed_image_cleanup(image_urls, user.pk)
-
-
 @transaction.atomic
 def deactivate_account(*, user: User) -> User:
     """Soft-delete ``user``'s own account and wipe their progress (#176).
@@ -466,7 +454,7 @@ def deactivate_account(*, user: User) -> User:
     UserMissionProgress.objects.filter(user=locked).delete()
     UserBadge.objects.filter(user=locked).delete()
     Notification.all_objects.filter(user=locked).delete()
-    _delete_user_posts(locked)
+    delete_posts_by_author(author=locked)
     pending_logs = ActionLog.objects.filter(
         user=locked, status=ActionLog.Status.PENDING_AUDIT
     )

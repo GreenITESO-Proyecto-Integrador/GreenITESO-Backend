@@ -210,6 +210,30 @@ flujo de migración/despliegue; este trabajo no ejecuta el comando contra Neon,
 especialmente en production. No agregues valores ni configures pins sin la
 decisión registrada de Product.
 
+## Campaña de introducción en staging y production
+
+> **Contexto:** esta campaña existe para la demo de la expo DESI. El alcance
+> actual es el mínimo para que funcione y necesita continuidad después de la
+> demo (ver "Pendiente de continuidad").
+
+Ninguna migración ni semilla crea esta campaña fuera de local y Neon dev. En
+staging y production el primer login solo registra `Intro campaign not found` si
+nadie la creó, y el usuario no queda inscrito. Para que la inscripción
+automática funcione, un admin crea una campaña global, aprobada y abierta
+(sin `FINISHED` y con `end_date` futura) con misiones, cuyo título sea
+exactamente `INTRO_CAMPAIGN_TITLE` (por defecto `Campaña de introducción`). La
+API no permite elegir el `id`, así que se encuentra por título; `INTRO_CAMPAIGN_ID`
+solo aplica a la campaña sembrada. Los usuarios que ya entraron no se inscriben
+de forma retroactiva.
+
+### Pendiente de continuidad
+
+- Decidir con E3 si la campaña debe existir en todos los ambientes mediante una
+  migración de datos.
+- Definir qué pasa al cerrarse: hoy hay que crear otra con el mismo título.
+- Decidir si los usuarios existentes se inscriben de forma retroactiva.
+- Alertar sobre el log `"Intro campaign auto-enrollment failed."`.
+
 ## Identidad y Admin local
 
 Los usuarios demo no tienen identidad Microsoft Entra ni contraseña. Eso evita

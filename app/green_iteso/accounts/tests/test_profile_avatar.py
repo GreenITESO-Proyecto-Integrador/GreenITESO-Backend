@@ -342,11 +342,11 @@ def test_rolled_back_user_deletion_keeps_the_stored_photo(
 ) -> None:
     _client(user).post(AVATAR_URL, {"avatar": _png()})
     key = _key(user)
+    user_pk = user.pk  # delete() clears user.pk even when the transaction rolls back
 
     with pytest.raises(RuntimeError), transaction.atomic():
         user.delete()
         raise RuntimeError("abort delete")
 
-    assert User.objects.filter(pk=user.pk).exists()
-    assert _key(user) == key
+    assert _key(User.objects.get(pk=user_pk)) == key
     assert (avatar_media / key).exists()

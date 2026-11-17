@@ -19,12 +19,14 @@ from django.utils import timezone
 
 from green_iteso.accounts.management.commands.bootstrap_dev import (
     DEMO_INSTITUTIONAL_CLAN_DESCRIPTION,
-    demo_action_log_identity,
     demo_id,
-    expected_demo_action_status,
     get_catalog_actions,
     parse_as_of,
     seed_demo_data,
+)
+from green_iteso.accounts.management.demo_seed_helpers import (
+    demo_action_log_identity,
+    expected_demo_action_status,
 )
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands.load_catalog import (

@@ -12,6 +12,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from green_iteso.accounts.avatars import user_avatar_url
+from green_iteso.accounts.models import UserProfile
 from green_iteso.actions.cosmetics import background_image_url, frame_image_url
 from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.models import Post, PostType
@@ -21,31 +22,26 @@ User = get_user_model()
 
 
 class PostAuthorSerializer(serializers.ModelSerializer):
-    """Minimal nested author details for feed cards."""
+    """Minimal nested author details for feed cards, respecting profile privacy."""
 
     avatar_url = serializers.SerializerMethodField()
     frame_url = serializers.SerializerMethodField()
     background_url = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id",
+            "nickname",
             "first_name",
             "last_name",
+            "display_name",
             "avatar_url",
             "frame_url",
             "background_url",
         ]
-        read_only_fields = [
-            "id",
-            "email",
-            "first_name",
-            "last_name",
-            "avatar_url",
-            "frame_url",
-            "background_url",
-        ]
+        read_only_fields = fields
 
     def get_avatar_url(self, user: Any) -> str:
         """The author's profile photo URL (#170), or "" when there is none."""
@@ -58,6 +54,37 @@ class PostAuthorSerializer(serializers.ModelSerializer):
     def get_background_url(self, user: Any) -> str:
         """Image of the author's active profile background, or "" when there is none."""
         return background_image_url(user, self.context)
+
+    def get_display_name(self, user: Any) -> str:
+        """Canonical name shown to others (nickname -> full name -> anonymous)."""
+        return user.name_shown_to_others()
+
+    def to_representation(self, instance: Any) -> dict[str, Any]:
+        """Hide real first/last name when the author's profile is PRIVATE.
+
+        ``display_name`` already follows ``User.name_shown_to_others``; this
+        blanks the raw name fields with the same visibility rule.
+        """
+        data = super().to_representation(instance)
+        profile = getattr(instance, "profile", None)
+        if getattr(profile, "visibility", None) == UserProfile.Visibility.PRIVATE:
+            data["first_name"] = ""
+            data["last_name"] = ""
+        return data
+
+
+class FeedListQuerySerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """Query parameters accepted by the feed listing; unknown values are a 400."""
+
+    ORDERING_RECENT = "recent"
+    ORDERING_POPULAR = "popular"
+
+    post_type = serializers.ChoiceField(choices=PostType.choices, required=False)
+    ordering = serializers.ChoiceField(
+        choices=[ORDERING_RECENT, ORDERING_POPULAR],
+        required=False,
+        default=ORDERING_RECENT,
+    )
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -72,6 +99,8 @@ class PostSerializer(serializers.ModelSerializer):
     )
     badge_info = serializers.SerializerMethodField()
     relative_time = serializers.SerializerMethodField()
+    likes_count = serializers.IntegerField(read_only=True, default=0)
+    liked_by_me = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = Post
@@ -85,6 +114,8 @@ class PostSerializer(serializers.ModelSerializer):
             "badge_user",
             "badge_info",
             "relative_time",
+            "likes_count",
+            "liked_by_me",
             "created_at",
             "updated_at",
         ]
@@ -94,6 +125,8 @@ class PostSerializer(serializers.ModelSerializer):
             "author_id",
             "badge_info",
             "relative_time",
+            "likes_count",
+            "liked_by_me",
             "created_at",
             "updated_at",
         ]

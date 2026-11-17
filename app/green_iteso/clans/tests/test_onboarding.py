@@ -7,7 +7,7 @@ from django.db import IntegrityError
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
-from green_iteso.clans.careers import INSTITUTIONAL_CAREERS
+from green_iteso.clans.careers import INSTITUTIONAL_CAREERS, STAFF_CAREER
 from green_iteso.clans.services import complete_onboarding
 
 ONBOARDING_URL = "/api/v1/clans/institutional-clan/"
@@ -21,7 +21,7 @@ def _client_for(user: User) -> APIClient:
 
 
 @pytest.mark.django_db
-def test_careers_lists_the_curated_catalog_sorted() -> None:
+def test_careers_lists_the_curated_catalog_sorted_without_staff_entry() -> None:
     caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
     # A clan created earlier from free text is not offered (#213).
     Clan.objects.create(name="Arquitectura", type=Clan.ClanType.INSTITUTIONAL)
@@ -30,7 +30,9 @@ def test_careers_lists_the_curated_catalog_sorted() -> None:
     response = _client_for(caller).get(CAREERS_URL)
 
     assert response.status_code == 200
-    assert response.json() == {"careers": sorted(INSTITUTIONAL_CAREERS)}
+    assert response.json() == {
+        "careers": sorted(c for c in INSTITUTIONAL_CAREERS if c != STAFF_CAREER)
+    }
 
 
 @pytest.mark.django_db
@@ -171,3 +173,50 @@ def test_complete_onboarding_rolls_back_when_the_profile_save_fails() -> None:
     caller.refresh_from_db()
     assert caller.nickname == ""
     assert not ClanMembership.objects.filter(user=caller).exists()
+
+
+@pytest.mark.django_db
+def test_staff_iteso_is_offered_and_can_be_chosen_by_staff() -> None:
+    caller = User.objects.create_user(
+        email="profe@iteso.mx", password="local-only", role=User.Role.STAFF
+    )
+    client = _client_for(caller)
+
+    assert STAFF_CAREER in client.get(CAREERS_URL).json()["careers"]
+    response = client.post(ONBOARDING_URL, {"career": STAFF_CAREER})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["institutional_clan"]["name"] == STAFF_CAREER
+    clan = Clan.objects.get(name=STAFF_CAREER)
+    assert clan.type == Clan.ClanType.INSTITUTIONAL
+    assert ClanMembership.objects.filter(user=caller, clan=clan).exists()
+
+
+@pytest.mark.django_db
+def test_staff_iteso_is_rejected_for_a_student() -> None:
+    caller = User.objects.create_user(
+        email="ana@iteso.mx", password="local-only", role=User.Role.STUDENT
+    )
+    client = _client_for(caller)
+
+    assert STAFF_CAREER not in client.get(CAREERS_URL).json()["careers"]
+    response = client.post(ONBOARDING_URL, {"career": STAFF_CAREER})
+
+    assert response.status_code == 400
+    assert "career" in response.json()
+    assert not Clan.objects.filter(name=STAFF_CAREER).exists()
+    assert not ClanMembership.objects.filter(user=caller).exists()
+    assert not UserProfile.objects.filter(
+        user=caller, onboarding_completed_at__isnull=False
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_a_private_clan_cannot_take_the_staff_iteso_name() -> None:
+    leader = User.objects.create_user(email="lider@iteso.mx", password="local-only")
+
+    response = _client_for(leader).post("/api/v1/clans/", {"name": "Staff ITESO"})
+
+    assert response.status_code == 400
+    assert not Clan.objects.filter(name="Staff ITESO").exists()

@@ -14,6 +14,10 @@ from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
+from green_iteso.accounts.management.demo_seed_helpers import (
+    demo_action_log_identity,
+    expected_demo_action_status,
+)
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands.load_catalog import (
     DEFAULT_CATALOG,
@@ -36,11 +40,6 @@ from green_iteso.campaigns.models import (
 )
 
 DEMO_NAMESPACE = uuid.UUID("07f77703-1ce2-4797-a9c3-571f6d71df7b")
-DEMO_STATUSES = (
-    ActionLog.Status.APPROVED,
-    ActionLog.Status.PENDING_AUDIT,
-    ActionLog.Status.REJECTED,
-)
 DEMO_PRIVATE_CLAN_DESCRIPTION = (
     "Synthetic demo clan; not an institutional catalog value."
 )
@@ -65,6 +64,15 @@ class CampaignSeedContext:
     campaign: Campaign
     missions: list[Mission]
     as_of: datetime
+
+
+@dataclass(frozen=True)
+class SecondaryCampaignCounts:
+    """Rows written by the campaigns seeded besides the main active one."""
+
+    created: int
+    campaigns: int
+    missions: int
 
 
 @dataclass(frozen=True)
@@ -520,6 +528,71 @@ def create_additional_campaigns(
     return created_count, len(scenarios)
 
 
+def create_intro_campaign(
+    users: list[User], actions: list[ActionMaster], as_of: datetime
+) -> tuple[int, int]:
+    """Create the campaign first-login enrollment finds by its settings id/title.
+
+    Three missions, no participants. Returns ``(campaigns_created, missions)``.
+    """
+    try:
+        pk = uuid.UUID(settings.INTRO_CAMPAIGN_ID)
+    except ValueError:
+        pk = demo_id("campaign", "intro")
+    campaign, was_created = Campaign.objects.get_or_create(
+        pk=pk,
+        defaults={
+            "title": settings.INTRO_CAMPAIGN_TITLE,
+            "description": DEMO_CAMPAIGN_DESCRIPTION,
+            "scope": Campaign.Scope.GLOBAL,
+            "status": Campaign.Status.IN_PROGRESS,
+            "creator": users[0],
+            "start_date": as_of - timedelta(days=30),
+            "end_date": as_of + timedelta(days=365),
+        },
+    )
+    if not was_created and (
+        campaign.creator_id != users[0].pk
+        or campaign.scope != Campaign.Scope.GLOBAL
+        or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+    ):
+        raise CommandError(
+            "Demo campaign identity collision; existing campaign was preserved."
+        )
+    intro_actions = actions[:3]
+    for index, action in enumerate(intro_actions, start=1):
+        mission, mission_created = Mission.objects.get_or_create(
+            pk=demo_id("mission", f"intro-{index}"),
+            defaults={"campaign": campaign, "action": action, "target_count": 1},
+        )
+        if not mission_created and (
+            mission.campaign_id != campaign.pk or mission.action_id != action.pk
+        ):
+            raise CommandError(
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
+            )
+    return int(was_created), len(intro_actions)
+
+
+def create_secondary_campaigns(
+    users: list[User],
+    actions: list[ActionMaster],
+    private_clans: list[Clan],
+    as_of: datetime,
+) -> SecondaryCampaignCounts:
+    """Seed the scenario campaigns and the intro campaign."""
+    additional_created, scenarios = create_additional_campaigns(
+        users, actions, private_clans, as_of
+    )
+    intro_created, intro_missions = create_intro_campaign(users, actions, as_of)
+    return SecondaryCampaignCounts(
+        created=additional_created + intro_created,
+        campaigns=scenarios + 1,
+        missions=scenarios + intro_missions,
+    )
+
+
 def add_mission_contribution(
     index: int,
     status: str,
@@ -609,49 +682,6 @@ def create_demo_action_log(
             institutional_clan,
             credited_private_clan,
         ),
-    )
-
-
-def expected_demo_action_status(
-    index: int, actions: list[ActionMaster]
-) -> tuple[ActionMaster, str]:
-    """Return the deterministic synthetic action and compatible status."""
-    action = actions[index % len(actions)]
-    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-    if status == ActionLog.Status.PENDING_AUDIT:
-        photo_action = next(
-            (
-                candidate
-                for candidate in actions
-                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
-            ),
-            None,
-        )
-        if photo_action is not None:
-            action = photo_action
-        else:
-            status = ActionLog.Status.APPROVED
-    return action, status
-
-
-def demo_action_log_identity(log: ActionLog) -> tuple[Any, ...]:
-    """Return immutable and review-state fields used to verify a demo log."""
-    return (
-        log.idempotency_key,
-        log.user_id,
-        log.action_id,
-        log.institutional_clan_id,
-        log.credited_private_clan_id,
-        log.status,
-        log.points_awarded,
-        log.co2_kg_factor_snapshot,
-        log.water_liters_factor_snapshot,
-        log.plastic_kg_factor_snapshot,
-        log.campaign_id,
-        log.evidence_object_key,
-        log.reviewed_by_id,
-        log.reviewed_at is not None,
-        log.rejection_reason,
     )
 
 
@@ -890,9 +920,7 @@ def create_log_seed_context(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    additional_campaigns = create_additional_campaigns(
-        users, actions, private_clans, as_of
-    )
+    secondary = create_secondary_campaigns(users, actions, private_clans, as_of)
     return LogSeedContext(
         users=users,
         profiles=profiles,
@@ -902,9 +930,9 @@ def create_log_seed_context(
         metadata=DemoSeedMetadata(
             institutional_clans=institutional_clans,
             user_created=user_created,
-            campaigns_created=int(campaign_created) + additional_campaigns[0],
-            campaign_count=1 + additional_campaigns[1],
-            mission_count=len(missions) + additional_campaigns[1],
+            campaigns_created=int(campaign_created) + secondary.created,
+            campaign_count=1 + secondary.campaigns,
+            mission_count=len(missions) + secondary.missions,
             shared_dev=shared_dev,
         ),
     )

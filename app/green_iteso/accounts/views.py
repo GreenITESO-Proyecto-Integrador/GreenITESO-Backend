@@ -32,7 +32,11 @@ from green_iteso.core.throttling import (
     RefreshTokenIdentityThrottle,
 )
 
-from .avatars import PROFILE_AVATAR_PREFIX
+from .avatars import (
+    PROFILE_AVATAR_PREFIX,
+    avatar_version,
+    is_valid_private_avatar_signature,
+)
 from .exceptions import RequestValidationError
 from .models import User, UserProfile
 from .moderation import STATUS_FILTERS, ban_user, filter_users, unban_user
@@ -286,7 +290,9 @@ class LoginView(FirstRejectionThrottleMixin, APIView):
                 "created": result.created,
                 "reactivated": result.reactivated,
             },
-            context={"request": request},
+            # The request is anonymous, but the account was just verified: it
+            # sees its own photo even when its profile is PRIVATE (#238).
+            context={"request": request, "viewer": result.user},
         )
         return Response(body.data, status=status.HTTP_200_OK)
 
@@ -423,9 +429,12 @@ class ProfileAvatarView(APIView):
 class ProfileAvatarImageView(APIView):
     """Serve a user's uploaded profile photo (#170).
 
-    Open to anyone: an ``<img>`` can't send the Bearer token, and the photo
-    is shown wherever the user appears (feed, clans, rankings). It only
-    serves files uploaded through ``ProfileAvatarView``, never a pasted link.
+    Open to anyone: an ``<img>`` can't send the Bearer token. A public
+    profile's photo is shown wherever the user appears (feed, clans,
+    rankings). A ``PRIVATE`` profile's photo needs the ``sig`` that only the
+    person and admins receive in ``avatar_url``; without it the answer is 404,
+    the same as having no photo (#238). It only serves files uploaded through
+    ``ProfileAvatarView``, never a pasted link.
     """
 
     authentication_classes: list[type] = []
@@ -435,16 +444,32 @@ class ProfileAvatarImageView(APIView):
         responses={
             (200, "image/*"): OpenApiTypes.BINARY,
             302: OpenApiResponse(description="Redirect to a short-lived signed URL."),
-            404: OpenApiResponse(description="The user has no uploaded photo."),
+            404: OpenApiResponse(
+                description=(
+                    "The user has no uploaded photo, or the profile is private "
+                    "and `sig` is missing or not valid for this photo."
+                )
+            ),
         },
     )
-    def get(self, _request: Request, user_id: UUID) -> HttpResponseBase:
+    def get(self, request: Request, user_id: UUID) -> HttpResponseBase:
         """Redirect to (deployed) or stream (local) the stored photo."""
-        object_key = (
+        row = (
             UserProfile.objects.filter(user_id=user_id, user__is_active=True)
-            .values_list("avatar_object_key", flat=True)
+            .values_list("avatar_object_key", "visibility")
             .first()
         )
+        object_key, visibility = row or ("", None)
+        if (
+            object_key
+            and visibility == UserProfile.Visibility.PRIVATE
+            and not is_valid_private_avatar_signature(
+                user_id,
+                avatar_version(object_key),
+                request.query_params.get("sig", ""),
+            )
+        ):
+            raise NotFound()
         response = image_response(PROFILE_AVATAR_PREFIX, user_id, object_key or "")
         if response is None:
             raise NotFound()

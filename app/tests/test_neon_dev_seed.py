@@ -1387,7 +1387,7 @@ def test_seed_retires_empty_legacy_clans_and_accepts_manual_retirement(
     monkeypatch.setattr(seed_neon_dev, "ensure_tls_connection", lambda: None)
     options = {"confirm_target": "dev", "as_of": "2030-01-15T12:00:00+00:00"}
     call_command("seed_neon_dev", **options, verbosity=0)
-    assert set(list_institutional_careers()) == set(DEV_CAREERS)
+    assert set(list_institutional_careers(role=User.Role.STUDENT)) == set(DEV_CAREERS)
     legacy = Clan.all_objects.filter(
         name__in=seed_neon_dev.LEGACY_INSTITUTIONAL_CLAN_NAMES
     )

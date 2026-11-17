@@ -433,6 +433,36 @@ class PostAPITests(APITestCase):
 
         self.assertEqual(Notification.objects.filter(user=self.author).count(), 1)
 
+    def test_like_after_unlike_does_not_notify_again(self) -> None:
+        self.client.force_authenticate(user=self.other_user)
+        like_url = f"{self.detail_url}like/"
+
+        self.client.post(like_url)
+        self.client.delete(like_url)
+        self.client.post(like_url)
+
+        self.assertEqual(Notification.objects.filter(user=self.author).count(), 1)
+
+    def test_like_from_private_profile_hides_the_real_name(self) -> None:
+        profile, _ = UserProfile.objects.get_or_create(user=self.other_user)
+        profile.visibility = UserProfile.Visibility.PRIVATE
+        profile.save()
+        self.client.force_authenticate(user=self.other_user)
+
+        self.client.post(f"{self.detail_url}like/")
+
+        notification = Notification.objects.get(user=self.author)
+        self.assertNotIn("Other", notification.message)
+
+    def test_like_endpoint_is_throttled(self) -> None:
+        self.client.force_authenticate(user=self.other_user)
+        like_url = f"{self.detail_url}like/"
+
+        codes = [self.client.post(like_url).status_code for _ in range(31)]
+
+        self.assertEqual(codes[:30], [status.HTTP_200_OK] * 30)
+        self.assertEqual(codes[30], status.HTTP_429_TOO_MANY_REQUESTS)
+
     def test_self_like_does_not_notify(self) -> None:
         self.client.force_authenticate(user=self.author)
 

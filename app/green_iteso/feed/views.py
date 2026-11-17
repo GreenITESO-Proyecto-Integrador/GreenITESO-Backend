@@ -37,8 +37,7 @@ from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.images import FEED_IMAGE_PREFIX, schedule_feed_image_cleanup
 from green_iteso.feed.models import Post, PostLike
 from green_iteso.feed.serializers import FeedListQuerySerializer, PostSerializer
-from green_iteso.notifications.models import NotificationType
-from green_iteso.notifications.services import notify
+from green_iteso.feed.services import like_post, unlike_post
 
 # pylint: disable=no-member
 
@@ -75,6 +74,8 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
 
     serializer_class = PostSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
+    # Declared so ``@action`` can set a scope for the like endpoint only.
+    throttle_scope: str | None = None
 
     def get_queryset(self) -> QuerySet[Post]:
         user = self.request.user
@@ -141,6 +142,8 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         detail=True,
         methods=["post", "delete"],
         permission_classes=[permissions.IsAuthenticated],
+        throttle_classes=[ScopedRateThrottle],
+        throttle_scope="feed_like",
         url_path="like",
     )
     def like(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
@@ -151,20 +154,10 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
         """
         post = self.get_object()
         if request.method == "DELETE":
-            PostLike.objects.filter(post=post, user=request.user).delete()
+            unlike_post(post=post, user=request.user)
             liked_by_me = False
         else:
-            with transaction.atomic():
-                _, created = PostLike.objects.get_or_create(
-                    post=post, user=request.user
-                )
-                # Only a new like notifies, so retries and double taps stay quiet.
-                if created and post.author is not None and post.author != request.user:
-                    notify(
-                        post.author,
-                        NotificationType.POST_LIKED,
-                        liker_name=request.user.name_shown_to_others(),
-                    )
+            like_post(post=post, user=request.user)
             liked_by_me = True
 
         likes_count = PostLike.objects.filter(post=post).count()

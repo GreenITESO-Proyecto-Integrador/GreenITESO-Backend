@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from green_iteso.accounts.models import Clan, ClanInvitation, ClanMembership, User
 
-from .careers import INSTITUTIONAL_CAREERS
+from .careers import careers_for_role
 
 
 def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
@@ -35,14 +35,14 @@ def list_active_clans(*, user: User, search: str = "") -> QuerySet[Clan]:
     return queryset
 
 
-def list_institutional_careers() -> list[str]:
-    """Return the careers users can pick during onboarding (#163, #213).
+def list_institutional_careers(*, role: str) -> list[str]:
+    """Return the careers a user with ``role`` can pick during onboarding (#163, #213).
 
     The curated catalog, not the institutional clans in the database: a
     career is offered before its clan exists, and clans created earlier from
     free text are never offered.
     """
-    return sorted(INSTITUTIONAL_CAREERS)
+    return careers_for_role(role)
 
 
 def get_pending_join_requests(*, clan_id: uuid.UUID) -> QuerySet[ClanMembership]:

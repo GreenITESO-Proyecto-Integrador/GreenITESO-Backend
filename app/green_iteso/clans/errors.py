@@ -23,6 +23,10 @@ class UnknownCareerError(ValueError):
     """Raised when onboarding names a career outside the curated catalog (#213)."""
 
 
+class CareerNotAllowedForRoleError(ValueError):
+    """Raised when onboarding names a catalog career the user's role cannot pick."""
+
+
 class AlreadyLeadingAClanError(ValueError):
     """Raised when BR-04's single-leadership-per-user rule would be violated."""
 

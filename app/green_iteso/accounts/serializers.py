@@ -11,7 +11,8 @@ from rest_framework import serializers
 from green_iteso.actions.models import ActionCategory
 
 from .avatars import public_avatar_url, user_avatar_url
-from .models import User, UserProfile, UserRoleAudit
+from .models import User, UserBanAudit, UserProfile, UserRoleAudit
+from .moderation import account_status
 from .selectors import EcologicalProfile
 from .services import nickname_change_cost
 
@@ -20,12 +21,18 @@ _MAX_PREFERENCES_BYTES = 10_000
 
 
 class UserAvatarMixin(serializers.Serializer):  # pylint: disable=abstract-method
-    """Adds the user's profile photo URL (#170); "" when there is none."""
+    """Adds the user's profile photo URL (#170); "" when there is none.
+
+    A ``viewer`` in the context overrides ``request.user`` as the person the
+    photo is shown to (login, whose request is still anonymous).
+    """
 
     avatar_url = serializers.SerializerMethodField()
 
     def get_avatar_url(self, user: User) -> str:
-        return user_avatar_url(user, self.context.get("request"))
+        return user_avatar_url(
+            user, self.context.get("request"), viewer=self.context.get("viewer")
+        )
 
 
 class UserSerializer(UserAvatarMixin, serializers.ModelSerializer):
@@ -35,6 +42,32 @@ class UserSerializer(UserAvatarMixin, serializers.ModelSerializer):
         model = User
         fields = ["id", "email", "role", "date_joined", "avatar_url"]
         read_only_fields = fields
+
+
+class AdminUserSerializer(UserSerializer):
+    """What an admin sees of an account: names and whether it is banned."""
+
+    status = serializers.SerializerMethodField(
+        help_text="ACTIVE, BANNED (by an admin) or SELF_DEACTIVATED (by the user)."
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "nickname",
+            "role",
+            "date_joined",
+            "avatar_url",
+            "status",
+        ]
+        read_only_fields = fields
+
+    def get_status(self, user: User) -> str:
+        return account_status(user)
 
 
 class ChangeRoleRequestSerializer(serializers.Serializer):  # pylint: disable=abstract-method
@@ -59,6 +92,15 @@ class UserRoleAuditSerializer(serializers.ModelSerializer):
             "new_role",
             "created_at",
         ]
+        read_only_fields = fields
+
+
+class UserBanAuditSerializer(serializers.ModelSerializer):
+    """One ban or unban of an account: who did it and when."""
+
+    class Meta:
+        model = UserBanAudit
+        fields = ["id", "user", "performed_by", "action", "created_at"]
         read_only_fields = fields
 
 

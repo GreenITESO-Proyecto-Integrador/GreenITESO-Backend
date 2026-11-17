@@ -170,6 +170,8 @@ REST_FRAMEWORK = {
         "auth_ip": "300/min",
         "clan_invite_redeem": "10/min",
         "profile_avatar": "10/min",
+        "feed_image_upload": "10/min",
+        "feed_like": "30/min",
     },
 }
 
@@ -191,14 +193,22 @@ elif DEPLOYED and CONNECTION_ROLE == "app":
         stacklevel=1,
     )
 
-# Throttle counters live in this cache. LocMemCache is per process; the larger
-# MAX_ENTRIES keeps many distinct auth buckets from evicting each other until a
-# shared cache (Redis) replaces it.
+# Auth throttle counters (#186) live in PostgreSQL so every worker, instance
+# and revision shares one count and a restart does not reset it (#217). The
+# table comes from accounts migration 0022, not from createcachetable. Other
+# throttles stay in the per-process default cache.
+THROTTLE_CACHE_ALIAS = "throttle"
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "OPTIONS": {"MAX_ENTRIES": 10000},
-    }
+    },
+    THROTTLE_CACHE_ALIAS: {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "accounts_auth_throttle_cache",
+        # Expired rows are culled once the table passes this size.
+        "OPTIONS": {"MAX_ENTRIES": 10000},
+    },
 }
 
 SIMPLE_JWT = {
@@ -233,6 +243,12 @@ MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
 ALLOWED_EMAIL_DOMAIN = (
     os.environ.get("ALLOWED_EMAIL_DOMAIN", "iteso.mx").strip().lower()
 )
+INTRO_CAMPAIGN_ID = os.environ.get(
+    "INTRO_CAMPAIGN_ID", "90000000-0000-4000-8000-0000000000a1"
+).strip()
+INTRO_CAMPAIGN_TITLE = os.environ.get(
+    "INTRO_CAMPAIGN_TITLE", "Campaña de introducción"
+).strip()
 STAFF_EMAILS = [
     email.strip().lower()
     for email in os.environ.get("STAFF_EMAILS", "").split(",")

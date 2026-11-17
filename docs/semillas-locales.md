@@ -59,10 +59,12 @@ python app/manage.py seed_demo
 ```
 
 El comando crea 20 usuarios sintéticos, clanes institucionales DRAFT, dos
-clanes privados y membresías. Incluye cuatro campañas: una global activa,
-una global futura, una global terminada con ocho participantes y una privada
-activa con ocho participantes de su clan. Las cinco misiones permiten probar
-progreso y listas con y sin participación. También crea 24 logs
+clanes privados y membresías. Incluye cinco campañas: una global activa,
+una global futura, una global terminada con ocho participantes, una privada
+activa con ocho participantes de su clan y la campaña de introducción (ID y
+título de `INTRO_CAMPAIGN_ID` / `INTRO_CAMPAIGN_TITLE`, tres misiones, sin
+participantes: el primer login inscribe a cada usuario nuevo). Las ocho misiones
+permiten probar progreso y listas con y sin participación. También crea 24 logs
 `APPROVED`, `PENDING_AUDIT` y `REJECTED`. Los IDs e idempotency keys son
 deterministas; ejecutarlo varias veces conserva una sola copia, pero si un ID
 determinista existente no coincide con la identidad demo esperada, el comando
@@ -126,12 +128,23 @@ El catálogo DRAFT local y `bootstrap_dev` siguen siendo exclusivamente locales.
 `seed_neon_dev` usa una fixture DRAFT **distinta**, fija y versionada:
 `app/green_iteso/actions/fixtures/catalog_dev_synthetic_v1.json`. Sólo está
 autorizada para Neon dev; sus acciones, puntos e impactos son ficticios y no
-representan ratificación de Producto. No contiene carreras institucionales.
+representan ratificación de Producto. Incluye cuatro carreras autodeclaradas
+para la demo: Ingeniería en Desarrollo de Software, Ingeniería en Sistemas
+Computacionales, Ingeniería en Mecatrónica e Ingeniería en Ciberseguridad.
+No acredita la carrera oficial de una persona ni constituye catálogo aprobado.
 El comando no acepta rutas arbitrarias. Calcula el SHA-256 del archivo y lo
 compara con `NEON_DEV_SYNTHETIC_CATALOG_SHA256` suministrado en el entorno de
 ejecución; un pin ausente o distinto detiene la carga antes de escribir.
 Calcula el pin con `shasum -a 256` sobre el archivo revisado. No reutilices
 `NEON_DEV_APPROVED_CATALOG_SHA256`: ese pin pertenece sólo a `release_catalog`.
+Para la fixture incluida en esta revisión, el SHA-256 es
+`e49c181ab09034ad5621abaf7d613f5178881a409278454434bf8a6f941c63aa`.
+Vuelve a calcularlo y comparar los bytes antes de cualquier ejecución; este
+valor no autoriza ni ejecuta el seed.
+
+El seed también prepara la campaña de introducción con el usuario demo 01
+como creador. Incluye esa campaña y sus misiones al revisar el impacto de una
+ejecución compartida en Neon dev.
 
 Usa únicamente el endpoint pooled canónico `dev`, TLS `verify-full` y el rol
 `greeniteso_dev_app`. Mantén la URL en el entorno de ejecución o secreto
@@ -151,12 +164,33 @@ El comando comprueba el ambiente, host, rol, TLS configurado y TLS de la
 conexión; exige `--confirm-target dev`; valida el catálogo completo antes de
 escribir; y carga catálogo y demo en una transacción. Los usuarios sintéticos
 son `STUDENT` (nunca `ADMIN`/`STAFF`), con correo `example.invalid` y sin
-identidad Microsoft Entra ni contraseña. Como la fixture sintética no tiene
-carreras canónicas, el comando crea tres clanes
-institucionales **sintéticos exclusivos de dev** con nombres `Demo institutional
-clan` y carreras `DEMO-CAREER`. No se agregan a la futura fixture aprobada ni a
-staging/production. IDs y claves son deterministas, los choques
-se rechazan y una segunda ejecución es idempotente. Esta operación no forma
+identidad Microsoft Entra ni contraseña. Los clanes de carrera usan los UUID
+estables de la fixture cuando no existe uno del mismo nombre. Si onboarding ya
+creó un clan institucional público sin creador, el seed adopta su UUID y conserva
+su descripción, membresías, perfiles y saldos ajenos a la demo. Una fila dada de
+baja se restaura si es la única candidata; si existe una fila activa del mismo
+nombre, se usa esa y se transfieren únicamente las referencias y puntos demo
+verificados. Varios candidatos dados de baja sin uno activo son ambiguos: el
+comando aborta sin escribir y requiere revisión del operador. También rechaza
+colisiones con clanes privados o identidades estables editadas.
+
+La reconciliación v1 mueve únicamente los 20 perfiles demo, sus membresías y
+los 24 logs sintéticos cuya identidad completa se comprueba antes de escribir.
+Incluye los logs `APPROVED`: se trasladan sus puntos entre clanes sin cambiar
+saldos ni atribución histórica de otras personas. Los tres clanes legados
+`Demo institutional clan` se dan de baja lógica si quedan sin perfiles,
+membresías ni logs, para quitarlos del selector. Si conservan referencias
+ajenas, se mantienen; una baja manual posterior no rompe las siguientes
+corridas. No se borran filas. Los estados parciales, incompatibles o editados
+se rechazan transaccionalmente. El candado advisory serializa las corridas;
+un conflicto concurrente requiere reintentar con el estado confirmado.
+
+Los UUID demo y las claves siguen siendo deterministas, y la segunda ejecución
+es idempotente. Al cambiar los bytes de la fixture, el operador debe revisar
+el diff y **actualizar `NEON_DEV_SYNTHETIC_CATALOG_SHA256`** con el digest de ese
+archivo exacto antes de ejecutar. Este cambio no actualiza el secreto ni ejecuta
+el seed en Neon. Esa ejecución requiere autorización explícita y confirmar
+proyecto, rama `dev`, base y estado previo esperado. Esta operación no forma
 parte de la migración al merge ni de un deploy automático. No se cargan semillas
 en staging/preprod ni en production. El comando se probó con PostgreSQL 18
 local y se ejecutó con autorización en Neon `dev` el 2026-09-28; el
@@ -207,6 +241,30 @@ usuarios, actividad, campañas ni datos demo. Es una ejecución manual fuera del
 flujo de migración/despliegue; este trabajo no ejecuta el comando contra Neon,
 especialmente en production. No agregues valores ni configures pins sin la
 decisión registrada de Product.
+
+## Campaña de introducción en staging y production
+
+> **Contexto:** esta campaña existe para la demo de la expo DESI. El alcance
+> actual es el mínimo para que funcione y necesita continuidad después de la
+> demo (ver "Pendiente de continuidad").
+
+Ninguna migración ni semilla crea esta campaña fuera de local y Neon dev. En
+staging y production el primer login solo registra `Intro campaign not found` si
+nadie la creó, y el usuario no queda inscrito. Para que la inscripción
+automática funcione, un admin crea una campaña global, aprobada y abierta
+(sin `FINISHED` y con `end_date` futura) con misiones, cuyo título sea
+exactamente `INTRO_CAMPAIGN_TITLE` (por defecto `Campaña de introducción`). La
+API no permite elegir el `id`, así que se encuentra por título; `INTRO_CAMPAIGN_ID`
+solo aplica a la campaña sembrada. Los usuarios que ya entraron no se inscriben
+de forma retroactiva.
+
+### Pendiente de continuidad
+
+- Decidir con E3 si la campaña debe existir en todos los ambientes mediante una
+  migración de datos.
+- Definir qué pasa al cerrarse: hoy hay que crear otra con el mismo título.
+- Decidir si los usuarios existentes se inscriben de forma retroactiva.
+- Alertar sobre el log `"Intro campaign auto-enrollment failed."`.
 
 ## Identidad y Admin local
 

@@ -14,6 +14,10 @@ from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
+from green_iteso.accounts.management.demo_seed_helpers import (
+    demo_action_log_identity,
+    expected_demo_action_status,
+)
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands.load_catalog import (
     DEFAULT_CATALOG,
@@ -36,11 +40,6 @@ from green_iteso.campaigns.models import (
 )
 
 DEMO_NAMESPACE = uuid.UUID("07f77703-1ce2-4797-a9c3-571f6d71df7b")
-DEMO_STATUSES = (
-    ActionLog.Status.APPROVED,
-    ActionLog.Status.PENDING_AUDIT,
-    ActionLog.Status.REJECTED,
-)
 DEMO_PRIVATE_CLAN_DESCRIPTION = (
     "Synthetic demo clan; not an institutional catalog value."
 )
@@ -65,6 +64,15 @@ class CampaignSeedContext:
     campaign: Campaign
     missions: list[Mission]
     as_of: datetime
+
+
+@dataclass(frozen=True)
+class SecondaryCampaignCounts:
+    """Rows written by the campaigns seeded besides the main active one."""
+
+    created: int
+    campaigns: int
+    missions: int
 
 
 @dataclass(frozen=True)
@@ -520,6 +528,71 @@ def create_additional_campaigns(
     return created_count, len(scenarios)
 
 
+def create_intro_campaign(
+    users: list[User], actions: list[ActionMaster], as_of: datetime
+) -> tuple[int, int]:
+    """Create the campaign first-login enrollment finds by its settings id/title.
+
+    Three missions, no participants. Returns ``(campaigns_created, missions)``.
+    """
+    try:
+        pk = uuid.UUID(settings.INTRO_CAMPAIGN_ID)
+    except ValueError:
+        pk = demo_id("campaign", "intro")
+    campaign, was_created = Campaign.objects.get_or_create(
+        pk=pk,
+        defaults={
+            "title": settings.INTRO_CAMPAIGN_TITLE,
+            "description": DEMO_CAMPAIGN_DESCRIPTION,
+            "scope": Campaign.Scope.GLOBAL,
+            "status": Campaign.Status.IN_PROGRESS,
+            "creator": users[0],
+            "start_date": as_of - timedelta(days=30),
+            "end_date": as_of + timedelta(days=365),
+        },
+    )
+    if not was_created and (
+        campaign.creator_id != users[0].pk
+        or campaign.scope != Campaign.Scope.GLOBAL
+        or not campaign.description.startswith(DEMO_CAMPAIGN_DESCRIPTION)
+    ):
+        raise CommandError(
+            "Demo campaign identity collision; existing campaign was preserved."
+        )
+    intro_actions = actions[:3]
+    for index, action in enumerate(intro_actions, start=1):
+        mission, mission_created = Mission.objects.get_or_create(
+            pk=demo_id("mission", f"intro-{index}"),
+            defaults={"campaign": campaign, "action": action, "target_count": 1},
+        )
+        if not mission_created and (
+            mission.campaign_id != campaign.pk or mission.action_id != action.pk
+        ):
+            raise CommandError(
+                "Demo mission identity collision; existing mission was preserved. "
+                "See docs/semillas-locales.md before repairing legacy demo data."
+            )
+    return int(was_created), len(intro_actions)
+
+
+def create_secondary_campaigns(
+    users: list[User],
+    actions: list[ActionMaster],
+    private_clans: list[Clan],
+    as_of: datetime,
+) -> SecondaryCampaignCounts:
+    """Seed the scenario campaigns and the intro campaign."""
+    additional_created, scenarios = create_additional_campaigns(
+        users, actions, private_clans, as_of
+    )
+    intro_created, intro_missions = create_intro_campaign(users, actions, as_of)
+    return SecondaryCampaignCounts(
+        created=additional_created + intro_created,
+        campaigns=scenarios + 1,
+        missions=scenarios + intro_missions,
+    )
+
+
 def add_mission_contribution(
     index: int,
     status: str,
@@ -545,21 +618,7 @@ def create_demo_action_log(
 ) -> SeededActionLog:
     """Create or validate one stable synthetic action log."""
     user = context.users[index % len(context.users)]
-    action = context.actions[index % len(context.actions)]
-    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-    if status == ActionLog.Status.PENDING_AUDIT:
-        photo_action = next(
-            (
-                candidate
-                for candidate in context.actions
-                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
-            ),
-            None,
-        )
-        if photo_action is not None:
-            action = photo_action
-        else:
-            status = ActionLog.Status.APPROVED
+    action, status = expected_demo_action_status(index, context.actions)
     idempotency_key = f"demo-action-{index:02d}"
     institutional_clan = context.profiles[user.pk].institutional_clan
     credited_private_clan = context.private_clans[index % len(context.private_clans)]
@@ -606,13 +665,7 @@ def create_demo_action_log(
         getattr(institutional_clan, "pk", None),
         credited_private_clan.pk,
     )
-    existing_identity = (
-        log.idempotency_key,
-        log.user_id,
-        log.action_id,
-        log.institutional_clan_id,
-        log.credited_private_clan_id,
-    )
+    existing_identity = demo_action_log_identity(log)[:5]
     if not was_created and existing_identity != expected_identity:
         raise CommandError(
             "Demo action-log identity collision; existing row was preserved. "
@@ -829,23 +882,36 @@ def refresh_demo_totals(
     )
 
 
+def resolve_demo_careers(
+    catalog: CatalogData,
+    shared_dev: bool,
+    career_clans: list[Clan] | None,
+) -> tuple[list[Clan], dict[uuid.UUID, str] | None]:
+    """Keep local fixture IDs strict and accept validated shared-dev clan rows."""
+    if shared_dev and not catalog.clans:
+        return create_dev_institutional_clans()
+    clans = (
+        career_clans
+        if career_clans is not None
+        else get_catalog_institutional_clans(catalog)
+    )
+    careers_by_name = {item["name"]: item["career"] for item in catalog.clans}
+    return clans, (
+        {clan.pk: careers_by_name[clan.name] for clan in clans} if shared_dev else None
+    )
+
+
 def create_log_seed_context(
-    catalog: CatalogData, as_of: datetime, shared_dev: bool
+    catalog: CatalogData,
+    as_of: datetime,
+    shared_dev: bool,
+    career_clans: list[Clan] | None = None,
 ) -> LogSeedContext:
     """Resolve the catalog and deterministic fixtures needed by the seed."""
     users, user_created = create_demo_users(shared_dev=shared_dev)
-    if shared_dev and not catalog.clans:
-        institutional_clans, careers = create_dev_institutional_clans()
-    else:
-        institutional_clans = get_catalog_institutional_clans(catalog)
-        careers = (
-            {
-                stable_reference_id("institutional-clan", item["key"]): item["career"]
-                for item in catalog.clans
-            }
-            if shared_dev
-            else None
-        )
+    institutional_clans, careers = resolve_demo_careers(
+        catalog, shared_dev, career_clans
+    )
     private_clans = create_private_clans(users)
     profiles = create_profiles_and_memberships(
         users, institutional_clans, private_clans, as_of, careers=careers
@@ -854,9 +920,7 @@ def create_log_seed_context(
     campaign, missions, campaign_created = create_campaign_and_missions(
         users, actions, as_of
     )
-    additional_created, additional_scenarios = create_additional_campaigns(
-        users, actions, private_clans, as_of
-    )
+    secondary = create_secondary_campaigns(users, actions, private_clans, as_of)
     return LogSeedContext(
         users=users,
         profiles=profiles,
@@ -866,19 +930,23 @@ def create_log_seed_context(
         metadata=DemoSeedMetadata(
             institutional_clans=institutional_clans,
             user_created=user_created,
-            campaigns_created=int(campaign_created) + additional_created,
-            campaign_count=1 + additional_scenarios,
-            mission_count=len(missions) + additional_scenarios,
+            campaigns_created=int(campaign_created) + secondary.created,
+            campaign_count=1 + secondary.campaigns,
+            mission_count=len(missions) + secondary.missions,
             shared_dev=shared_dev,
         ),
     )
 
 
 def seed_demo_data(
-    catalog: CatalogData, as_of: datetime, *, shared_dev: bool = False
+    catalog: CatalogData,
+    as_of: datetime,
+    *,
+    shared_dev: bool = False,
+    career_clans: list[Clan] | None = None,
 ) -> DemoSeedResult:
     """Write the complete demo graph inside the caller's transaction."""
-    context = create_log_seed_context(catalog, as_of, shared_dev)
+    context = create_log_seed_context(catalog, as_of, shared_dev, career_clans)
     created_logs, approved_user_points, approved_clan_points = create_action_logs(
         context
     )

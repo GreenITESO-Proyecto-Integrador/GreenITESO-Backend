@@ -92,3 +92,68 @@ class Post(models.Model):
             raise ValidationError(
                 {"badge_user": "The attached badge must belong to the post author."}
             )
+
+
+class PostLike(models.Model):
+    """Single kudos/like from an authenticated user on a feed post."""
+
+    id = models.BigAutoField(primary_key=True)
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="likes",
+        db_column="post_id",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="liked_posts",
+        db_column="user_id",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "feed_post_likes"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["post", "user"],
+                name="feed_post_like_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Like by {self.user_id} on Post {self.post_id}"
+
+
+class PostLikeNotice(models.Model):
+    """Remembers that a user already told a post's author about their like.
+
+    It survives an unlike, so like, unlike, like notifies the author once.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="like_notices",
+        db_column="post_id",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="post_like_notices",
+        db_column="user_id",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "feed_post_like_notices"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["post", "user"],
+                name="feed_post_like_notice_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Like notice by {self.user_id} on Post {self.post_id}"

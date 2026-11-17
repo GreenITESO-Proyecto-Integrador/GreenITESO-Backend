@@ -534,7 +534,13 @@ def test_bootstrap_dev_is_idempotent_and_keeps_points_contribution_shape() -> No
         "contributions": ActionLogMissionContribution.objects.count(),
     }
     assert User.objects.count() == 20
-    assert Campaign.objects.count() == 4
+    assert Campaign.objects.count() == 5
+    intro = Campaign.objects.get(pk=settings.INTRO_CAMPAIGN_ID)
+    assert intro.title == settings.INTRO_CAMPAIGN_TITLE
+    assert intro.scope == Campaign.Scope.GLOBAL
+    assert intro.approval_status == Campaign.ApprovalStatus.APPROVED
+    assert intro.missions.count() == 3
+    assert not CampaignParticipant.objects.filter(campaign=intro).exists()
     assert set(Campaign.objects.values_list("status", flat=True)) == {
         Campaign.Status.PROMOTION,
         Campaign.Status.IN_PROGRESS,

@@ -7,6 +7,7 @@ from collections.abc import Iterator
 import jwt
 import pytest
 from django.core.cache import cache
+from django.db import connection
 from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -34,9 +35,17 @@ def _rates(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             "auth_ip": "5/min",
         },
     )
+    # The auth counters live in the shared DB cache, which each test's
+    # transaction rolls back; the default cache still holds other throttles.
     cache.clear()
     yield
     cache.clear()
+
+
+def _throttle_cache_keys() -> list[str]:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT cache_key FROM accounts_auth_throttle_cache")
+        return [row[0] for row in cursor.fetchall()]
 
 
 def _id_token(oid: str) -> str:
@@ -148,8 +157,7 @@ def test_a_huge_oid_keeps_the_cache_key_short() -> None:
 
     _login(client, "x" * 200_000)
 
-    # LocMemCache keeps its entries in ``_cache``; every key must stay small.
-    keys = list(cache._cache)  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    keys = _throttle_cache_keys()
     assert keys
     assert max(len(key) for key in keys) < 200
 
@@ -202,3 +210,25 @@ def test_a_valid_refresh_is_not_blocked_by_an_exhausted_ip_ceiling() -> None:
 
     assert _refresh(client, str(RefreshToken.for_user(user))) == 200
     assert _refresh(client, "not-a-valid-refresh-token") == 429
+
+
+@pytest.mark.django_db
+def test_auth_counters_are_shared_across_processes() -> None:
+    """A fresh worker (empty local memory) still sees the count (#217)."""
+    client = APIClient()
+    first = [_login(client, "oid-shared") for _ in range(2)]
+
+    # What another Gunicorn worker or a restarted instance starts with.
+    cache.clear()
+
+    assert first == [401, 401]
+    assert _login(client, "oid-shared") == 429
+    assert _throttle_cache_keys()
+
+
+@pytest.mark.django_db
+def test_auth_counters_stay_out_of_the_per_process_cache() -> None:
+    _login(APIClient(), "oid-local")
+
+    keys = list(cache._cache)  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    assert not [key for key in keys if "auth_" in key]

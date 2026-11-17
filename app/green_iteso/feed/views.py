@@ -37,6 +37,8 @@ from green_iteso.core.permissions import IsAdmin
 from green_iteso.feed.images import FEED_IMAGE_PREFIX, schedule_feed_image_cleanup
 from green_iteso.feed.models import Post, PostLike
 from green_iteso.feed.serializers import FeedListQuerySerializer, PostSerializer
+from green_iteso.notifications.models import NotificationType
+from green_iteso.notifications.services import notify
 
 # pylint: disable=no-member
 
@@ -152,7 +154,17 @@ class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
             PostLike.objects.filter(post=post, user=request.user).delete()
             liked_by_me = False
         else:
-            PostLike.objects.get_or_create(post=post, user=request.user)
+            with transaction.atomic():
+                _, created = PostLike.objects.get_or_create(
+                    post=post, user=request.user
+                )
+                # Only a new like notifies, so retries and double taps stay quiet.
+                if created and post.author is not None and post.author != request.user:
+                    notify(
+                        post.author,
+                        NotificationType.POST_LIKED,
+                        liker_name=request.user.name_shown_to_others(),
+                    )
             liked_by_me = True
 
         likes_count = PostLike.objects.filter(post=post).count()

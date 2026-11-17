@@ -11,6 +11,7 @@ from rest_framework.test import APITestCase
 from green_iteso.accounts.models import UserProfile
 from green_iteso.feed.models import Post, PostType
 from green_iteso.gamification.models import Badge, UserBadge
+from green_iteso.notifications.models import Notification
 
 User = get_user_model()
 
@@ -411,6 +412,53 @@ class PostAPITests(APITestCase):
         self.assertTrue(second.data["liked_by_me"])
         self.assertEqual(second.data["likes_count"], 1)
         self.assertEqual(self.post.likes.count(), 1)
+
+    def test_first_like_notifies_the_author(self) -> None:
+        self.client.force_authenticate(user=self.other_user)
+
+        self.client.post(f"{self.detail_url}like/")
+
+        notification = Notification.objects.get(user=self.author)
+        self.assertEqual(
+            notification.notification_type, Notification.NotificationType.POST_LIKED
+        )
+        self.assertIn("Other", notification.message)
+
+    def test_repeated_like_does_not_notify_again(self) -> None:
+        self.client.force_authenticate(user=self.other_user)
+        like_url = f"{self.detail_url}like/"
+
+        self.client.post(like_url)
+        self.client.post(like_url)
+
+        self.assertEqual(Notification.objects.filter(user=self.author).count(), 1)
+
+    def test_self_like_does_not_notify(self) -> None:
+        self.client.force_authenticate(user=self.author)
+
+        self.client.post(f"{self.detail_url}like/")
+
+        self.assertFalse(Notification.objects.filter(user=self.author).exists())
+
+    def test_unlike_does_not_notify(self) -> None:
+        self.client.force_authenticate(user=self.other_user)
+
+        self.client.delete(f"{self.detail_url}like/")
+
+        self.assertFalse(Notification.objects.filter(user=self.author).exists())
+
+    def test_like_on_authorless_post_does_not_notify(self) -> None:
+        post = Post.objects.create(
+            author=None,
+            post_type=PostType.OFFICIAL_ANNOUNCEMENT,
+            content="Anuncio oficial.",
+        )
+        self.client.force_authenticate(user=self.other_user)
+
+        res = self.client.post(f"/api/v1/feed/{post.pk}/like/")
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(Notification.objects.exists())
 
     def test_repeated_unlike_keeps_the_post_unliked(self) -> None:
         """DELETE without a like, or twice, is a no-op that reports the state."""

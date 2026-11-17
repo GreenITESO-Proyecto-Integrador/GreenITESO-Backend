@@ -540,10 +540,10 @@ class InstitutionalCareersView(APIView):
     """List the careers offered in the onboarding picker (#163)."""
 
     @extend_schema(responses=InstitutionalCareersSerializer)
-    def get(self, _request: Request) -> Response:
-        """Return the curated career catalog, sorted (#213)."""
+    def get(self, request: Request) -> Response:
+        """Return the career catalog the caller's role may pick, sorted (#213)."""
         return Response(
             InstitutionalCareersSerializer(
-                {"careers": list_institutional_careers()}
+                {"careers": list_institutional_careers(role=request.user.role)}
             ).data
         )

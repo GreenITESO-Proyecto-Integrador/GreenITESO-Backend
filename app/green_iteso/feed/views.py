@@ -6,13 +6,20 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from django.db.models import QuerySet
+from django.db import transaction
+from django.db.models import BooleanField, Count, Exists, OuterRef, QuerySet, Value
 from django.http import HttpResponseBase
 from django.urls import reverse
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+    inline_serializer,
+)
 from PIL import Image
 from rest_framework import permissions, serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
@@ -27,14 +34,13 @@ from green_iteso.core.image_storage import (
     validate_image,
 )
 from green_iteso.core.permissions import IsAdmin
-from green_iteso.feed.models import Post
-from green_iteso.feed.serializers import PostSerializer
+from green_iteso.feed.images import FEED_IMAGE_PREFIX, schedule_feed_image_cleanup
+from green_iteso.feed.models import Post, PostLike
+from green_iteso.feed.serializers import FeedListQuerySerializer, PostSerializer
 
 # pylint: disable=no-member
 
 logger = logging.getLogger(__name__)
-
-FEED_IMAGE_PREFIX = "feed"
 
 
 def _ensure_decodable(uploaded: Any) -> None:
@@ -61,23 +67,99 @@ class IsAuthorOrReadOnly(permissions.BasePermission):
         return obj.author == request.user
 
 
+@extend_schema_view(list=extend_schema(parameters=[FeedListQuerySerializer]))
 class PostViewSet(viewsets.ModelViewSet):  # pylint: disable=too-many-ancestors
-    """ViewSet handling CRUD operations for community feed posts."""
+    """ViewSet handling CRUD operations, filtering, and kudos for feed posts."""
 
     serializer_class = PostSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
 
     def get_queryset(self) -> QuerySet[Post]:
-        return (
-            Post.objects.select_related("author__profile", "badge_user__badge")
-            .all()
-            .order_by("-created_at")
+        user = self.request.user
+        liked_subquery = (
+            Exists(PostLike.objects.filter(post=OuterRef("pk"), user_id=user.pk))
+            if user and user.is_authenticated
+            else Value(False, output_field=BooleanField())
         )
+
+        queryset = Post.objects.select_related(
+            "author__profile", "badge_user__badge"
+        ).annotate(
+            likes_count=Count("likes", distinct=True),
+            liked_by_me=liked_subquery,
+        )
+
+        # Filters only shape the listing; retrieve/update/like must reach any post.
+        if self.action != "list":
+            return queryset.order_by("-created_at")
+
+        query = FeedListQuerySerializer(data=self.request.query_params)
+        query.is_valid(raise_exception=True)
+        post_type = query.validated_data.get("post_type")
+        if post_type:
+            queryset = queryset.filter(post_type=post_type)
+
+        if query.validated_data["ordering"] == FeedListQuerySerializer.ORDERING_POPULAR:
+            return queryset.order_by("-likes_count", "-created_at")
+        return queryset.order_by("-created_at")
 
     def perform_create(self, serializer: PostSerializer) -> None:
         """Assign authenticated user as author upon creation."""
         user = self.request.user if self.request.user.is_authenticated else None
         serializer.save(author=user)
+
+    def perform_update(self, serializer: PostSerializer) -> None:
+        """Save the edit and drop the previous image when it was replaced."""
+        previous_url = serializer.instance.image_url
+        with transaction.atomic():
+            post = serializer.save()
+            if post.image_url != previous_url:
+                schedule_feed_image_cleanup([previous_url], post.author_id)
+
+    def perform_destroy(self, instance: Post) -> None:
+        """Delete the post, then its uploaded image once the delete commits."""
+        with transaction.atomic():
+            image_url, author_id = instance.image_url, instance.author_id
+            instance.delete()
+            schedule_feed_image_cleanup([image_url], author_id)
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name="PostLikeResponse",
+                fields={
+                    "liked_by_me": serializers.BooleanField(),
+                    "likes_count": serializers.IntegerField(),
+                },
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        permission_classes=[permissions.IsAuthenticated],
+        url_path="like",
+    )
+    def like(self, request: Request, *_args: Any, **_kwargs: Any) -> Response:
+        """``POST`` gives kudos and ``DELETE`` removes it; repeating either is a no-op.
+
+        Each method sets the desired state instead of toggling it, so a double
+        tap or a network retry cannot undo the user's choice.
+        """
+        post = self.get_object()
+        if request.method == "DELETE":
+            PostLike.objects.filter(post=post, user=request.user).delete()
+            liked_by_me = False
+        else:
+            PostLike.objects.get_or_create(post=post, user=request.user)
+            liked_by_me = True
+
+        likes_count = PostLike.objects.filter(post=post).count()
+        return Response(
+            {"liked_by_me": liked_by_me, "likes_count": likes_count},
+            status=status.HTTP_200_OK,
+        )
 
 
 class ImageUploadView(APIView):

@@ -235,9 +235,10 @@ def assign_institutional_clan(
     in the previous institutional clan, so the user always ends up a member
     of exactly one institutional clan. ``visibility``, when given, is saved
     in the same profile update (onboarding, #163). ``career`` must be in the
-    curated catalog (#213); ``require_career`` raises ``UnknownCareerError``.
+    curated catalog (#213); ``require_career`` raises ``UnknownCareerError``, or
+    ``CareerNotAllowedForRoleError`` for a staff-only entry.
     """
-    career = require_career(career)
+    career = require_career(career, role=user.role)
 
     profile = ensure_profile(user)
     clan = _get_or_create_institutional_clan(career)

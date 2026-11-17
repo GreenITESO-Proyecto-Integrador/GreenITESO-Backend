@@ -134,7 +134,7 @@ def _upload_gcs(object_key: str, payload: bytes, kind: str) -> None:
     except Exception:
         try:
             blob.delete()
-        except Exception: # pylint: disable=broad-exception-caught
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
         raise
 

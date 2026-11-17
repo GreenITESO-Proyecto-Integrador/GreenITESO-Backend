@@ -28,6 +28,8 @@ def list_user_points_ranking() -> QuerySet[UserProfile]:
             "total_points",
             "avatar_url",
             "avatar_object_key",
+            # Read by public_avatar_url to decide whether the photo is shown (#238).
+            "visibility",
             "user__id",
             "user__nickname",
             "user__first_name",

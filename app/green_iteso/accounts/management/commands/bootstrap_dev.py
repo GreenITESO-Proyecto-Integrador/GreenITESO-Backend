@@ -14,6 +14,10 @@ from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
+from green_iteso.accounts.management.demo_seed_helpers import (
+    demo_action_log_identity,
+    expected_demo_action_status,
+)
 from green_iteso.accounts.models import Clan, ClanMembership, User, UserProfile
 from green_iteso.actions.management.commands.load_catalog import (
     DEFAULT_CATALOG,
@@ -36,11 +40,6 @@ from green_iteso.campaigns.models import (
 )
 
 DEMO_NAMESPACE = uuid.UUID("07f77703-1ce2-4797-a9c3-571f6d71df7b")
-DEMO_STATUSES = (
-    ActionLog.Status.APPROVED,
-    ActionLog.Status.PENDING_AUDIT,
-    ActionLog.Status.REJECTED,
-)
 DEMO_PRIVATE_CLAN_DESCRIPTION = (
     "Synthetic demo clan; not an institutional catalog value."
 )
@@ -619,21 +618,7 @@ def create_demo_action_log(
 ) -> SeededActionLog:
     """Create or validate one stable synthetic action log."""
     user = context.users[index % len(context.users)]
-    action = context.actions[index % len(context.actions)]
-    status = DEMO_STATUSES[index % len(DEMO_STATUSES)]
-    if status == ActionLog.Status.PENDING_AUDIT:
-        photo_action = next(
-            (
-                candidate
-                for candidate in context.actions
-                if candidate.validation_type == ActionMaster.ValidationType.PHOTO
-            ),
-            None,
-        )
-        if photo_action is not None:
-            action = photo_action
-        else:
-            status = ActionLog.Status.APPROVED
+    action, status = expected_demo_action_status(index, context.actions)
     idempotency_key = f"demo-action-{index:02d}"
     institutional_clan = context.profiles[user.pk].institutional_clan
     credited_private_clan = context.private_clans[index % len(context.private_clans)]
@@ -680,13 +665,7 @@ def create_demo_action_log(
         getattr(institutional_clan, "pk", None),
         credited_private_clan.pk,
     )
-    existing_identity = (
-        log.idempotency_key,
-        log.user_id,
-        log.action_id,
-        log.institutional_clan_id,
-        log.credited_private_clan_id,
-    )
+    existing_identity = demo_action_log_identity(log)[:5]
     if not was_created and existing_identity != expected_identity:
         raise CommandError(
             "Demo action-log identity collision; existing row was preserved. "
@@ -903,23 +882,36 @@ def refresh_demo_totals(
     )
 
 
+def resolve_demo_careers(
+    catalog: CatalogData,
+    shared_dev: bool,
+    career_clans: list[Clan] | None,
+) -> tuple[list[Clan], dict[uuid.UUID, str] | None]:
+    """Keep local fixture IDs strict and accept validated shared-dev clan rows."""
+    if shared_dev and not catalog.clans:
+        return create_dev_institutional_clans()
+    clans = (
+        career_clans
+        if career_clans is not None
+        else get_catalog_institutional_clans(catalog)
+    )
+    careers_by_name = {item["name"]: item["career"] for item in catalog.clans}
+    return clans, (
+        {clan.pk: careers_by_name[clan.name] for clan in clans} if shared_dev else None
+    )
+
+
 def create_log_seed_context(
-    catalog: CatalogData, as_of: datetime, shared_dev: bool
+    catalog: CatalogData,
+    as_of: datetime,
+    shared_dev: bool,
+    career_clans: list[Clan] | None = None,
 ) -> LogSeedContext:
     """Resolve the catalog and deterministic fixtures needed by the seed."""
     users, user_created = create_demo_users(shared_dev=shared_dev)
-    if shared_dev and not catalog.clans:
-        institutional_clans, careers = create_dev_institutional_clans()
-    else:
-        institutional_clans = get_catalog_institutional_clans(catalog)
-        careers = (
-            {
-                stable_reference_id("institutional-clan", item["key"]): item["career"]
-                for item in catalog.clans
-            }
-            if shared_dev
-            else None
-        )
+    institutional_clans, careers = resolve_demo_careers(
+        catalog, shared_dev, career_clans
+    )
     private_clans = create_private_clans(users)
     profiles = create_profiles_and_memberships(
         users, institutional_clans, private_clans, as_of, careers=careers
@@ -947,10 +939,14 @@ def create_log_seed_context(
 
 
 def seed_demo_data(
-    catalog: CatalogData, as_of: datetime, *, shared_dev: bool = False
+    catalog: CatalogData,
+    as_of: datetime,
+    *,
+    shared_dev: bool = False,
+    career_clans: list[Clan] | None = None,
 ) -> DemoSeedResult:
     """Write the complete demo graph inside the caller's transaction."""
-    context = create_log_seed_context(catalog, as_of, shared_dev)
+    context = create_log_seed_context(catalog, as_of, shared_dev, career_clans)
     created_logs, approved_user_points, approved_clan_points = create_action_logs(
         context
     )

@@ -11,6 +11,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from green_iteso.accounts.models import User
+from green_iteso.accounts.services import deactivate_account
 from green_iteso.core.tests.image_helpers import (
     PNG_BYTES,
     stored_files,
@@ -335,5 +336,31 @@ def test_deleting_a_user_deletes_their_feedback_screenshots(
 
     student.delete()
 
+    assert not (feedback_media / key).exists()
+    assert stored_files(feedback_media) == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deactivating_a_user_deletes_their_feedback_and_screenshots(
+    student: User, feedback_media: Path
+) -> None:
+    client = _client(student)
+    create_res = client.post(
+        FEEDBACK_URL,
+        {
+            "category": FeedbackSubmission.Category.BUG,
+            "subject": "Captura a borrar al desactivar",
+            "message": "Esta captura debe eliminarse cuando se desactive la cuenta.",
+            "screenshot": _png(),
+        },
+        format="multipart",
+    )
+    submission = FeedbackSubmission.objects.get(pk=create_res.json()["id"])
+    key = submission.screenshot_object_key
+    assert (feedback_media / key).exists()
+
+    deactivate_account(user=student)
+
+    assert not FeedbackSubmission.objects.filter(user=student).exists()
     assert not (feedback_media / key).exists()
     assert stored_files(feedback_media) == []

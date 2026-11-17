@@ -5,6 +5,8 @@ from __future__ import annotations
 from uuid import UUID
 
 from django.http import HttpResponse, HttpResponseBase
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -47,6 +49,10 @@ class FeedbackListCreateView(APIView):
             return [FeedbackSubmitThrottle()]
         return []
 
+    @extend_schema(
+        request=FeedbackCreateSerializer,
+        responses={201: FeedbackDetailSerializer},
+    )
     def post(self, request: Request) -> Response:
         serializer = FeedbackCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -66,6 +72,23 @@ class FeedbackListCreateView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="category",
+                type=str,
+                enum=list(FeedbackSubmission.Category.values),
+                required=False,
+            ),
+            OpenApiParameter(
+                name="status",
+                type=str,
+                enum=list(FeedbackSubmission.Status.values),
+                required=False,
+            ),
+        ],
+        responses={200: FeedbackDetailSerializer(many=True)},
+    )
     def get(self, request: Request) -> Response:
         """Admin-only list of all feedback submissions."""
         if not IsAdmin().has_permission(request, self):
@@ -94,6 +117,7 @@ class MyFeedbackListView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(responses={200: FeedbackDetailSerializer(many=True)})
     def get(self, request: Request) -> Response:
         queryset = FeedbackSubmission.objects.filter(user=request.user)
         paginator = FeedbackPagination()
@@ -107,6 +131,7 @@ class FeedbackDetailView(APIView):
 
     permission_classes = [IsAuthenticated, IsAdmin]
 
+    @extend_schema(responses={200: FeedbackDetailSerializer})
     def get(self, _request: Request, submission_id: UUID) -> Response:
         try:
             submission = FeedbackSubmission.objects.select_related("user").get(
@@ -116,9 +141,15 @@ class FeedbackDetailView(APIView):
             raise NotFound() from None
         return Response(FeedbackDetailSerializer(submission).data)
 
+    @extend_schema(
+        request=FeedbackAdminUpdateSerializer,
+        responses={200: FeedbackDetailSerializer},
+    )
     def patch(self, request: Request, submission_id: UUID) -> Response:
         try:
-            submission = FeedbackSubmission.objects.get(pk=submission_id)
+            submission = FeedbackSubmission.objects.select_related("user").get(
+                pk=submission_id
+            )
         except FeedbackSubmission.DoesNotExist:
             raise NotFound() from None
 
@@ -135,6 +166,13 @@ class FeedbackScreenshotView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        responses={
+            (200, "image/*"): OpenApiTypes.BINARY,
+            403: OpenApiResponse(description="Not the author or an administrator."),
+            404: OpenApiResponse(description="Submission or screenshot not found."),
+        },
+    )
     def get(self, request: Request, submission_id: UUID) -> HttpResponseBase:
         try:
             submission = FeedbackSubmission.objects.get(pk=submission_id)

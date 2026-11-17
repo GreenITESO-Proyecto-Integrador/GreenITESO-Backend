@@ -172,6 +172,7 @@ REST_FRAMEWORK = {
         "clan_invite_redeem": "10/min",
         "profile_avatar": "10/min",
         "feed_image_upload": "10/min",
+        "feed_like": "30/min",
         "feedback_submit": "10/hour",
     },
 }

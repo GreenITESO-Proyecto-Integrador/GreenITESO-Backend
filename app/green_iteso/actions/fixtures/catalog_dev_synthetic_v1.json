@@ -15,5 +15,38 @@
     {"code": "demo-switch-off", "category_code": "demo-energy", "name": "DEMO switch off device", "description": "Synthetic test action; points and impacts are fictitious.", "points": 2, "daily_limit": 1, "validation_type": "PHOTO", "co2_kg_factor": "0.000", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": true},
     {"code": "demo-retired", "category_code": "demo-waste", "name": "DEMO retired action", "description": "Synthetic inactive test action; never an institutional recommendation.", "points": 1, "daily_limit": 1, "validation_type": "NONE", "co2_kg_factor": "0.000", "water_liters_factor": "0.000", "plastic_kg_factor": "0.000", "is_active": false}
   ],
-  "institutional_clans": []
+  "institutional_clans": [
+    {
+      "key": "demo-career-software-development",
+      "name": "Ingeniería en Desarrollo de Software",
+      "description": "Synthetic Neon dev career clan; not an official ITESO catalog.",
+      "career": "Ingeniería en Desarrollo de Software",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    },
+    {
+      "key": "demo-career-computer-systems",
+      "name": "Ingeniería en Sistemas Computacionales",
+      "description": "Synthetic Neon dev career clan; not an official ITESO catalog.",
+      "career": "Ingeniería en Sistemas Computacionales",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    },
+    {
+      "key": "demo-career-mechatronics",
+      "name": "Ingeniería en Mecatrónica",
+      "description": "Synthetic Neon dev career clan; not an official ITESO catalog.",
+      "career": "Ingeniería en Mecatrónica",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    },
+    {
+      "key": "demo-career-cybersecurity",
+      "name": "Ingeniería en Ciberseguridad",
+      "description": "Synthetic Neon dev career clan; not an official ITESO catalog.",
+      "career": "Ingeniería en Ciberseguridad",
+      "type": "INSTITUTIONAL",
+      "privacy": "PUBLIC"
+    }
+  ]
 }

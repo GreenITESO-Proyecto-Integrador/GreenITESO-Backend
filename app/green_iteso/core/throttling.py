@@ -15,6 +15,9 @@ someone else's identity, or a forged token could spend the victim's quota:
 
 Unverified input is always hashed before it becomes part of a cache key, so
 a huge claim cannot grow the cache.
+
+The counters live in the shared ``THROTTLE_CACHE_ALIAS`` cache (PostgreSQL),
+not the per-process default, so N workers do not multiply the limit (#217).
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ import hashlib
 from typing import Any
 
 import jwt
+from django.conf import settings
+from django.core.cache import BaseCache, caches
 from rest_framework.request import Request
 from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
 from rest_framework_simplejwt.exceptions import TokenError
@@ -34,13 +39,26 @@ from rest_framework_simplejwt.tokens import RefreshToken
 VERIFIED_REFRESH_ATTR = "_auth_throttle_verified_refresh"
 
 
+class SharedCacheThrottleMixin:
+    """Count in the cache every process shares instead of the per-process default.
+
+    Read on each use rather than bound at import, so tests and settings
+    overrides of ``CACHES`` reach it.
+    """
+
+    @property
+    def cache(self) -> BaseCache:
+        """The shared throttle cache."""
+        return caches[settings.THROTTLE_CACHE_ALIAS]
+
+
 def _body_token(request: Request, field: str) -> str:
     data = request.data if isinstance(request.data, dict) else {}
     token = data.get(field)
     return token if isinstance(token, str) else ""
 
 
-class LoginIdentityThrottle(ScopedRateThrottle):
+class LoginIdentityThrottle(SharedCacheThrottleMixin, ScopedRateThrottle):
     """Limit logins per (client IP, Microsoft account).
 
     ``oid`` is read without verifying the token, which is why the IP is part
@@ -63,7 +81,7 @@ class LoginIdentityThrottle(ScopedRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": f"{ip}|{subject}"}
 
 
-class RefreshTokenIdentityThrottle(ScopedRateThrottle):
+class RefreshTokenIdentityThrottle(SharedCacheThrottleMixin, ScopedRateThrottle):
     """Limit refresh/logout per user, from a refresh token with a valid signature.
 
     An invalid, expired or forged token falls back to the client IP, so it can
@@ -84,7 +102,7 @@ class RefreshTokenIdentityThrottle(ScopedRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
-class AuthIPCeilingThrottle(SimpleRateThrottle):
+class AuthIPCeilingThrottle(SharedCacheThrottleMixin, SimpleRateThrottle):
     """High per-IP ceiling shared by the auth endpoints to cap floods.
 
     A refresh/logout whose token signature checked out already has its own

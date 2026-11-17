@@ -422,3 +422,39 @@ class UserRoleAudit(models.Model):
 
     def __str__(self) -> str:
         return f"Role audit {self.user_id}: {self.previous_role} -> {self.new_role}"
+
+
+class UserBanAudit(models.Model):
+    """Who banned or unbanned an account, and when."""
+
+    class Action(models.TextChoices):
+        BAN = "BAN", "Ban"
+        UNBAN = "UNBAN", "Unban"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.PROTECT,
+        related_name="ban_audit_logs",
+    )
+    performed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="performed_ban_audits",
+    )
+    action = models.CharField(max_length=5, choices=Action.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounts_user_ban_audit"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["user", "-created_at"], name="user_ban_audit_user_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Ban audit {self.user_id}: {self.action}"

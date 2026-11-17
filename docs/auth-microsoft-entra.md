@@ -87,9 +87,11 @@ para **todos** los endpoints, no solo `/auth/login/` y `/auth/refresh/`:
   real de proxies que agregan a `X-Forwarded-For` (frontend nginx → Cloud Run →
   backend). Se pasa como secret del GitHub Environment por `scripts/release.sh`
   (ver `docs/deployment.md`) y es obligatoria para releases de `staging` y
-  `production`; el app desplegado emite un `RuntimeWarning` si falta. El cache es `LocMemCache` por
-  proceso (`MAX_ENTRIES` 10000); el límite real es N workers × el configurado
-  hasta que haya un cache compartido (Redis).
+  `production`; el app desplegado emite un `RuntimeWarning` si falta. Los contadores viven en el
+  cache `throttle` (`DatabaseCache` sobre PostgreSQL, tabla `accounts_auth_throttle_cache` creada
+  por la migración `accounts.0022`), así que todos los workers, instancias y revisiones comparten
+  el mismo conteo y un reinicio no lo borra (#217). Cada request de auth hace unas pocas
+  consultas a esa tabla; si algún día hay Redis, basta cambiar `CACHES["throttle"]`.
 
 ## Registro de la aplicación en Entra ID
 

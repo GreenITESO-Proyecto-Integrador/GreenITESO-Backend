@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from green_iteso.accounts.models import User
 
+from .images import schedule_feed_image_cleanup
 from .models import Post, PostType
 
 
@@ -33,3 +34,21 @@ def create_shared_evidence_post(
         content=content,
         image_url=image_url,
     )
+
+
+def delete_posts_by_author(*, author: User) -> None:
+    """Delete every post by ``author`` and, once committed, their uploaded images.
+
+    Call inside the caller's transaction: the images are removed only if it
+    commits, and only when no other post still references them.
+
+    Args:
+        author: User whose posts are deleted.
+    """
+    image_urls = list(
+        Post.objects.filter(author=author)
+        .exclude(image_url="")
+        .values_list("image_url", flat=True)
+    )
+    Post.objects.filter(author=author).delete()
+    schedule_feed_image_cleanup(image_urls, author.pk)

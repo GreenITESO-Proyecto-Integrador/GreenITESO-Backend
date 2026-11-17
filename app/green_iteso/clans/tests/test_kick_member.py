@@ -153,7 +153,9 @@ def test_cannot_kick_member_from_institutional_clan() -> None:
 @pytest.mark.django_db
 def test_service_refuses_institutional_clan_even_for_its_leader() -> None:
     student = User.objects.create_user(email="student@iteso.mx", password="local-only")
-    profile = assign_institutional_clan(user=student, career="ISC")
+    profile = assign_institutional_clan(
+        user=student, career="Ingeniería en Sistemas Computacionales"
+    )
     clan = profile.institutional_clan
     lead = User.objects.create_user(email="lead2@iteso.mx", password="local-only")
     ClanMembership.objects.create(

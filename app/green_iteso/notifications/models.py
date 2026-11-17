@@ -27,6 +27,7 @@ class NotificationType(models.TextChoices):
     CLAN_REQ_ACCEPTED = "CLAN_REQ_ACCEPTED", "Clan join request accepted"
     CLAN_REQ_REJECTED = "CLAN_REQ_REJECTED", "Clan join request rejected"
     MISSION_COMPLETED = "MISSION_COMPLETED", "Mission completed"
+    POST_LIKED = "POST_LIKED", "Post liked"
     SOCIAL_FOLLOW = "SOCIAL_FOLLOW", "New follower"
     SYSTEM = "SYSTEM", "System announcement"
 

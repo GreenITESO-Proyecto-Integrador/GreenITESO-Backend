@@ -13,6 +13,8 @@ from rest_framework.test import APIClient
 from green_iteso.accounts.models import User
 from green_iteso.core.tests.image_helpers import (
     PNG_BYTES,
+    stored_files,
+    use_fake_gcs,
     use_local_media,
 )
 from green_iteso.core.tests.image_helpers import png_upload as _png
@@ -218,6 +220,10 @@ def test_admin_can_list_and_filter_all_feedback(
     assert resolved_res.json()["count"] == 1
     assert resolved_res.json()["results"][0]["subject"] == "Idea reportada"
 
+    # Invalid filter values return 400
+    assert admin_client.get(f"{FEEDBACK_URL}?status=OPENED").status_code == 400
+    assert admin_client.get(f"{FEEDBACK_URL}?category=INVALID").status_code == 400
+
 
 @pytest.mark.django_db
 def test_admin_can_update_status_and_notes(admin: User, student: User) -> None:
@@ -277,3 +283,57 @@ def test_screenshot_access_permissions(
     # Other student is forbidden
     other_res = _client(other_student).get(screenshot_url)
     assert other_res.status_code == 403
+
+
+@pytest.mark.django_db
+def test_deployed_service_serves_screenshot_bytes_directly(
+    student: User, settings: Any, monkeypatch: Any
+) -> None:
+    uploads = use_fake_gcs(settings, monkeypatch)
+    client = _client(student)
+
+    create_res = client.post(
+        FEEDBACK_URL,
+        {
+            "category": FeedbackSubmission.Category.BUG,
+            "subject": "Captura en GCS",
+            "message": "Se adjunta la captura almacenada en el bucket privado.",
+            "screenshot": _png(),
+        },
+        format="multipart",
+    )
+    assert create_res.status_code == 201
+    submission_id = create_res.json()["id"]
+    submission = FeedbackSubmission.objects.get(pk=submission_id)
+    assert uploads[submission.screenshot_object_key] == (PNG_BYTES, "image/png")
+
+    screenshot_res = client.get(f"{FEEDBACK_URL}{submission_id}/screenshot/")
+    assert screenshot_res.status_code == 200
+    assert screenshot_res["Content-Type"] == "image/png"
+    assert screenshot_res["Cache-Control"] == "private, no-store"
+    assert screenshot_res.content == PNG_BYTES
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deleting_a_user_deletes_their_feedback_screenshots(
+    student: User, feedback_media: Path
+) -> None:
+    client = _client(student)
+    create_res = client.post(
+        FEEDBACK_URL,
+        {
+            "category": FeedbackSubmission.Category.BUG,
+            "subject": "Captura a borrar",
+            "message": "Esta captura debe eliminarse cuando se borre el usuario.",
+            "screenshot": _png(),
+        },
+        format="multipart",
+    )
+    submission = FeedbackSubmission.objects.get(pk=create_res.json()["id"])
+    key = submission.screenshot_object_key
+    assert (feedback_media / key).exists()
+
+    student.delete()
+
+    assert not (feedback_media / key).exists()
+    assert stored_files(feedback_media) == []

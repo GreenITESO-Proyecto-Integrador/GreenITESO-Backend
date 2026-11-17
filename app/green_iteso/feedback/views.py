@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from django.http import HttpResponseBase
+from django.http import HttpResponse, HttpResponseBase
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -14,7 +14,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from green_iteso.core.image_storage import image_response
+from green_iteso.core.image_storage import image_bytes
 from green_iteso.core.permissions import IsAdmin
 
 from .models import FeedbackSubmission
@@ -74,9 +74,13 @@ class FeedbackListCreateView(APIView):
         queryset = FeedbackSubmission.objects.select_related("user").all()
         category = request.query_params.get("category")
         if category:
+            if category not in FeedbackSubmission.Category.values:
+                raise ValidationError({"category": ["Categoría inválida."]})
             queryset = queryset.filter(category=category)
         status_param = request.query_params.get("status")
         if status_param:
+            if status_param not in FeedbackSubmission.Status.values:
+                raise ValidationError({"status": ["Estado inválido."]})
             queryset = queryset.filter(status=status_param)
 
         paginator = FeedbackPagination()
@@ -146,7 +150,10 @@ class FeedbackScreenshotView(APIView):
         if not key:
             raise NotFound()
 
-        response = image_response(FEEDBACK_IMAGE_PREFIX, submission.user_id, key)
-        if response is None:
+        stored = image_bytes(FEEDBACK_IMAGE_PREFIX, submission.user_id, key)
+        if stored is None:
             raise NotFound()
+        payload, content_type = stored
+        response = HttpResponse(payload, content_type=content_type)
+        response["Cache-Control"] = "private, no-store"
         return response

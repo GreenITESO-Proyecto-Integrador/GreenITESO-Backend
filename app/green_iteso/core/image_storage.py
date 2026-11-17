@@ -127,3 +127,27 @@ def image_response(
         return None
     content_type = _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path.open("rb"), content_type=content_type)
+
+
+def image_bytes(
+    prefix: str, owner_id: UUID, object_key: str
+) -> tuple[bytes, str] | None:
+    """Read a stored image so the API can serve it from its own origin.
+
+    Use it when the client fetches with the Bearer token: the browser blocks a
+    redirect to the bucket because Cloud Storage sends no CORS header.
+    """
+    if not is_owned_key(prefix, owner_id, object_key):
+        return None
+    if gcs_evidence_enabled():
+        blob = _gcs_bucket().blob(object_key)
+        if not blob.exists():
+            return None
+        payload = blob.download_as_bytes()
+    else:
+        path = Path(settings.MEDIA_ROOT) / object_key
+        if not path.is_file():
+            return None
+        payload = path.read_bytes()
+    kind = detect_image_kind(payload[:16])
+    return (payload, kind) if kind else None

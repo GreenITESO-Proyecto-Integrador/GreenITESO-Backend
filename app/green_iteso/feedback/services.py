@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from django.core.files.uploadedfile import UploadedFile
 from django.db import transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 from green_iteso.accounts.models import User
 from green_iteso.core.image_storage import delete_image, save_image
@@ -13,7 +15,7 @@ from .models import FeedbackSubmission
 FEEDBACK_IMAGE_PREFIX = "feedback"
 
 
-def create_feedback_submission(
+def create_feedback_submission(  # pylint: disable=too-many-arguments
     *,
     user: User,
     category: str,
@@ -44,10 +46,22 @@ def create_feedback_submission(
     return submission
 
 
-def delete_feedback_submission(submission: FeedbackSubmission) -> None:
-    """Delete a feedback submission and clean up its stored screenshot."""
-    key = submission.screenshot_object_key
-    user_id = submission.user_id
-    submission.delete()
-    if key:
-        transaction.on_commit(lambda: delete_image(FEEDBACK_IMAGE_PREFIX, user_id, key))
+@receiver(
+    post_delete,
+    sender=FeedbackSubmission,
+    dispatch_uid="feedback.delete_screenshot_on_submission_delete",
+)
+def _delete_screenshot_on_submission_delete(
+    sender: type[FeedbackSubmission],
+    instance: FeedbackSubmission,
+    **kwargs: object,
+) -> None:
+    """Remove the stored screenshot once a feedback submission or user is deleted."""
+    del sender, kwargs
+    object_key = instance.screenshot_object_key
+    if not object_key:
+        return
+    user_id = instance.user_id
+    transaction.on_commit(
+        lambda: delete_image(FEEDBACK_IMAGE_PREFIX, user_id, object_key)
+    )

@@ -49,7 +49,7 @@ class FeedbackCreateSerializer(serializers.ModelSerializer):
         return trimmed
 
     def validate_rating(self, value: int | None) -> int | None:
-        if value is not None and not (1 <= value <= 5):
+        if value is not None and not 1 <= value <= 5:
             raise serializers.ValidationError("La calificación debe estar entre 1 y 5.")
         return value
 

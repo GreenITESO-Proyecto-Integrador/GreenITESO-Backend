@@ -70,8 +70,8 @@ def like_post(*, post: Post, user: User) -> None:
         user: User giving the like.
     """
     with transaction.atomic():
-        PostLike.objects.get_or_create(post=post, user=user)
-        if post.author is None or post.author == user:
+        _, created = PostLike.objects.get_or_create(post=post, user=user)
+        if not created or post.author is None or post.author == user:
             return
         _, first_notice = PostLikeNotice.objects.get_or_create(post=post, user=user)
         if first_notice:

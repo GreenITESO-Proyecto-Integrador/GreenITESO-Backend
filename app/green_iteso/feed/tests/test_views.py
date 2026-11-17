@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from green_iteso.accounts.models import UserProfile
-from green_iteso.feed.models import Post, PostType
+from green_iteso.feed.models import Post, PostLike, PostType
 from green_iteso.gamification.models import Badge, UserBadge
 from green_iteso.notifications.models import Notification
 
@@ -442,6 +442,16 @@ class PostAPITests(APITestCase):
         self.client.post(like_url)
 
         self.assertEqual(Notification.objects.filter(user=self.author).count(), 1)
+
+    def test_repeating_a_like_made_before_notices_existed_does_not_notify(
+        self,
+    ) -> None:
+        PostLike.objects.create(post=self.post, user=self.other_user)
+        self.client.force_authenticate(user=self.other_user)
+
+        self.client.post(f"{self.detail_url}like/")
+
+        self.assertFalse(Notification.objects.filter(user=self.author).exists())
 
     def test_like_from_private_profile_hides_the_real_name(self) -> None:
         profile, _ = UserProfile.objects.get_or_create(user=self.other_user)

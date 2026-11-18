@@ -101,6 +101,10 @@ NOTIFICATION_TEMPLATES: dict[str, NotificationTemplate] = {
         title="Misión completada",
         message='Completaste la misión "{mission_name}" de la campaña "{campaign_name}".',
     ),
+    NotificationType.POST_LIKED: NotificationTemplate(
+        title="Nuevo like",
+        message="{liker_name} le dio like a tu publicación.",
+    ),
     NotificationType.SOCIAL_FOLLOW: NotificationTemplate(
         title="Nuevo seguidor",
         message="{follower_name} ahora sigue tu actividad.",

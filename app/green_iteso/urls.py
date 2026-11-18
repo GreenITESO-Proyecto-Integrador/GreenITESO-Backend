@@ -28,6 +28,7 @@ api_v1_patterns = [
         FeedImageView.as_view(),
         name="feed-image",
     ),
+    path("", include("green_iteso.feedback.urls")),
 ]
 
 api_patterns = [

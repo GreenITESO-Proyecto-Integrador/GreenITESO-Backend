@@ -52,6 +52,12 @@ def fake_gcs_bucket(uploads: dict[str, tuple[bytes, str]]) -> type:
         def exists(self) -> bool:
             return self.name in uploads
 
+        def download_as_bytes(self) -> bytes:
+            return uploads[self.name][0]
+
+        def delete(self) -> None:
+            uploads.pop(self.name, None)
+
         def generate_signed_url(self, **kwargs: Any) -> str:
             assert kwargs["method"] == "GET"
             return f"https://storage.example/{self.name}?signed"

@@ -220,3 +220,25 @@ def test_a_private_clan_cannot_take_the_staff_iteso_name() -> None:
 
     assert response.status_code == 400
     assert not Clan.objects.filter(name="Staff ITESO").exists()
+
+
+@pytest.mark.django_db
+def test_onboarding_nickname_does_not_spend_the_free_change() -> None:
+    """Choosing a nickname at onboarding is not a change; the next one is free (#225)."""
+    caller = User.objects.create_user(email="ana@iteso.mx", password="local-only")
+    client = _client_for(caller)
+    onboarding = client.post(
+        ONBOARDING_URL, {"career": "Ingeniería en Mecatrónica", "nickname": "Ana"}
+    )
+    assert onboarding.status_code == 200
+
+    profile = UserProfile.objects.get(user=caller)
+    assert profile.nickname_changes == 0
+    assert client.get("/api/v1/profile/me/").json()["nickname_change_cost"] == 0
+
+    first = client.post("/api/v1/profile/me/nickname/", {"nickname": "Anita"})
+
+    assert first.status_code == 200
+    profile.refresh_from_db()
+    assert profile.nickname_changes == 1
+    assert profile.available_points == 0

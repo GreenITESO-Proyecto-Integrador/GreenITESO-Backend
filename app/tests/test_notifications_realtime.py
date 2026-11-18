@@ -44,6 +44,7 @@ FULL_CONTEXT: dict[str, Any] = {
     "campaign_name": "Semana sin plásticos",
     "mission_name": "Rechaza un popote",
     "follower_name": "carlos.iteso",
+    "liker_name": "Luis Pérez",
     "clan_name": "Clan Verde",
     "member_name": "Ana López",
     "leader_name": "Capi",

@@ -6,10 +6,14 @@ Equipo: Equipo 3 - Campañas, Feed y Dashboards
 
 from __future__ import annotations
 
+from django.db import transaction
+
 from green_iteso.accounts.models import User
+from green_iteso.notifications.models import NotificationType
+from green_iteso.notifications.services import notify
 
 from .images import schedule_feed_image_cleanup
-from .models import Post, PostType
+from .models import Post, PostLike, PostLikeNotice, PostType
 
 
 def create_shared_evidence_post(
@@ -52,3 +56,32 @@ def delete_posts_by_author(*, author: User) -> None:
     )
     Post.objects.filter(author=author).delete()
     schedule_feed_image_cleanup(image_urls, author.pk)
+
+
+def like_post(*, post: Post, user: User) -> None:
+    """Give ``user``'s kudos to ``post``; repeating it is a no-op.
+
+    The author is notified once per person and post. The notice outlives an
+    unlike, so like, unlike, like cannot refill the author's inbox. Own likes
+    and posts without an author never notify.
+
+    Args:
+        post: Post receiving the like.
+        user: User giving the like.
+    """
+    with transaction.atomic():
+        _, created = PostLike.objects.get_or_create(post=post, user=user)
+        if not created or post.author is None or post.author == user:
+            return
+        _, first_notice = PostLikeNotice.objects.get_or_create(post=post, user=user)
+        if first_notice:
+            notify(
+                post.author,
+                NotificationType.POST_LIKED,
+                liker_name=user.name_shown_to_others(),
+            )
+
+
+def unlike_post(*, post: Post, user: User) -> None:
+    """Remove ``user``'s like from ``post``; repeating it is a no-op."""
+    PostLike.objects.filter(post=post, user=user).delete()

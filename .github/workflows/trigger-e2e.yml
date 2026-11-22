@@ -1,0 +1,30 @@
+name: Trigger E2E
+
+on:
+  push:
+    branches: [dev, preprod]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Avisar a GreenITESO-Testing
+        env:
+          GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+          REPO: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::Falta el secreto E2E_DISPATCH_TOKEN; no se disparó el E2E."
+            exit 0
+          fi
+          gh api repos/GreenITESO-Proyecto-Integrador/GreenITESO-Testing/dispatches \
+            -f event_type=greeniteso-branch-updated \
+            -f "client_payload[repo]=$REPO" \
+            -f "client_payload[branch]=$BRANCH" \
+            -f "client_payload[sha]=$SHA"
+          echo "E2E disparado para $REPO@$BRANCH ($SHA)."

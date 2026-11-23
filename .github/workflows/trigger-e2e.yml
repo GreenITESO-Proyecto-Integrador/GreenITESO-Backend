@@ -19,8 +19,8 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::Falta el secreto E2E_DISPATCH_TOKEN; no se disparó el E2E."
-            exit 0
+            echo "::error::Falta el secreto E2E_DISPATCH_TOKEN; no se pudo disparar el E2E."
+            exit 1
           fi
           gh api repos/GreenITESO-Proyecto-Integrador/GreenITESO-Testing/dispatches \
             -f event_type=greeniteso-branch-updated \

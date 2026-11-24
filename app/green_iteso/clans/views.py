@@ -129,20 +129,20 @@ class ClanViewSet(
             return Clan.objects.all()
 
         user = self.request.user
+        # `search` only applies to `list`: `get_queryset()` also backs
+        # `get_object()` for retrieve and every detail action (destroy,
+        # transfer-leadership, select-active, leave, accept/reject-request),
+        # where filtering by an unrelated query param would 404 a clan that
+        # otherwise exists.
+        search = (
+            self.request.query_params.get("search", "") if self.action == "list" else ""
+        )
         # Global ADMIN can reach and view all clans for administrative overrides
         if getattr(user, "role", None) == User.Role.ADMIN:
             queryset = Clan.objects.all()
+            if search:
+                queryset = queryset.filter(name__icontains=search)
         else:
-            # `search` only applies to `list`: `get_queryset()` also backs
-            # `get_object()` for retrieve and every detail action (destroy,
-            # transfer-leadership, select-active, leave, accept/reject-request),
-            # where filtering by an unrelated query param would 404 a clan that
-            # otherwise exists.
-            search = (
-                self.request.query_params.get("search", "")
-                if self.action == "list"
-                else ""
-            )
             queryset = list_active_clans(user=user, search=search)
 
         if self.action == "retrieve":

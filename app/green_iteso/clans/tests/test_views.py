@@ -281,6 +281,44 @@ def test_list_clans_filters_by_search_query_param() -> None:
 
 
 @pytest.mark.django_db
+def test_list_clans_search_also_filters_for_admin() -> None:
+    leader = User.objects.create_user(email="lead1@iteso.mx", password="local-only")
+    create_private_clan(name="Green Team", created_by=leader)
+    create_private_clan(
+        name="Blue Squad",
+        created_by=User.objects.create_user(email="lead2@iteso.mx"),
+    )
+    admin = User.objects.create_user(email="admin@iteso.mx", role=User.Role.ADMIN)
+    client = APIClient()
+    client.force_authenticate(admin)
+
+    matching = client.get("/api/v1/clans/?search=green")
+    missing = client.get("/api/v1/clans/?search=nothing-like-this")
+    unfiltered = client.get("/api/v1/clans/")
+
+    assert [row["name"] for row in matching.json()["results"]] == ["Green Team"]
+    assert missing.json()["results"] == []
+    assert {"Green Team", "Blue Squad"} <= {
+        row["name"] for row in unfiltered.json()["results"]
+    }
+
+
+@pytest.mark.django_db
+def test_admin_search_does_not_hide_a_clan_on_detail_actions() -> None:
+    clan = create_private_clan(
+        name="Green Team",
+        created_by=User.objects.create_user(email="lead1@iteso.mx"),
+    )
+    admin = User.objects.create_user(email="admin@iteso.mx", role=User.Role.ADMIN)
+    client = APIClient()
+    client.force_authenticate(admin)
+
+    response = client.get(f"/api/v1/clans/{clan.pk}/?search=nothing-like-this")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
 def test_create_clan_with_a_catalog_career_name_returns_400() -> None:
     leader = User.objects.create_user(email="lead@iteso.mx", password="local-only")
     client = APIClient()
